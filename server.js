@@ -91,17 +91,41 @@ app.get('/models', async (req, res) => {
 
 // -- helpers -------------------------------------------------------------
 
-async function callOpenRouter(body) {
-  const upstream = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${OPENROUTER_KEY}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://kademurdock.com',
-      'X-Title': 'Kade-AI',
+// Timeout safety net (added after a real production hang, June 27 2026):
+// the proxy used to call OpenRouter with a bare fetch() and no time limit at
+// all. OpenRouter load-balances most models across multiple backend
+// providers; if one of them stalls mid-generation without ever erroring,
+// nothing anywhere in this chain used to give up — the request, and the
+// whole LibreChat reply, would just hang forever with no error shown to the
+// user. This wraps every OpenRouter call in a hard timeout, with one retry
+// on timeout only (not on real errors, those still surface immediately).
+const REQUEST_TIMEOUT_MS = 90_000;
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callOpenRouterOnce(body, timeoutMs) {
+  const upstream = await fetchWithTimeout(
+    `${OPENROUTER_BASE}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://kademurdock.com',
+        'X-Title': 'Kade-AI',
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+    timeoutMs
+  );
   const text = await upstream.text();
   if (!upstream.ok) {
     const err = new Error(`OpenRouter ${upstream.status}: ${text.slice(0, 500)}`);
@@ -119,6 +143,32 @@ async function callOpenRouter(body) {
     throw err;
   }
   return json;
+}
+
+async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
+  try {
+    return await callOpenRouterOnce(body, timeoutMs);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      console.warn(`OpenRouter call timed out after ${timeoutMs}ms, retrying once...`);
+      try {
+        return await callOpenRouterOnce(body, timeoutMs);
+      } catch (retryErr) {
+        if (retryErr.name === 'AbortError') {
+          const timeoutErr = new Error(
+            `OpenRouter did not respond within ${timeoutMs}ms (after 1 retry) — the upstream provider likely stalled.`
+          );
+          timeoutErr.status = 504;
+          timeoutErr.body = JSON.stringify({
+            error: { message: timeoutErr.message, type: 'upstream_timeout' },
+          });
+          throw timeoutErr;
+        }
+        throw retryErr;
+      }
+    }
+    throw err;
+  }
 }
 
 // Human-readable rewrite guidance per pattern category, so the rewrite call
