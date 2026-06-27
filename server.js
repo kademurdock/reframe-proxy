@@ -2,38 +2,42 @@
  * server.js — reframe-proxy
  *
  * Sits between LibreChat and OpenRouter as an OpenAI-compatible custom
- * endpoint. Two jobs, both aimed at the same list of AI-slop tics in
- * Kiana's Section 2 ("Never say these" + "Constructions to kill"):
+ * endpoint. Two jobs, both aimed at the AI-slop tics in Kiana's Section 2:
  *
  * 1. REQUEST side: appends a short style reminder as the last message before
- *    forwarding to OpenRouter. A system prompt loaded once at the top of a
- *    long conversation loses grip by the time the model actually generates;
- *    putting a short copy of the rule physically adjacent to generation
- *    fixes that recency-decay problem (see appendReminder()).
+ *    forwarding to OpenRouter (recency-decay fix — see appendReminder()).
  * 2. RESPONSE side: runs two deterministic detectors against the full reply
- *    — reframe-filter.js (the "it's not X, it's Y" shape, its own module
- *    because it's the most structurally involved) and slop-filter.js
- *    (the other four "constructions to kill" plus literal blocklist phrases
- *    from the seven "never say" lists). If anything trips, fires ONE
- *    targeted rewrite call back through the same model before handing the
- *    cleaned-up reply to LibreChat.
+ *    (reframe-filter.js + slop-filter.js). If anything trips, fires ONE
+ *    targeted rewrite call before handing the cleaned reply to LibreChat.
  *
- * Why buffer instead of true token streaming: detection has to run on the
- * FULL reply, so there is no way to inspect-and-maybe-rewrite mid-stream
- * without already having sent the bad text to the user. Every request —
- * streaming or not — is bought to completion against OpenRouter first. If
- * the caller asked for stream:true, the final (possibly rewritten) text is
- * sent back as a single-shot fake SSE stream so LibreChat's client code
- * still gets the shape it expects. This trades true incremental streaming
- * for correctness; Kiana already runs with disableStreaming:true so this
- * costs her nothing. A custom agent someone builds with streaming turned on
- * will notice replies arrive all at once rather than token-by-token —
- * known, accepted tradeoff for v1.
+ * STREAMING REWORK (June 2026):
+ *   Slop detection/rewrite fundamentally needs the FULL prose reply — you
+ *   cannot retroactively rewrite text already streamed to the user. So the
+ *   proxy treats the two kinds of model turn differently:
  *
- * Auth model: LibreChat is configured with a proxy-only shared secret as its
- * "apiKey" for this endpoint (NOT the real OpenRouter key — that lives only
- * here, as an env var). Anything hitting this service without that secret
- * gets a 401 before any OpenRouter credit is spent.
+ *     - TOOL-CALL turns  -> streamed THROUGH live, byte-for-byte, the instant
+ *       tool_calls appear. These are the slow part of a long multi-tool turn
+ *       (e.g. "generate 100 images"), and tool-call args are not user-facing
+ *       prose, so there is nothing to slop-detect. Streaming them gives the
+ *       user real progress visibility round-by-round instead of dead air.
+ *     - CONTENT turns    -> buffered fully, detectors run, optional rewrite,
+ *       then emitted. Final prose is fast to generate, so buffering it costs
+ *       almost nothing while preserving the whole point of this proxy.
+ *
+ *   Non-streaming callers (stream:false — e.g. Kiana, who runs
+ *   disableStreaming:true) hit the ORIGINAL buffered path unchanged. The
+ *   streaming behaviour above only engages when the caller asks for
+ *   stream:true, so Kiana's path carries zero new risk from this rework.
+ *
+ *   Known minor tradeoff: in a rare mixed turn (a short prose preamble that
+ *   is then followed by a tool_call in the SAME model response), the moment
+ *   tool_calls appear the proxy flips to live passthrough and that preamble
+ *   is not slop-rewritten. Mixed turns are uncommon and the preamble is
+ *   short; accepted for this version.
+ *
+ * Auth: LibreChat sends a proxy-only shared secret as its "apiKey". The real
+ * OpenRouter key lives only here. Anything without the secret gets 401 before
+ * any OpenRouter credit is spent.
  */
 
 'use strict';
@@ -75,7 +79,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'reframe-proxy', reframeLevel: REFRAME_LEVEL });
 });
 
-// -- model list passthrough (LibreChat's fetch:true calls this) --------------
+// -- model list passthrough --------------------------------------------------
 app.get('/models', async (req, res) => {
   try {
     const upstream = await fetch(`${OPENROUTER_BASE}/models`, {
@@ -89,16 +93,7 @@ app.get('/models', async (req, res) => {
   }
 });
 
-// -- helpers -------------------------------------------------------------
-
-// Timeout safety net (added after a real production hang, June 27 2026):
-// the proxy used to call OpenRouter with a bare fetch() and no time limit at
-// all. OpenRouter load-balances most models across multiple backend
-// providers; if one of them stalls mid-generation without ever erroring,
-// nothing anywhere in this chain used to give up — the request, and the
-// whole LibreChat reply, would just hang forever with no error shown to the
-// user. This wraps every OpenRouter call in a hard timeout, with one retry
-// on timeout only (not on real errors, those still surface immediately).
+// -- timeout-guarded OpenRouter calls (non-streaming) ------------------------
 const REQUEST_TIMEOUT_MS = 90_000;
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -111,19 +106,19 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+function openRouterHeaders() {
+  return {
+    Authorization: `Bearer ${OPENROUTER_KEY}`,
+    'Content-Type': 'application/json',
+    'HTTP-Referer': 'https://kademurdock.com',
+    'X-Title': 'Kade-AI',
+  };
+}
+
 async function callOpenRouterOnce(body, timeoutMs) {
   const upstream = await fetchWithTimeout(
     `${OPENROUTER_BASE}/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://kademurdock.com',
-        'X-Title': 'Kade-AI',
-      },
-      body: JSON.stringify(body),
-    },
+    { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(body) },
     timeoutMs
   );
   const text = await upstream.text();
@@ -171,10 +166,7 @@ async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
   }
 }
 
-// Human-readable rewrite guidance per pattern category, so the rewrite call
-// gets told specifically what's wrong instead of a vague "fix the tone."
-// Keys match the `pattern` field emitted by reframe-filter.js / slop-filter.js
-// (blocklist categories are prefixed "blocklist:", matched by startsWith).
+// -- rewrite guidance --------------------------------------------------------
 const PATTERN_GUIDANCE = {
   reframe: 'the rhetorical reframe device "It\'s not X, it\'s Y" (or "isn\'t just X, it\'s Y" / "not X but Y")',
   throat_clearing_opener: 'a throat-clearing opener (e.g. "Look,", "Honestly?", "Here\'s the thing,") at the start of a sentence',
@@ -225,17 +217,7 @@ async function rewritePass(originalBody, offendingText, matches) {
   return { text: text ? text.trim() : null, usage: result?.usage || null };
 }
 
-// -- request-side style reminder ------------------------------------------
-//
-// A system prompt loaded once at the top of a long conversation loses grip
-// by the time the model is actually generating the next reply — recency
-// decay. Appending a short copy of the rule as the LAST message before
-// generation keeps it close to where it matters. This proxy receives a
-// fresh `messages` array from LibreChat on every call (LibreChat resends
-// full history based on what IT stored, and the injected reminder below is
-// never part of what gets returned to/stored by LibreChat), so there's no
-// risk of double-injecting across turns — each request gets exactly one
-// reminder appended, fresh.
+// -- request-side style reminder ---------------------------------------------
 const STYLE_REMINDER = [
   'Quick style check before you answer: no "it\'s not X, it\'s Y" reframes, no',
   'stacked rhetorical questions answered in one word, no strings of one-word',
@@ -264,10 +246,48 @@ function sumUsage(a, b) {
   };
 }
 
+// Run detectors on a fully-buffered assistant `content` string and, if any
+// tic trips, perform the rewrite pass. Mutates and returns `result`.
+async function detectAndRewrite(result, upstreamBody) {
+  const choice = result.choices?.[0];
+  const content = choice?.message?.content;
+  if (typeof content !== 'string' || content.length === 0) return result;
+
+  let matches = [];
+  try {
+    const reframeDetection = detect(content, { level: REFRAME_LEVEL });
+    if (reframeDetection.tripped) matches.push(...reframeDetection.matches);
+  } catch (err) {
+    console.error('reframe detect() threw, skipping:', err.message);
+  }
+  try {
+    const slopDetection = detectSlop(content);
+    if (slopDetection.tripped) matches.push(...slopDetection.matches);
+  } catch (err) {
+    console.error('detectSlop() threw, skipping:', err.message);
+  }
+
+  if (matches.length > 0) {
+    console.log(
+      `[slop] tripped (${matches.length} match(es): ${matches.map((m) => m.pattern).join(', ')}) — running rewrite pass`
+    );
+    try {
+      const rewritten = await rewritePass(upstreamBody, content, matches);
+      if (rewritten.text) {
+        result.choices[0].message.content = rewritten.text;
+        result.usage = sumUsage(result.usage, rewritten.usage);
+      } else {
+        console.warn('[slop] rewrite pass returned no text, keeping original');
+      }
+    } catch (err) {
+      console.error('[slop] rewrite pass failed, keeping original reply:', err.message);
+    }
+  }
+  return result;
+}
+
+// -- fake single-shot SSE (for buffered content turns) -----------------------
 function buildFakeSSE(finalResponse) {
-  // Mimic an OpenAI-style streaming response with a single content delta,
-  // then a finish chunk, then [DONE]. LibreChat's stream parser just wants
-  // a sequence of `data: {...}\n\n` events shaped like chat.completion.chunk.
   const choice = finalResponse.choices?.[0] || {};
   const content = choice.message?.content || '';
   const base = {
@@ -291,12 +311,179 @@ function buildFakeSSE(finalResponse) {
   );
 }
 
-// -- main route ------------------------------------------------------------
+// -- streaming handler -------------------------------------------------------
+// Reads OpenRouter's SSE stream. Buffers raw events until it can tell whether
+// this is a TOOL-CALL turn (-> flip to live passthrough) or a pure CONTENT
+// turn (-> buffer to end, detect/rewrite, emit fake SSE). Inactivity timeout
+// guards against a stalled upstream provider mid-stream.
+const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
+async function handleStreaming(req, res, upstreamBody) {
+  let upstream;
+  try {
+    upstream = await fetchWithTimeout(
+      `${OPENROUTER_BASE}/chat/completions`,
+      { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(upstreamBody) },
+      STREAM_IDLE_TIMEOUT_MS
+    );
+  } catch (err) {
+    const status = err.name === 'AbortError' ? 504 : 502;
+    return res.status(status).set('Content-Type', 'application/json').send(
+      JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
+    );
+  }
+
+  if (!upstream.ok) {
+    const text = await upstream.text();
+    return res.status(upstream.status).set('Content-Type', 'application/json').send(text);
+  }
+
+  // Some providers ignore stream:true and return plain JSON. Handle that.
+  const ctype = upstream.headers.get('content-type') || '';
+  if (!ctype.includes('text/event-stream')) {
+    const text = await upstream.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      return res.status(502).set('Content-Type', 'application/json').send(
+        JSON.stringify({ error: { message: 'Upstream returned non-stream, non-JSON body' } })
+      );
+    }
+    await detectAndRewrite(json, upstreamBody);
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    return res.send(buildFakeSSE(json));
+  }
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuffer = '';
+  let rawPending = ''; // raw SSE text buffered until mode is decided
+  let toolMode = false;
+  let contentAccum = '';
+  let template = null; // first parsed chunk, reused to shape the fake SSE on content turns
+  let finishReason = 'stop';
+  let usage = null;
+
+  function startPassthrough() {
+    toolMode = true;
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    if (rawPending) {
+      res.write(rawPending);
+      rawPending = '';
+    }
+  }
+
+  function readWithIdleTimeout() {
+    return Promise.race([
+      reader.read(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(Object.assign(new Error('idle timeout'), { name: 'IdleTimeout' })), STREAM_IDLE_TIMEOUT_MS)
+      ),
+    ]);
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await readWithIdleTimeout();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      if (toolMode) {
+        // already committed to live passthrough — forward raw bytes as-is
+        res.write(text);
+        continue;
+      }
+      rawPending += text;
+      sseBuffer += text;
+
+      // parse complete SSE events (separated by blank line) for inspection
+      let idx;
+      while ((idx = sseBuffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = sseBuffer.slice(0, idx);
+        sseBuffer = sseBuffer.slice(idx + 2);
+        const lines = rawEvent.split('\n');
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') continue;
+          let chunk;
+          try {
+            chunk = JSON.parse(data);
+          } catch (e) {
+            continue;
+          }
+          if (!template) template = chunk;
+          if (chunk.usage) usage = chunk.usage;
+          const delta = chunk.choices?.[0]?.delta || {};
+          const fr = chunk.choices?.[0]?.finish_reason;
+          if (fr) finishReason = fr;
+          if (delta.tool_calls) {
+            startPassthrough();
+            break;
+          }
+          if (typeof delta.content === 'string') contentAccum += delta.content;
+        }
+        if (toolMode) break;
+      }
+      if (toolMode) {
+        // flush anything still buffered (rawPending was reset in startPassthrough,
+        // but bytes parsed into sseBuffer leftover are already inside rawPending's
+        // original write; remaining partial event will arrive on next read)
+        continue;
+      }
+    }
+  } catch (err) {
+    console.error('streaming read error:', err.message);
+    if (toolMode) {
+      // already streaming live; best we can do is end the response
+      try { res.end(); } catch (e) {}
+      return;
+    }
+    // fall through to content handling with whatever we accumulated
+  }
+
+  if (toolMode) {
+    // live passthrough already wrote everything incl. upstream's [DONE]
+    try { res.end(); } catch (e) {}
+    return;
+  }
+
+  // pure CONTENT turn: build a buffered result, detect/rewrite, emit fake SSE
+  const result = {
+    id: template?.id,
+    object: 'chat.completion',
+    created: template?.created,
+    model: template?.model || upstreamBody.model,
+    choices: [
+      {
+        index: 0,
+        message: { role: 'assistant', content: contentAccum },
+        finish_reason: finishReason,
+      },
+    ],
+    usage,
+  };
+  await detectAndRewrite(result, upstreamBody);
+  if (!res.headersSent) {
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  }
+  res.write(buildFakeSSE(result));
+  res.end();
+}
+
+// -- main route --------------------------------------------------------------
 app.post('/chat/completions', async (req, res) => {
   const wantsStream = !!req.body.stream;
-  const upstreamBody = appendReminder({ ...req.body, stream: false });
 
+  if (wantsStream) {
+    const upstreamBody = appendReminder({ ...req.body, stream: true });
+    // ask OpenRouter to include usage in the stream when possible
+    upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
+    return handleStreaming(req, res, upstreamBody);
+  }
+
+  // -- non-streaming path: UNCHANGED original buffered behaviour --------------
+  const upstreamBody = appendReminder({ ...req.body, stream: false });
   let result;
   try {
     result = await callOpenRouter(upstreamBody);
@@ -306,54 +493,7 @@ app.post('/chat/completions', async (req, res) => {
       err.body || JSON.stringify({ error: { message: 'Upstream request failed' } })
     );
   }
-
-  const choice = result.choices?.[0];
-  const content = choice?.message?.content;
-
-  if (typeof content === 'string' && content.length > 0) {
-    let matches = [];
-    try {
-      const reframeDetection = detect(content, { level: REFRAME_LEVEL });
-      if (reframeDetection.tripped) matches.push(...reframeDetection.matches);
-    } catch (err) {
-      console.error('reframe detect() threw, skipping:', err.message);
-    }
-    try {
-      const slopDetection = detectSlop(content);
-      if (slopDetection.tripped) matches.push(...slopDetection.matches);
-    } catch (err) {
-      console.error('detectSlop() threw, skipping:', err.message);
-    }
-
-    if (matches.length > 0) {
-      console.log(
-        `[slop] tripped (${matches.length} match(es): ${matches
-          .map((m) => m.pattern)
-          .join(', ')}) — running rewrite pass`
-      );
-      try {
-        const rewritten = await rewritePass(upstreamBody, content, matches);
-        if (rewritten.text) {
-          result.choices[0].message.content = rewritten.text;
-          result.usage = sumUsage(result.usage, rewritten.usage);
-        } else {
-          console.warn('[slop] rewrite pass returned no text, keeping original');
-        }
-      } catch (err) {
-        console.error('[slop] rewrite pass failed, keeping original reply:', err.message);
-      }
-    }
-  }
-
-  if (wantsStream) {
-    res.set({
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    return res.send(buildFakeSSE(result));
-  }
-
+  await detectAndRewrite(result, upstreamBody);
   res.json(result);
 });
 
