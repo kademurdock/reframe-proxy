@@ -380,6 +380,37 @@ async function handleStreaming(req, res, upstreamBody) {
     return res.send(buildFakeSSE(json));
   }
 
+  // Open the SSE response to LibreChat IMMEDIATELY, not lazily once we know
+  // whether this is a tool-call or content turn. Content turns get fully
+  // buffered server-side below (that's the whole point of the slop filter —
+  // see file header), which on a slow xhigh-reasoning reply can mean 30-90s
+  // of total silence on the wire. LibreChat's client registers/tracks a
+  // streamId off the FIRST bytes of the response; if none arrive for that
+  // long, it gives up and tries to "resume" a stream it never got an id for
+  // (-> "[AgentStream] Job not found for streamId: undefined" in LibreChat's
+  // logs, repeating every time this happens) and the chat just hangs, even
+  // though the proxy and OpenRouter are both working fine underneath. Fix:
+  // open headers right away and emit a no-op SSE comment heartbeat every few
+  // seconds while buffering, so the connection never goes dark long enough
+  // to trip that client-side give-up/resume logic. Comment lines (":...")
+  // are part of the SSE spec specifically for this purpose and are ignored
+  // by every spec-compliant parser, so this is invisible to the final reply.
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  const HEARTBEAT_MS = 10_000;
+  let heartbeatTimer = setInterval(() => {
+    if (!res.writableEnded) {
+      try { res.write(': keep-alive\n\n'); } catch (e) {}
+    }
+  }, HEARTBEAT_MS);
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let sseBuffer = '';
@@ -392,7 +423,7 @@ async function handleStreaming(req, res, upstreamBody) {
 
   function startPassthrough() {
     toolMode = true;
-    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    stopHeartbeat();
     if (rawPending) {
       res.write(rawPending);
       rawPending = '';
@@ -459,6 +490,7 @@ async function handleStreaming(req, res, upstreamBody) {
     }
   } catch (err) {
     console.error('streaming read error:', err.message);
+    stopHeartbeat();
     if (toolMode) {
       // already streaming live; best we can do is end the response
       try { res.end(); } catch (e) {}
@@ -466,6 +498,8 @@ async function handleStreaming(req, res, upstreamBody) {
     }
     // fall through to content handling with whatever we accumulated
   }
+
+  stopHeartbeat();
 
   if (toolMode) {
     // live passthrough already wrote everything incl. upstream's [DONE]
