@@ -443,14 +443,29 @@ async function handleStreaming(req, res, upstreamBody) {
   let finishReason = 'stop';
   let usage = null;
 
-  function startPassthrough() {
+  function startPassthrough(currentEvent, leftoverBuffer) {
     toolMode = true;
     console.log(`[req ${reqId}] tool_calls detected -> live passthrough at ${Date.now() - t0}ms`);
     stopHeartbeat();
-    if (rawPending) {
-      res.write(rawPending);
-      rawPending = '';
-    }
+    // Flush, in order: (1) any earlier buffered text/non-reasoning events,
+    // (2) the CURRENT event -- the one that actually carries the tool_calls
+    // delta itself (id/name/first argument fragment). This used to get
+    // silently dropped: the old code called startPassthrough() and broke
+    // out of both loops before this event's own rawEvent string was ever
+    // added to rawPending, so on any reply where the model went straight to
+    // a tool call with little/no preceding narration text, the WHOLE turn's
+    // tool_calls payload could vanish -- LibreChat got an empty response,
+    // no text and no tool call, even though OpenRouter sent real data the
+    // whole time. (3) leftoverBuffer -- whatever was still sitting in
+    // sseBuffer waiting on a "\n\n" boundary that hadn't arrived yet when we
+    // decided to flip modes. All of it is forwarded as raw bytes; the
+    // client's own SSE parser doesn't care about our internal chunk/event
+    // boundaries, so simply concatenating and writing once is safe.
+    let flush = rawPending;
+    if (currentEvent) flush += currentEvent + '\n\n';
+    if (leftoverBuffer) flush += leftoverBuffer;
+    if (flush) res.write(flush);
+    rawPending = '';
   }
 
   function readWithIdleTimeout() {
@@ -501,7 +516,10 @@ async function handleStreaming(req, res, upstreamBody) {
           const fr = chunk.choices?.[0]?.finish_reason;
           if (fr) finishReason = fr;
           if (delta.tool_calls) {
-            startPassthrough();
+            // Pass the triggering event + whatever's left unparsed in
+            // sseBuffer so nothing already-received gets thrown away.
+            startPassthrough(rawEvent, sseBuffer);
+            sseBuffer = '';
             break;
           }
           const reasoningText =
