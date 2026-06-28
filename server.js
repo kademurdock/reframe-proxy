@@ -35,6 +35,21 @@
  *   is not slop-rewritten. Mixed turns are uncommon and the preamble is
  *   short; accepted for this version.
  *
+ * REASONING PASSTHROUGH (June 2026):
+ *   librechat.yaml's addParams.reasoning.exclude is now false, so OpenRouter
+ *   sends `delta.reasoning` (or `delta.reasoning_content`) chunks ahead of
+ *   the real content. These are forwarded LIVE the instant they arrive,
+ *   completely separate from the buffered content channel above -- never
+ *   accumulated into contentAccum, never touched by slop-detection, and
+ *   never present in the final assistant message.content. This both kills
+ *   the dead-air window that caused the AgentStream "Job not found" hangs
+ *   (real bytes now flow continuously during long xhigh-effort thinking) and
+ *   feeds LibreChat's native collapsible "thinking" bubble UI. Because
+ *   reasoning text never enters message.content, TTS (which only reads
+ *   message.content) never reads it aloud -- that was the original reason
+ *   reasoning got excluded entirely; this fixes it properly instead of
+ *   blunt-force suppressing it.
+ *
  * Auth: LibreChat sends a proxy-only shared secret as its "apiKey". The real
  * OpenRouter key lives only here. Anything without the secret gets 401 before
  * any OpenRouter credit is spent.
@@ -449,15 +464,19 @@ async function handleStreaming(req, res, upstreamBody) {
         res.write(text);
         continue;
       }
-      rawPending += text;
       sseBuffer += text;
 
-      // parse complete SSE events (separated by blank line) for inspection
+      // parse complete SSE events (separated by blank line) for inspection.
+      // rawPending is rebuilt PER-EVENT below (only for events we decide not
+      // to handle immediately) rather than from the raw network bytes, so
+      // that reasoning events forwarded live (see below) are never replayed
+      // a second time if a tool_call shows up later in the same turn.
       let idx;
       while ((idx = sseBuffer.indexOf('\n\n')) !== -1) {
         const rawEvent = sseBuffer.slice(0, idx);
         sseBuffer = sseBuffer.slice(idx + 2);
         const lines = rawEvent.split('\n');
+        let handledLive = false;
         for (const line of lines) {
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
@@ -477,9 +496,36 @@ async function handleStreaming(req, res, upstreamBody) {
             startPassthrough();
             break;
           }
+          const reasoningText =
+            typeof delta.reasoning === 'string' ? delta.reasoning :
+            typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
+          if (reasoningText.length > 0) {
+            // Forward reasoning text LIVE, the instant it arrives, completely
+            // separate from the buffered `content` channel below. This is the
+            // fix for both problems in one move: (1) reasoning is never
+            // user-facing final-answer prose, so it needs no slop-detection
+            // and is safe to stream through unbuffered, and since OpenRouter
+            // is now asked to include reasoning (librechat.yaml's
+            // addParams.reasoning.exclude flipped to false), real bytes flow
+            // continuously to LibreChat during the long xhigh-effort thinking
+            // phase instead of total silence -- removing the root cause of
+            // the AgentStream "Job not found" hang, not just papering over it
+            // with a heartbeat. (2) LibreChat natively renders a collapsible
+            // "thinking" bubble off this exact delta.reasoning field for a
+            // custom endpoint named "OpenRouter", which is what Kade actually
+            // wants to see. Reasoning is NEVER written into contentAccum, so
+            // it can never end up in the final assistant message.content —
+            // which is also exactly why TTS (which only ever reads
+            // message.content) will never read reasoning text aloud.
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            handledLive = true;
+          }
           if (typeof delta.content === 'string') contentAccum += delta.content;
         }
         if (toolMode) break;
+        if (!handledLive) {
+          rawPending += rawEvent + '\n\n';
+        }
       }
       if (toolMode) {
         // flush anything still buffered (rawPending was reset in startPassthrough,
