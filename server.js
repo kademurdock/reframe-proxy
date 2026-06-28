@@ -580,10 +580,27 @@ async function handleStreaming(req, res, upstreamBody) {
     usage,
   };
   await detectAndRewrite(result, upstreamBody);
-  if (reasoningAccum.trim().length > 0) {
-    result.choices[0].message.content =
-      `:::thinking\n${reasoningAccum.trim()}\n:::\n${result.choices[0].message.content}`;
-  }
+  // NOTE: previously prepended reasoningAccum into message.content here as a
+  // ":::thinking ... :::" marker, on the theory that LibreChat's legacy
+  // content renderer would parse it into a collapsible bubble (per
+  // Thinking.tsx's doc comment). Reverted June 28, 2026: confirmed against a
+  // real live saved message that this LibreChat version does NOT parse that
+  // marker into anything -- it's stored and shown as one flat text blob, so
+  // the "thinking" text just melts into the visible answer with no bubble.
+  // Worse, this also broke things that weren't broken before: (1) LibreChat's
+  // OWN internal utility calls (e.g. conversation auto-titling) go through
+  // this same proxy and got the literal marker text prepended into titles,
+  // corrupting them; (2) LibreChat's TTS feature appears to send text to
+  // /v1/audio/speech in fragments rather than always the one complete final
+  // string, so a stripper that requires both the opening AND closing marker
+  // in the same chunk can miss reasoning text that got split across calls --
+  // which is almost certainly why TTS started reading reasoning again despite
+  // the strip logic working perfectly against the full saved text in
+  // isolation. Net effect of embedding the marker was strictly worse with no
+  // working bubble to show for it, so it's removed. reasoningAccum is still
+  // collected and forwarded live (see above) in case a future LibreChat
+  // version or display mode actually uses it -- it is just never written into
+  // message.content anymore.
   if (!res.headersSent) {
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   }
@@ -620,11 +637,8 @@ app.post('/chat/completions', async (req, res) => {
     );
   }
   await detectAndRewrite(result, upstreamBody);
-  const nonStreamReasoning = result.choices?.[0]?.message?.reasoning;
-  if (typeof nonStreamReasoning === 'string' && nonStreamReasoning.trim().length > 0) {
-    result.choices[0].message.content =
-      `:::thinking\n${nonStreamReasoning.trim()}\n:::\n${result.choices[0].message.content}`;
-  }
+  // Reverted same as the streaming path above -- do not embed reasoning into
+  // message.content. See the long comment in handleStreaming() for why.
   res.json(result);
 });
 
