@@ -438,6 +438,7 @@ async function handleStreaming(req, res, upstreamBody) {
   let rawPending = ''; // raw SSE text buffered until mode is decided
   let toolMode = false;
   let contentAccum = '';
+  let reasoningAccum = '';
   let template = null; // first parsed chunk, reused to shape the fake SSE on content turns
   let finishReason = 'stop';
   let usage = null;
@@ -526,6 +527,7 @@ async function handleStreaming(req, res, upstreamBody) {
             // message.content) will never read reasoning text aloud.
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
             handledLive = true;
+            reasoningAccum += reasoningText;
           }
           if (typeof delta.content === 'string') contentAccum += delta.content;
         }
@@ -578,6 +580,10 @@ async function handleStreaming(req, res, upstreamBody) {
     usage,
   };
   await detectAndRewrite(result, upstreamBody);
+  if (reasoningAccum.trim().length > 0) {
+    result.choices[0].message.content =
+      `:::thinking\n${reasoningAccum.trim()}\n:::\n${result.choices[0].message.content}`;
+  }
   if (!res.headersSent) {
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   }
@@ -614,6 +620,11 @@ app.post('/chat/completions', async (req, res) => {
     );
   }
   await detectAndRewrite(result, upstreamBody);
+  const nonStreamReasoning = result.choices?.[0]?.message?.reasoning;
+  if (typeof nonStreamReasoning === 'string' && nonStreamReasoning.trim().length > 0) {
+    result.choices[0].message.content =
+      `:::thinking\n${nonStreamReasoning.trim()}\n:::\n${result.choices[0].message.content}`;
+  }
   res.json(result);
 });
 
