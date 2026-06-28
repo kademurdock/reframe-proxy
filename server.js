@@ -236,6 +236,31 @@ function appendReminder(body) {
   };
 }
 
+// -- provider exclusion -------------------------------------------------------
+// OpenRouter load-balances z-ai/glm-5.2 across several backend providers.
+// Confirmed (June 2026, directly against OpenRouter, no proxy involved,
+// reproduced 5/5 times): when a tool-calling request lands on the "Novita"
+// backend, it returns finish_reason:"tool_calls" but the message's
+// `tool_calls` array is MISSING entirely — the model announces it's about to
+// call a tool but never actually attaches the structured call. LibreChat then
+// waits forever for a tool result that will never arrive (this is the real
+// root cause of agents "thinking and thinking and never answering" on
+// tool-using turns; the OpenRouter-stall-timeout fix above guards a different
+// failure mode and didn't catch this one). Excluding Novita and re-sending the
+// exact same request reliably returns a real tool_calls array from another
+// backend (StreamLake, Z.AI, etc.) in 2-3s. This exclusion is intentionally
+// scoped to this one known-broken provider; remove it from EXCLUDED_PROVIDERS
+// if OpenRouter ever fixes Novita's function-calling and this stops being
+// needed.
+const EXCLUDED_PROVIDERS = ['novita'];
+
+function withProviderExclusion(body) {
+  const existingProvider = body.provider || {};
+  const existingIgnore = Array.isArray(existingProvider.ignore) ? existingProvider.ignore : [];
+  const ignore = [...new Set([...existingIgnore, ...EXCLUDED_PROVIDERS])];
+  return { ...body, provider: { ...existingProvider, ignore } };
+}
+
 function sumUsage(a, b) {
   if (!a) return b || null;
   if (!b) return a;
@@ -476,14 +501,15 @@ app.post('/chat/completions', async (req, res) => {
   const wantsStream = !!req.body.stream;
 
   if (wantsStream) {
-    const upstreamBody = appendReminder({ ...req.body, stream: true });
+    const upstreamBody = withProviderExclusion(appendReminder({ ...req.body, stream: true }));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
     return handleStreaming(req, res, upstreamBody);
   }
 
-  // -- non-streaming path: UNCHANGED original buffered behaviour --------------
-  const upstreamBody = appendReminder({ ...req.body, stream: false });
+  // -- non-streaming path: original buffered behaviour, now with the Novita
+  // provider exclusion (see withProviderExclusion above) -----------------------
+  const upstreamBody = withProviderExclusion(appendReminder({ ...req.body, stream: false }));
   let result;
   try {
     result = await callOpenRouter(upstreamBody);
