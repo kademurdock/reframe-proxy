@@ -359,6 +359,9 @@ function buildFakeSSE(finalResponse) {
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
 async function handleStreaming(req, res, upstreamBody) {
+  const reqId = req._reqId || '??????';
+  const t0 = Date.now();
+  console.log(`[req ${reqId}] handleStreaming start`);
   let upstream;
   try {
     upstream = await fetchWithTimeout(
@@ -368,13 +371,16 @@ async function handleStreaming(req, res, upstreamBody) {
     );
   } catch (err) {
     const status = err.name === 'AbortError' ? 504 : 502;
+    console.error(`[req ${reqId}] initial fetch failed after ${Date.now() - t0}ms: ${err.name} ${err.message}`);
     return res.status(status).set('Content-Type', 'application/json').send(
       JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
     );
   }
+  console.log(`[req ${reqId}] upstream headers received after ${Date.now() - t0}ms, status=${upstream.status}, content-type=${upstream.headers.get('content-type')}`);
 
   if (!upstream.ok) {
     const text = await upstream.text();
+    console.error(`[req ${reqId}] upstream not ok: ${upstream.status} ${text.slice(0,300)}`);
     return res.status(upstream.status).set('Content-Type', 'application/json').send(text);
   }
 
@@ -438,6 +444,7 @@ async function handleStreaming(req, res, upstreamBody) {
 
   function startPassthrough() {
     toolMode = true;
+    console.log(`[req ${reqId}] tool_calls detected -> live passthrough at ${Date.now() - t0}ms`);
     stopHeartbeat();
     if (rawPending) {
       res.write(rawPending);
@@ -535,7 +542,7 @@ async function handleStreaming(req, res, upstreamBody) {
       }
     }
   } catch (err) {
-    console.error('streaming read error:', err.message);
+    console.error(`[req ${reqId}] streaming read error at ${Date.now() - t0}ms: ${err.name} ${err.message}, contentAccum.length=${contentAccum.length}, toolMode=${toolMode}`);
     stopHeartbeat();
     if (toolMode) {
       // already streaming live; best we can do is end the response
@@ -546,9 +553,11 @@ async function handleStreaming(req, res, upstreamBody) {
   }
 
   stopHeartbeat();
+  console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, finishReason=${finishReason}`);
 
   if (toolMode) {
     // live passthrough already wrote everything incl. upstream's [DONE]
+    console.log(`[req ${reqId}] tool-mode response ended at ${Date.now() - t0}ms`);
     try { res.end(); } catch (e) {}
     return;
   }
@@ -574,11 +583,16 @@ async function handleStreaming(req, res, upstreamBody) {
   }
   res.write(buildFakeSSE(result));
   res.end();
+  console.log(`[req ${reqId}] content-turn response sent at ${Date.now() - t0}ms, finalLength=${result.choices[0].message.content.length}`);
 }
 
 // -- main route --------------------------------------------------------------
 app.post('/chat/completions', async (req, res) => {
   const wantsStream = !!req.body.stream;
+  const reqId = Math.random().toString(36).slice(2, 8);
+  const msgCount = Array.isArray(req.body.messages) ? req.body.messages.length : 0;
+  console.log(`[req ${reqId}] incoming model=${req.body.model} stream=${wantsStream} msgCount=${msgCount}`);
+  req._reqId = reqId;
 
   if (wantsStream) {
     const upstreamBody = withProviderExclusion(appendReminder({ ...req.body, stream: true }));
