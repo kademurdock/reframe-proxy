@@ -539,26 +539,27 @@ async function handleStreaming(req, res, upstreamBody) {
             typeof delta.reasoning === 'string' ? delta.reasoning :
             typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
           if (reasoningText.length > 0) {
-            // Forward reasoning text LIVE, the instant it arrives, completely
-            // separate from the buffered `content` channel below. This is the
-            // fix for both problems in one move: (1) reasoning is never
-            // user-facing final-answer prose, so it needs no slop-detection
-            // and is safe to stream through unbuffered, and since OpenRouter
-            // is now asked to include reasoning (librechat.yaml's
-            // addParams.reasoning.exclude flipped to false), real bytes flow
-            // continuously to LibreChat during the long xhigh-effort thinking
-            // phase instead of total silence -- removing the root cause of
-            // the AgentStream "Job not found" hang, not just papering over it
-            // with a heartbeat. (2) LibreChat natively renders a collapsible
-            // "thinking" bubble off this exact delta.reasoning field for a
-            // custom endpoint named "OpenRouter", which is what Kade actually
-            // wants to see. Reasoning is NEVER written into contentAccum, so
-            // it can never end up in the final assistant message.content —
-            // which is also exactly why TTS (which only ever reads
-            // message.content) will never read reasoning text aloud.
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-            handledLive = true;
+            // Accumulate reasoning for end-of-turn <think> injection (see
+            // below). Do NOT forward raw delta.reasoning chunks live — the
+            // ON_REASONING_DELTA path in @librechat/agents dispatched events
+            // but the browser stepMap lookup returned null so no bubble
+            // appeared. Instead, keep the connection alive by forwarding a
+            // structurally identical chunk with an empty delta.content (so
+            // LibreChat's LLM client sees a continuous stream and never times
+            // out), but strip delta.reasoning so the streaming handler treats
+            // it as an innocuous keep-alive. The full reasoning is injected as
+            // <think>...</think> at the head of the synthetic content chunk
+            // after the read loop; see the block below for details.
             reasoningAccum += reasoningText;
+            const heartbeat = {
+              id: chunk.id,
+              object: chunk.object || 'chat.completion.chunk',
+              created: chunk.created,
+              model: chunk.model,
+              choices: [{ index: 0, delta: { content: '' }, finish_reason: null }],
+            };
+            res.write(`data: ${JSON.stringify(heartbeat)}\n\n`);
+            handledLive = true;
           }
           if (typeof delta.content === 'string') contentAccum += delta.content;
         }
@@ -611,27 +612,46 @@ async function handleStreaming(req, res, upstreamBody) {
     usage,
   };
   await detectAndRewrite(result, upstreamBody);
-  // NOTE: previously prepended reasoningAccum into message.content here as a
-  // ":::thinking ... :::" marker, on the theory that LibreChat's legacy
-  // content renderer would parse it into a collapsible bubble (per
-  // Thinking.tsx's doc comment). Reverted June 28, 2026: confirmed against a
-  // real live saved message that this LibreChat version does NOT parse that
-  // marker into anything -- it's stored and shown as one flat text blob, so
-  // the "thinking" text just melts into the visible answer with no bubble.
-  // Worse, this also broke things that weren't broken before: (1) LibreChat's
-  // OWN internal utility calls (e.g. conversation auto-titling) go through
-  // this same proxy and got the literal marker text prepended into titles,
-  // corrupting them; (2) LibreChat's TTS feature appears to send text to
-  // /v1/audio/speech in fragments rather than always the one complete final
-  // string, so a stripper that requires both the opening AND closing marker
-  // in the same chunk can miss reasoning text that got split across calls --
-  // which is almost certainly why TTS started reading reasoning again despite
-  // the strip logic working perfectly against the full saved text in
-  // isolation. Net effect of embedding the marker was strictly worse with no
-  // working bubble to show for it, so it's removed. reasoningAccum is still
-  // collected and forwarded live (see above) in case a future LibreChat
-  // version or display mode actually uses it -- it is just never written into
-  // message.content anymore.
+  // If reasoning was collected, trigger the bubble via @librechat/agents'
+  // think_and_text path:
+  //
+  //   Step 1 — seed chunk: write a single SSE chunk with delta.reasoning set
+  //   to a zero-width space ('​'). @librechat/agents' handleReasoning()
+  //   sets agentContext.tokenTypeSwitch = "reasoning" on any non-empty
+  //   delta.reasoning. That flag is required for the think_and_text transition
+  //   on the next chunk (step 2). The seed also dispatches ON_RUN_STEP →
+  //   browser stepMap, which the ON_REASONING_DELTA handler needs.
+  //
+  //   Step 2 — inject <think> in content: prepend <think>reasoning</think> to
+  //   the content that buildFakeSSE puts into delta.content. When that chunk
+  //   arrives after the seed, ChatModelStreamHandler sees tokenTypeSwitch=
+  //   "reasoning" + non-empty text → transitions to think_and_text → calls
+  //   parseThinkingContent("<think>...</think>answer") → extracts {thinking,
+  //   text} → dispatchReasoningDelta(stepId, {think: reasoning}) +
+  //   dispatchMessageDelta(newStepId, {text: answer}) → ON_REASONING_DELTA
+  //   SSE → browser → Reasoning.tsx collapsible bubble. ✓
+  //
+  // Why this survives the issues that killed ":::thinking:::" (June 28 2026):
+  // that marker was embedded in result.choices[0].message.content which
+  // LibreChat stores as flat text → corrupted auto-titles; TTS fragmentation
+  // split the open/close tags across requests → strip regex failed. Here the
+  // <think> block is in the STREAMING DELTA only; @librechat/agents' own
+  // think_and_text path splits it into structured THINK+TEXT content parts
+  // before storage. LibreChat saves [{type:"think",...},{type:"text",...}] so
+  // auto-titling and TTS only ever see the text part — zero contamination. ✓
+  if (reasoningAccum.length > 0 && result.choices[0].message.content.length > 0) {
+    const seed = {
+      id: result.id,
+      object: 'chat.completion.chunk',
+      created: result.created,
+      model: result.model,
+      choices: [{ index: 0, delta: { reasoning: '​', content: '' }, finish_reason: null }],
+    };
+    res.write(`data: ${JSON.stringify(seed)}\n\n`);
+    result.choices[0].message.content =
+      `<think>${reasoningAccum}</think>${result.choices[0].message.content}`;
+    console.log(`[req ${reqId}] injected <think> block (${reasoningAccum.length} chars) into synthetic content`);
+  }
   if (!res.headersSent) {
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   }
@@ -657,22 +677,4 @@ app.post('/chat/completions', async (req, res) => {
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...req.body, stream: false })));
-  let result;
-  try {
-    result = await callOpenRouter(upstreamBody);
-  } catch (err) {
-    console.error('upstream chat/completions error:', err.message);
-    return res.status(err.status || 502).set('Content-Type', 'application/json').send(
-      err.body || JSON.stringify({ error: { message: 'Upstream request failed' } })
-    );
-  }
-  await detectAndRewrite(result, upstreamBody);
-  // Reverted same as the streaming path above -- do not embed reasoning into
-  // message.content. See the long comment in handleStreaming() for why.
-  res.json(result);
-});
-
-app.listen(PORT, () => {
-  console.log(`reframe-proxy listening on :${PORT}, level=${REFRAME_LEVEL}`);
-});
+  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ 
