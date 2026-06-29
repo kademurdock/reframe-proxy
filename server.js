@@ -616,10 +616,10 @@ async function handleStreaming(req, res, upstreamBody) {
   // think_and_text path:
   //
   //   Step 1 — seed chunk: write a single SSE chunk with delta.reasoning set
-  //   to a zero-width space ('​'). @librechat/agents' handleReasoning()
+  //   to a zero-width space ('\u200B'). @librechat/agents' handleReasoning()
   //   sets agentContext.tokenTypeSwitch = "reasoning" on any non-empty
   //   delta.reasoning. That flag is required for the think_and_text transition
-  //   on the next chunk (step 2). The seed also dispatches ON_RUN_STEP →
+  //   on the next chunk (step 2). The seed also triggers ON_RUN_STEP →
   //   browser stepMap, which the ON_REASONING_DELTA handler needs.
   //
   //   Step 2 — inject <think> in content: prepend <think>reasoning</think> to
@@ -645,7 +645,7 @@ async function handleStreaming(req, res, upstreamBody) {
       object: 'chat.completion.chunk',
       created: result.created,
       model: result.model,
-      choices: [{ index: 0, delta: { reasoning: '​', content: '' }, finish_reason: null }],
+      choices: [{ index: 0, delta: { reasoning: '\u200B', content: '' }, finish_reason: null }],
     };
     res.write(`data: ${JSON.stringify(seed)}\n\n`);
     result.choices[0].message.content =
@@ -677,4 +677,22 @@ app.post('/chat/completions', async (req, res) => {
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ 
+  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...req.body, stream: false })));
+  let result;
+  try {
+    result = await callOpenRouter(upstreamBody);
+  } catch (err) {
+    console.error('upstream chat/completions error:', err.message);
+    return res.status(err.status || 502).set('Content-Type', 'application/json').send(
+      err.body || JSON.stringify({ error: { message: 'Upstream request failed' } })
+    );
+  }
+  await detectAndRewrite(result, upstreamBody);
+  // Reverted same as the streaming path above -- do not embed reasoning into
+  // message.content. See the long comment in handleStreaming() for why.
+  res.json(result);
+});
+
+app.listen(PORT, () => {
+  console.log(`reframe-proxy listening on :${PORT}, level=${REFRAME_LEVEL}`);
+});
