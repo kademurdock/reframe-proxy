@@ -649,7 +649,7 @@ async function handleStreaming(req, res, upstreamBody) {
     };
     res.write(`data: ${JSON.stringify(seed)}\n\n`);
     result.choices[0].message.content =
-      `<think>${reasoningAccum}</think>${result.choices[0].message.content}`;
+      `<think>\uF001${reasoningAccum}\uF002</think>${result.choices[0].message.content}`;
     console.log(`[req ${reqId}] injected <think> block (${reasoningAccum.length} chars) into synthetic content`);
   }
   if (!res.headersSent) {
