@@ -351,6 +351,19 @@ function buildFakeSSE(finalResponse) {
   );
 }
 
+
+// -- reasoning inclusion override -------------------------------------------
+// OpenRouter excludes reasoning tokens from SSE responses BY DEFAULT (even
+// when the model reasons internally). LibreChat sends reasoning: { effort:
+// "xhigh" } which sets effort but never sets exclude:false, so reasoning
+// is generated but silently stripped from the response. This override
+// merges { exclude: false } into whatever reasoning params LibreChat sent,
+// ensuring delta.reasoning chunks always flow back.
+function withReasoningIncluded(body) {
+  const existing = body.reasoning || {};
+  return { ...body, reasoning: { ...existing, exclude: false } };
+}
+
 // -- streaming handler -------------------------------------------------------
 // Reads OpenRouter's SSE stream. Buffers raw events until it can tell whether
 // this is a TOOL-CALL turn (-> flip to live passthrough) or a pure CONTENT
@@ -361,7 +374,7 @@ const STREAM_IDLE_TIMEOUT_MS = 90_000;
 async function handleStreaming(req, res, upstreamBody) {
   const reqId = req._reqId || '??????';
   const t0 = Date.now();
-  console.log(`[req ${reqId}] handleStreaming start`);
+  console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}`);
   let upstream;
   try {
     upstream = await fetchWithTimeout(
@@ -573,7 +586,7 @@ async function handleStreaming(req, res, upstreamBody) {
   }
 
   stopHeartbeat();
-  console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, finishReason=${finishReason}`);
+  console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, reasoningAccum.length=${reasoningAccum.length}, finishReason=${finishReason}`);
 
   if (toolMode) {
     // live passthrough already wrote everything incl. upstream's [DONE]
@@ -636,7 +649,7 @@ app.post('/chat/completions', async (req, res) => {
   req._reqId = reqId;
 
   if (wantsStream) {
-    const upstreamBody = withProviderExclusion(appendReminder({ ...req.body, stream: true }));
+    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...req.body, stream: true })));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
     return handleStreaming(req, res, upstreamBody);
@@ -644,7 +657,7 @@ app.post('/chat/completions', async (req, res) => {
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  const upstreamBody = withProviderExclusion(appendReminder({ ...req.body, stream: false }));
+  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...req.body, stream: false })));
   let result;
   try {
     result = await callOpenRouter(upstreamBody);
