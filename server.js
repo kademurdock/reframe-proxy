@@ -361,7 +361,25 @@ function buildFakeSSE(finalResponse) {
 // ensuring delta.reasoning chunks always flow back.
 function withReasoningIncluded(body) {
   const existing = body.reasoning || {};
-  return { ...body, reasoning: { ...existing, exclude: false } };
+  // Phone calls are marked by the kade-ai-bridge PHONE_SUFFIX ("[PHONE CALL ...")
+  // in the last user message. For those, force reasoning effort LOW to cut the
+  // pre-speech wait on long replies (~halves it) — applies to EVERY agent on the
+  // phone. Web traffic carries no marker, so its path is byte-identical to before.
+  let isPhone = false;
+  try {
+    const msgs = Array.isArray(body.messages) ? body.messages : [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i] && msgs[i].role === 'user') {
+        const c = msgs[i].content;
+        isPhone = typeof c === 'string' && c.includes('[PHONE CALL');
+        break;
+      }
+    }
+  } catch { isPhone = false; }
+  const reasoning = isPhone
+    ? { ...existing, effort: 'low', exclude: false }
+    : { ...existing, exclude: false };
+  return { ...body, reasoning };
 }
 
 // -- streaming handler -------------------------------------------------------
