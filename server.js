@@ -203,10 +203,10 @@ function guidanceFor(patternName) {
   return patternName.replace(/_/g, ' ');
 }
 
-function buildRewriteSystemPrompt(matches) {
+function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
   const categories = [...new Set(matches.map((m) => guidanceFor(m.pattern)))];
   const list = categories.map((c) => `- ${c}`).join('\n');
-  return [
+  const lines = [
     'You will be given a passage of text written by an AI assistant. The passage',
     'overuses one or more known AI-writing tics, specifically:',
     list,
@@ -215,15 +215,27 @@ function buildRewriteSystemPrompt(matches) {
     'and length, WITHOUT any of those tics anywhere. Do not introduce new claims.',
     'Do not add commentary, a preamble, or quotation marks around your answer.',
     'Output ONLY the rewritten passage, nothing else.',
-  ].join('\n');
+  ];
+  if (hasProtectedTags) {
+    lines.push(
+      '',
+      'The passage contains one or more tokens of the exact form @@TTSTAG0@@,',
+      '@@TTSTAG1@@, etc. These are placeholders for something outside your',
+      'view. You MUST preserve every such token character-for-character, in',
+      'the same relative position (a token at the very start of the passage',
+      'must stay at the very start). Never modify, explain, translate, or',
+      'remove a token like this -- copy it through exactly as it appears.'
+    );
+  }
+  return lines.join('\n');
 }
 
-async function rewritePass(originalBody, offendingText, matches) {
+async function rewritePass(originalBody, offendingText, matches, hasProtectedTags = false) {
   const rewriteBody = {
     model: originalBody.model,
     temperature: 0.3,
     messages: [
-      { role: 'system', content: buildRewriteSystemPrompt(matches) },
+      { role: 'system', content: buildRewriteSystemPrompt(matches, hasProtectedTags) },
       { role: 'user', content: offendingText },
     ],
   };
@@ -286,6 +298,53 @@ function sumUsage(a, b) {
   };
 }
 
+// ── Protect Kiana's TTS-2 sentinel tags through the slop-rewrite pass ────────
+// Kiana writes performance directions wrapped in U+F003/U+F004 (see
+// TTS2_EMOTION_TAGS_BUILD_PROMPT.md; inworld-tts-proxy converts this same
+// pair to real [brackets] right before synth). If a reply trips the slop/
+// reframe detector below, rewritePass() sends the FULL content to a fresh
+// LLM call that regenerates it -- and a generic rewrite model has no reason
+// to faithfully reproduce invisible private-use-area characters it was
+// never told about. Rather than trust generation to preserve them, swap each
+// tag for a short plain-ASCII placeholder before the rewrite call, then
+// splice the real tag back in afterward. Guarantees byte-exact survival
+// regardless of what the rewrite model does to the surrounding prose.
+const STEERING_OPEN = "\uF003";
+const STEERING_CLOSE = "\uF004";
+
+function protectSentinelTags(text) {
+  if (!text || text.indexOf(STEERING_OPEN) === -1) return { text, tags: [] };
+  const tagRe = new RegExp(`${STEERING_OPEN}[\\s\\S]*?${STEERING_CLOSE}`, "g");
+  const tags = [];
+  const protectedText = text.replace(tagRe, (m) => {
+    const placeholder = `@@TTSTAG${tags.length}@@`;
+    tags.push(m);
+    return placeholder;
+  });
+  return { text: protectedText, tags };
+}
+
+function restoreSentinelTags(text, tags) {
+  if (!tags.length) return text;
+  let out = text;
+  tags.forEach((tag, i) => {
+    const placeholder = `@@TTSTAG${i}@@`;
+    if (out.includes(placeholder)) {
+      out = out.split(placeholder).join(tag);
+    } else if (i === 0) {
+      // Worst case: the rewrite model dropped the placeholder entirely.
+      // The first tag is always the leading performance direction -- never
+      // let it silently vanish, just re-prepend it so the reply stays
+      // expressive even if its exact original position was lost.
+      console.warn('[slop] rewrite dropped leading TTS tag placeholder, re-prepending');
+      out = `${tag}${out}`;
+    } else {
+      console.warn(`[slop] rewrite dropped inline TTS tag placeholder ${i}, tag lost`);
+    }
+  });
+  return out;
+}
+
 // Run detectors on a fully-buffered assistant `content` string and, if any
 // tic trips, perform the rewrite pass. Mutates and returns `result`.
 async function detectAndRewrite(result, upstreamBody) {
@@ -311,10 +370,11 @@ async function detectAndRewrite(result, upstreamBody) {
     console.log(
       `[slop] tripped (${matches.length} match(es): ${matches.map((m) => m.pattern).join(', ')}) — running rewrite pass`
     );
+    const { text: protectedContent, tags } = protectSentinelTags(content);
     try {
-      const rewritten = await rewritePass(upstreamBody, content, matches);
+      const rewritten = await rewritePass(upstreamBody, protectedContent, matches, tags.length > 0);
       if (rewritten.text) {
-        result.choices[0].message.content = rewritten.text;
+        result.choices[0].message.content = restoreSentinelTags(rewritten.text, tags);
         result.usage = sumUsage(result.usage, rewritten.usage);
       } else {
         console.warn('[slop] rewrite pass returned no text, keeping original');
