@@ -309,8 +309,13 @@ function sumUsage(a, b) {
 // tag for a short plain-ASCII placeholder before the rewrite call, then
 // splice the real tag back in afterward. Guarantees byte-exact survival
 // regardless of what the rewrite model does to the surrounding prose.
-const STEERING_OPEN = "\uF003";
-const STEERING_CLOSE = "\uF004";
+// PIVOT (June 30 2026, same session as the rest of this block): live
+// testing showed GLM-5.2 does not reliably reproduce an exact PUA codepoint
+// pair across generations. Switched to a plain-ASCII SYMMETRIC delimiter
+// (same token both ends, like markdown **bold**) -- see inworld-tts-proxy
+// for the matching change and the live-test evidence.
+const STEERING_OPEN = "%%%";
+const STEERING_CLOSE = "%%%";
 
 function protectSentinelTags(text) {
   if (!text || text.indexOf(STEERING_OPEN) === -1) return { text, tags: [] };
