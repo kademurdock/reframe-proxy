@@ -427,13 +427,27 @@ function buildFakeSSE(finalResponse) {
 // -- phone-turn detection -----------------------------------------------------
 // Phone calls are marked by the kade-ai-bridge PHONE_SUFFIX ("[PHONE CALL ...")
 // appended to the LAST user message. Web traffic never carries the marker.
+// NOTE (July 1 2026): content can be a plain string OR an array of content
+// parts ({type:'text', text:'...'}). Streaming agent runs send parts arrays;
+// the old string-only check silently missed the marker on those turns, which
+// disabled BOTH the phone reasoning-off override and the phone live
+// passthrough the moment Kiana went back to streaming.
+function messageTextOf(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => (typeof p === 'string' ? p : (p && typeof p.text === 'string' ? p.text : '')))
+      .join(' ');
+  }
+  return '';
+}
+
 function isPhoneTurn(body) {
   try {
     const msgs = Array.isArray(body?.messages) ? body.messages : [];
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i] && msgs[i].role === 'user') {
-        const c = msgs[i].content;
-        return typeof c === 'string' && c.includes('[PHONE CALL');
+        return messageTextOf(msgs[i].content).includes('[PHONE CALL');
       }
     }
   } catch { /* fall through */ }
