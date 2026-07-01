@@ -492,6 +492,19 @@ async function handleStreaming(req, res, upstreamBody) {
   // byte-identical to before. Reasoning stripping still applies (phone runs
   // effort:'none' anyway, so reasoning deltas are not expected).
   const phoneLive = isPhoneTurn(upstreamBody);
+  // Diagnostic: show the tail of the last user message so phone-marker
+  // detection is verifiable from logs alone (the marker is a suffix).
+  try {
+    const msgs = Array.isArray(upstreamBody.messages) ? upstreamBody.messages : [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i] && msgs[i].role === 'user') {
+        const c = msgs[i].content;
+        const shape = typeof c === 'string' ? 'string' : Array.isArray(c) ? `array[${c.map((p) => p && p.type).join(',')}]` : typeof c;
+        console.log(`[req ${reqId}] lastUser shape=${shape} tail=${JSON.stringify(messageTextOf(c).slice(-90))}`);
+        break;
+      }
+    }
+  } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
   let upstream;
   try {
