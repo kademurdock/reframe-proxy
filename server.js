@@ -427,9 +427,15 @@ function buildFakeSSE(finalResponse) {
 function withReasoningIncluded(body) {
   const existing = body.reasoning || {};
   // Phone calls are marked by the kade-ai-bridge PHONE_SUFFIX ("[PHONE CALL ...")
-  // in the last user message. For those, force reasoning effort LOW to cut the
-  // pre-speech wait on long replies (~halves it) — applies to EVERY agent on the
-  // phone. Web traffic carries no marker, so its path is byte-identical to before.
+  // in the last user message. For those, force reasoning effort to NONE (fully
+  // off) — applies to EVERY agent on the phone. Verified live against OpenRouter
+  // directly (2026-06-30): GLM-5.2 at effort:'low' barely differs from the
+  // model's own default (56 vs 57 reasoning tokens on a test prompt, both left
+  // the reply truncated on a tight token budget) so 'low' wasn't actually
+  // buying the latency win this comment used to claim. effort:'none' is the
+  // one that empirically zeroes reasoning tokens and answers instantly (same
+  // test: 0 reasoning tokens, correct instant reply). Web traffic carries no
+  // marker, so its path is byte-identical to before.
   let isPhone = false;
   try {
     const msgs = Array.isArray(body.messages) ? body.messages : [];
@@ -442,7 +448,7 @@ function withReasoningIncluded(body) {
     }
   } catch { isPhone = false; }
   const reasoning = isPhone
-    ? { ...existing, effort: 'low', exclude: false }
+    ? { ...existing, effort: 'none', exclude: false }
     : { ...existing, exclude: false };
   return { ...body, reasoning };
 }
