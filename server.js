@@ -65,7 +65,7 @@ const PORT = process.env.PORT || 8080;
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
 const PROXY_SHARED_SECRET = process.env.PROXY_SHARED_SECRET;
 const REFRAME_LEVEL = process.env.REFRAME_LEVEL || 'balanced';
-const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+const OPENROUTER_BASE = process.env.OPENROUTER_BASE || 'https://openrouter.ai/api/v1';
 
 if (!OPENROUTER_KEY) {
   console.error('FATAL: OPENROUTER_KEY env var is not set.');
@@ -424,6 +424,22 @@ function buildFakeSSE(finalResponse) {
 // is generated but silently stripped from the response. This override
 // merges { exclude: false } into whatever reasoning params LibreChat sent,
 // ensuring delta.reasoning chunks always flow back.
+// -- phone-turn detection -----------------------------------------------------
+// Phone calls are marked by the kade-ai-bridge PHONE_SUFFIX ("[PHONE CALL ...")
+// appended to the LAST user message. Web traffic never carries the marker.
+function isPhoneTurn(body) {
+  try {
+    const msgs = Array.isArray(body?.messages) ? body.messages : [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i] && msgs[i].role === 'user') {
+        const c = msgs[i].content;
+        return typeof c === 'string' && c.includes('[PHONE CALL');
+      }
+    }
+  } catch { /* fall through */ }
+  return false;
+}
+
 function withReasoningIncluded(body) {
   const existing = body.reasoning || {};
   // Phone calls are marked by the kade-ai-bridge PHONE_SUFFIX ("[PHONE CALL ...")
@@ -436,17 +452,7 @@ function withReasoningIncluded(body) {
   // one that empirically zeroes reasoning tokens and answers instantly (same
   // test: 0 reasoning tokens, correct instant reply). Web traffic carries no
   // marker, so its path is byte-identical to before.
-  let isPhone = false;
-  try {
-    const msgs = Array.isArray(body.messages) ? body.messages : [];
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i] && msgs[i].role === 'user') {
-        const c = msgs[i].content;
-        isPhone = typeof c === 'string' && c.includes('[PHONE CALL');
-        break;
-      }
-    }
-  } catch { isPhone = false; }
+  const isPhone = isPhoneTurn(body);
   const reasoning = isPhone
     ? { ...existing, effort: 'none', exclude: false }
     : { ...existing, exclude: false };
@@ -463,7 +469,16 @@ const STREAM_IDLE_TIMEOUT_MS = 90_000;
 async function handleStreaming(req, res, upstreamBody) {
   const reqId = req._reqId || '??????';
   const t0 = Date.now();
-  console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}`);
+  // PHONE STREAMING FIX (July 1 2026): phone-marked turns stream content
+  // through LIVE instead of buffering for slop detection. The Media Streams
+  // bridge speaks sentence-by-sentence as tokens arrive, so buffering the
+  // whole reply here made callers wait out the ENTIRE generation before the
+  // first word played. Slop detect/rewrite is skipped for phone turns only
+  // (you can't rewrite text that's already been spoken); web traffic is
+  // byte-identical to before. Reasoning stripping still applies (phone runs
+  // effort:'none' anyway, so reasoning deltas are not expected).
+  const phoneLive = isPhoneTurn(upstreamBody);
+  console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
   let upstream;
   try {
     upstream = await fetchWithTimeout(
@@ -544,6 +559,8 @@ async function handleStreaming(req, res, upstreamBody) {
   let template = null; // first parsed chunk, reused to shape the fake SSE on content turns
   let finishReason = 'stop';
   let usage = null;
+  let sawDone = false;      // phoneLive: whether upstream's [DONE] was already forwarded
+  let phoneFirstWrite = 0;  // phoneLive: t of first live content byte (latency logging)
 
   function startPassthrough(currentEvent, leftoverBuffer) {
     toolMode = true;
@@ -605,7 +622,7 @@ async function handleStreaming(req, res, upstreamBody) {
         for (const line of lines) {
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
-          if (data === '[DONE]') continue;
+          if (data === '[DONE]') { sawDone = true; continue; }
           let chunk;
           try {
             chunk = JSON.parse(data);
@@ -653,6 +670,18 @@ async function handleStreaming(req, res, upstreamBody) {
           if (typeof delta.content === 'string') contentAccum += delta.content;
         }
         if (toolMode) break;
+        if (phoneLive && !handledLive) {
+          // PHONE turn: forward this event (content delta / finish / usage /
+          // [DONE]) downstream immediately. Never buffered into rawPending,
+          // never slop-rewritten. Reasoning events were already replaced by
+          // empty-content heartbeats above (handledLive), same as web.
+          if (!phoneFirstWrite) {
+            phoneFirstWrite = Date.now();
+            console.log(`[req ${reqId}] phone: first live event forwarded at ${phoneFirstWrite - t0}ms`);
+          }
+          res.write(rawEvent + '\n\n');
+          continue;
+        }
         if (!handledLive) {
           rawPending += rawEvent + '\n\n';
         }
@@ -682,6 +711,18 @@ async function handleStreaming(req, res, upstreamBody) {
     // live passthrough already wrote everything incl. upstream's [DONE]
     console.log(`[req ${reqId}] tool-mode response ended at ${Date.now() - t0}ms`);
     try { res.end(); } catch (e) {}
+    return;
+  }
+
+  if (phoneLive) {
+    // PHONE turn: every content/finish event already went out live. If the
+    // upstream ended without a [DONE] (error/idle mid-stream), close the SSE
+    // shape ourselves so the fork's parser terminates cleanly.
+    console.log(`[req ${reqId}] phone live-stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
+    try {
+      if (!sawDone && !res.writableEnded) res.write('data: [DONE]\n\n');
+      res.end();
+    } catch (e) {}
     return;
   }
 
