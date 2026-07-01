@@ -442,12 +442,17 @@ function messageTextOf(content) {
   return '';
 }
 
+// NOTE 2 (July 1 2026, from live logs): the fork's memory system can inject
+// memory/context blobs as ADDITIONAL user messages AFTER the caller's actual
+// turn, so "last user message" is not reliably the caller's message. The
+// marker is only ever added by the kade-ai-bridge on phone turns, so scanning
+// EVERY user message is both safe and robust.
 function isPhoneTurn(body) {
   try {
     const msgs = Array.isArray(body?.messages) ? body.messages : [];
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i] && msgs[i].role === 'user') {
-        return messageTextOf(msgs[i].content).includes('[PHONE CALL');
+      if (msgs[i] && msgs[i].role === 'user' && messageTextOf(msgs[i].content).includes('[PHONE CALL')) {
+        return true;
       }
     }
   } catch { /* fall through */ }
