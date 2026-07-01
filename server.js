@@ -657,12 +657,23 @@ async function handleStreaming(req, res, upstreamBody) {
             // <think>...</think> at the head of the synthetic content chunk
             // after the read loop; see the block below for details.
             reasoningAccum += reasoningText;
+            // CRITICAL: delta.role must be present. These fabricated heartbeats
+            // are usually the FIRST chunks LibreChat sees on a reasoning turn,
+            // and langchain types the entire aggregated reply off the first
+            // chunk's role. With role missing it builds a generic
+            // ChatMessageChunk, and every concat() after that KEEPS that class
+            // -- silently dropping tool_call_chunks from the real AIMessage
+            // chunks that follow. Net effect (live-reproduced July 1 2026):
+            // streaming agents could never execute tools -- the args streamed
+            // in, the aggregated message lost them, the agent graph routed to
+            // END, the turn saved with text:"" and args:"". This one missing
+            // property was the whole "streaming agents are tool-broken" bug.
             const heartbeat = {
               id: chunk.id,
               object: chunk.object || 'chat.completion.chunk',
               created: chunk.created,
               model: chunk.model,
-              choices: [{ index: 0, delta: { content: '' }, finish_reason: null }],
+              choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
             };
             res.write(`data: ${JSON.stringify(heartbeat)}\n\n`);
             handledLive = true;
@@ -775,7 +786,7 @@ async function handleStreaming(req, res, upstreamBody) {
       object: 'chat.completion.chunk',
       created: result.created,
       model: result.model,
-      choices: [{ index: 0, delta: { reasoning: '\u200B', content: '' }, finish_reason: null }],
+      choices: [{ index: 0, delta: { role: 'assistant', reasoning: '\u200B', content: '' }, finish_reason: null }],
     };
     res.write(`data: ${JSON.stringify(seed)}\n\n`);
     result.choices[0].message.content =
