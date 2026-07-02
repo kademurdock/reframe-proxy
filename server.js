@@ -245,6 +245,10 @@ async function rewritePass(originalBody, offendingText, matches, hasProtectedTag
 }
 
 // -- request-side style reminder ---------------------------------------------
+// July 1 2026 (Kade's ask): this reminder rides on EVERY request through the
+// proxy -- all models, all agents, not just Kiana -- so it must stay
+// persona-neutral. It's the "lightly discouraged" layer; the detect-and-
+// rewrite pass above is the backstop for the worst tics.
 const STYLE_REMINDER = [
   'Quick style check before you answer: no "it\'s not X, it\'s Y" reframes, no',
   'stacked rhetorical questions answered in one word, no strings of one-word',
@@ -252,7 +256,10 @@ const STYLE_REMINDER = [
   'dramatic-list restatements. Skip therapy-bot validation ("that takes',
   'courage"), filler transitions ("at the end of the day"), consultant-speak',
   '("let\'s dive in," "leverage," "circle back"), and essay-bot phrasing',
-  '("tapestry," "testament to"). Just talk like Kiana actually talks.',
+  '("tapestry," "testament to"). Just talk the way your own character',
+  'naturally talks. Platform note: if anyone asks how to reach you or this',
+  'platform by phone, the number is 1-833-530-0313 -- calling it rings the',
+  'Kade-AI voice line where any character can be asked for by name.',
 ].join(' ');
 
 function appendReminder(body) {
