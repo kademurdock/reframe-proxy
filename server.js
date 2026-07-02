@@ -262,11 +262,33 @@ const STYLE_REMINDER = [
   'Kade-AI voice line where any character can be asked for by name.',
 ].join(' ');
 
+// July 2 2026 (Kade's ask): agents kept guessing the time of day ("what's got
+// you up so late?" at 2 PM). LLMs have no clock; give them one. Kade and her
+// whole user base are Central US, so America/Chicago is hardcoded on purpose.
+// Built per-request so it's always current, and it rides the same appended
+// system message as the style reminder -- every agent, every surface (web,
+// phone, SMS) goes through this proxy.
+function currentTimeNote() {
+  try {
+    const now = new Date();
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+    });
+    return ` Current date and time where the user is: ${fmt.format(now)}` +
+      ' (US Central). Trust this clock -- never guess the time of day or' +
+      ' assume it is late at night unless this says so.';
+  } catch (e) {
+    return '';
+  }
+}
+
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + currentTimeNote() }],
   };
 }
 
