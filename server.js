@@ -359,10 +359,32 @@ function restoreSentinelTags(text, tags) {
 
 // Run detectors on a fully-buffered assistant `content` string and, if any
 // tic trips, perform the rewrite pass. Mutates and returns `result`.
+// Tag-typo tolerance (July 2 2026): normalize "%%sigh%%" / "%%%sigh%%" style
+// malformed voice tags to the canonical %%%...%%% on every buffered content
+// turn, BEFORE detection/protection -- so the fork's stripper and the TTS
+// proxy's steering parser only ever see the canonical form downstream.
+// Content charset is deliberately tight (letters/spaces/light punctuation,
+// must start with a letter) so prose that legitimately contains doubled
+// percent signs (printf-style "%%d") is never touched.
+// (Phone turns stream through untouched; the TTS proxy carries its own copy
+// of this tolerance for that path.)
+function normalizeVoiceTagTypos(text) {
+  if (!text || text.indexOf('%%') === -1) return text;
+  return text.replace(/%{2,4}([a-zA-Z][a-zA-Z ’',!-]{0,60}?)%{2,4}/g, '%%%$1%%%');
+}
+
 async function detectAndRewrite(result, upstreamBody) {
   const choice = result.choices?.[0];
-  const content = choice?.message?.content;
+  let content = choice?.message?.content;
   if (typeof content !== 'string' || content.length === 0) return result;
+  // Normalize voice-tag typos first so protection/rewrite and every consumer
+  // downstream (fork stripper, TTS steering) see only the canonical %%% form.
+  const normalized = normalizeVoiceTagTypos(content);
+  if (normalized !== content) {
+    console.log('[voice-tags] normalized malformed %%-tag(s) in reply');
+    content = normalized;
+    choice.message.content = normalized;
+  }
 
   let matches = [];
   try {
