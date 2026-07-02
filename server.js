@@ -262,6 +262,26 @@ const STYLE_REMINDER = [
   'Kade-AI voice line where any character can be asked for by name.',
 ].join(' ');
 
+// July 2 2026 (Kade's ask, evening session): a soft money heads-up, for
+// EVERYONE. Not a warning, not a permission gate -- just the way a friend
+// would mention it. Only for the big-ticket stuff (video gen runs multiple
+// quarters a clip); pennies-or-less things stay quiet. Same note carries the
+// outbound-call disclosure: the callee hears the user's first name as the
+// person who asked for the call, and Twilio's real per-call price posts to
+// their Feed the Server row -- the user deserves to know both up front.
+const MONEY_NOTE = [
+  ' Money notes (casual, never alarmist): before running a generation that',
+  'costs real money -- video clips run roughly 50 cents to a dollar each --',
+  'mention the rough cost in passing first, like "sure, I can make that',
+  'video for you -- it\'ll run about 75 cents, and you can see your spend',
+  'on the Feed the Server page (bottom-left account menu)" -- then just',
+  'proceed unless they object. Skip the heads-up entirely for cheap stuff',
+  '(regular images, searches, weather, jokes: a few pennies or less).',
+  'Separately: before placing an outbound phone call, tell the user the',
+  'call will identify them by first name as the person who requested it,',
+  'and that the call\'s cost is added to their Feed the Server page.',
+].join(' ');
+
 // July 2 2026 (Kade's ask): agents kept guessing the time of day ("what's got
 // you up so late?" at 2 PM). LLMs have no clock; give them one. Kade and her
 // whole user base are Central US, so America/Chicago is hardcoded on purpose.
@@ -288,7 +308,7 @@ function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + currentTimeNote() }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + currentTimeNote() }],
   };
 }
 
