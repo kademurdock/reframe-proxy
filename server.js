@@ -552,6 +552,76 @@ function isPhoneTurn(body) {
   return false;
 }
 
+// -- per-message DEEP THINK marker (July 4 2026) ------------------------------
+// The fork's chat UI has a per-message "Deep think" button that appends
+// "[DEEP THINK <epoch-ms>]" to the outgoing user message, and the phone bridge
+// appends the same marker on turns while a caller's deep-think mode is on.
+// Message text is PERSISTED in LibreChat and replayed as history on every
+// later turn, so a bare marker would go sticky for the whole conversation.
+// The timestamp fixes that: only a FRESH marker (within DEEP_THINK_FRESH_MS,
+// default 10 min, small future skew allowed) triggers deep reasoning; stale
+// history copies are inert. ALL copies are stripped before the model sees
+// them, fresh or not.
+const DEEP_THINK_RE = /\[DEEP THINK(?:\s+(\d{10,17}))?\]/gi;
+const DEEP_THINK_FRESH_MS = Math.max(30_000, parseInt(process.env.DEEP_THINK_FRESH_MS, 10) || 600_000);
+
+function deepThinkRequested(body) {
+  try {
+    const now = Date.now();
+    const msgs = Array.isArray(body?.messages) ? body.messages : [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (!msgs[i] || msgs[i].role !== 'user') continue;
+      const text = messageTextOf(msgs[i].content);
+      for (const m of text.matchAll(DEEP_THINK_RE)) {
+        const ts = m[1] ? parseInt(m[1], 10) : NaN;
+        // A marker with no/garbled timestamp is ignored (someone literally
+        // typing "[DEEP THINK]" shouldn't flip model params).
+        if (Number.isFinite(ts) && now - ts <= DEEP_THINK_FRESH_MS && ts - now <= 120_000) {
+          return true;
+        }
+      }
+    }
+  } catch { /* fall through */ }
+  return false;
+}
+
+function stripDeepThinkText(text) {
+  return text.replace(DEEP_THINK_RE, '').replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/gm, '');
+}
+
+function withDeepThinkStripped(body) {
+  try {
+    const msgs = Array.isArray(body?.messages) ? body.messages : [];
+    let touched = false;
+    const cleaned = msgs.map((m) => {
+      if (!m || m.role !== 'user') return m;
+      if (typeof m.content === 'string') {
+        // NOTE: String.match ignores a global regex's lastIndex (unlike
+        // RegExp.test, which is stateful with /g/) -- safe to reuse here.
+        if (!m.content.match(DEEP_THINK_RE)) return m;
+        touched = true;
+        return { ...m, content: stripDeepThinkText(m.content) };
+      }
+      if (Array.isArray(m.content)) {
+        let partTouched = false;
+        const parts = m.content.map((p) => {
+          if (p && typeof p.text === 'string' && p.text.match(DEEP_THINK_RE)) {
+            partTouched = true;
+            return { ...p, text: stripDeepThinkText(p.text) };
+          }
+          return p;
+        });
+        if (partTouched) { touched = true; return { ...m, content: parts }; }
+        return m;
+      }
+      return m;
+    });
+    return touched ? { ...body, messages: cleaned } : body;
+  } catch {
+    return body;
+  }
+}
+
 function withReasoningIncluded(body) {
   const existing = body.reasoning || {};
   // Phone calls are marked by the kade-ai-bridge PHONE_SUFFIX ("[PHONE CALL ...")
@@ -565,10 +635,21 @@ function withReasoningIncluded(body) {
   // test: 0 reasoning tokens, correct instant reply). Web traffic carries no
   // marker, so its path is byte-identical to before.
   const isPhone = isPhoneTurn(body);
-  const reasoning = isPhone
-    ? { ...existing, effort: 'none', exclude: false }
-    : { ...existing, exclude: false };
-  return { ...body, reasoning };
+  // DEEP THINK beats everything, including the phone effort:'none' override
+  // and any agent-level reasoning_effort (Answer speed) setting: a fresh
+  // per-message marker means the user explicitly asked THIS turn to think.
+  // effort:'high' chosen over leaving effort unset because GLM-5.2 measured
+  // (July 4 2026) low/medium/high -> one "High" tier at ~8s first token while
+  // UNSET maps to the Max tier at ~11.8s -- 'high' is the depth win without
+  // the worst-case latency.
+  const isDeep = deepThinkRequested(body);
+  const reasoning = isDeep
+    ? { ...existing, effort: 'high', enabled: true, exclude: false }
+    : isPhone
+      ? { ...existing, effort: 'none', exclude: false }
+      : { ...existing, exclude: false };
+  if (isDeep) console.log('[deep-think] fresh marker found -> reasoning effort high for this turn');
+  return withDeepThinkStripped({ ...body, reasoning });
 }
 
 // -- streaming handler -------------------------------------------------------
