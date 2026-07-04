@@ -121,6 +121,28 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+
+// -- friendly out-of-credits error -------------------------------------------
+// When the OpenRouter account runs dry it returns HTTP 402 with "Insufficient
+// credits" and a link to openrouter.ai. Users don't know what OpenRouter is
+// and think THEY broke something or owe money. Rewrite any credit/payment-
+// shaped upstream error into plain language that points them at Kade instead.
+const OUT_OF_CREDITS_MESSAGE =
+  "Kade-AI is out of AI credits right now, so I can't answer just yet. " +
+  "Nothing is wrong on your end and there is nothing you need to fix or pay for. " +
+  "Please let Kade know the site needs more credits. Once she tops it up, " +
+  "just send your message again — all of your conversations are saved.";
+
+function friendlyErrorBody(status, rawText) {
+  const raw = String(rawText || '');
+  if (status === 402 || /insufficient credits|payment required|credit balance|more credits/i.test(raw)) {
+    return JSON.stringify({
+      error: { message: OUT_OF_CREDITS_MESSAGE, type: 'insufficient_credits', code: 402 },
+    });
+  }
+  return null;
+}
+
 function openRouterHeaders() {
   return {
     Authorization: `Bearer ${OPENROUTER_KEY}`,
@@ -601,7 +623,8 @@ async function handleStreaming(req, res, upstreamBody) {
   if (!upstream.ok) {
     const text = await upstream.text();
     console.error(`[req ${reqId}] upstream not ok: ${upstream.status} ${text.slice(0,300)}`);
-    return res.status(upstream.status).set('Content-Type', 'application/json').send(text);
+    const friendly = friendlyErrorBody(upstream.status, text);
+    return res.status(upstream.status).set('Content-Type', 'application/json').send(friendly || text);
   }
 
   // Some providers ignore stream:true and return plain JSON. Handle that.
@@ -927,8 +950,9 @@ app.post('/chat/completions', async (req, res) => {
     result = await callOpenRouter(upstreamBody);
   } catch (err) {
     console.error('upstream chat/completions error:', err.message);
+    const friendly = friendlyErrorBody(err.status, err.body || err.message);
     return res.status(err.status || 502).set('Content-Type', 'application/json').send(
-      err.body || JSON.stringify({ error: { message: 'Upstream request failed' } })
+      friendly || err.body || JSON.stringify({ error: { message: 'Upstream request failed' } })
     );
   }
   await detectAndRewrite(result, upstreamBody);
