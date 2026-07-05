@@ -326,11 +326,47 @@ function currentTimeNote() {
   }
 }
 
+// July 4 2026 (Kade's Q3 ask): PER-TOOL usage notes. When an agent has a tool
+// attached, LibreChat sends that tool's function schema in body.tools -- so the
+// proxy already sees which tools this agent carries and can append the
+// house-rules for each to the SAME system message the style/money/time notes
+// ride on. Payoff: a builder never has to hand-write "how to drive this tool"
+// into an agent's instructions -- attach the tool, the operating note comes
+// along automatically, and it lives in ONE place here instead of being copied
+// across 90+ agents. Fully fail-safe: no tools / unknown tools add nothing, and
+// any error yields '' so the hot path is never at risk.
+const TOOL_NOTES = {
+  kade_games: 'Tool note (kade_games): the game engine is the referee. Only ever play the exact legal moves the tool hands you, never decide winners or legal plays yourself, and never read raw move tokens (like "play_KH") aloud -- say the natural name, e.g. "the King of Hearts".',
+  fal_studio: 'Tool note (fal_studio): video/design generation costs real money and cannot be delivered later -- you cannot message first. After starting a render, say it takes a couple minutes and ask the user to say "ready?" so you can check it on their NEXT message; name the source image you are animating.',
+  kade_phone_call: "Tool note (kade_phone_call): you place the call but cannot stay on the line or call back on your own. After placing it, report the result on the user's next message -- never promise to follow up unprompted.",
+  kade_adventure: 'Tool note (kade_adventure): adventure progress is saved by the tool. Build only on the state it returns; do not invent past events or claim to have saved on your own.',
+};
+
+function toolNotesFor(body) {
+  try {
+    const tools = Array.isArray(body && body.tools) ? body.tools : [];
+    if (!tools.length) return '';
+    const seen = new Set();
+    const notes = [];
+    for (const t of tools) {
+      const name = ((t && t.function && t.function.name) || (t && t.name) || '').toLowerCase();
+      if (name && TOOL_NOTES[name] && !seen.has(name)) {
+        seen.add(name);
+        notes.push(TOOL_NOTES[name]);
+      }
+    }
+    return notes.length ? ' ' + notes.join(' ') : '';
+  } catch (e) {
+    return '';
+  }
+}
+
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
+  const toolNotes = toolNotesFor(body);
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + currentTimeNote() }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + currentTimeNote() + toolNotes }],
   };
 }
 
@@ -1014,6 +1050,8 @@ app.post('/chat/completions', async (req, res) => {
   const reqId = Math.random().toString(36).slice(2, 8);
   const msgCount = Array.isArray(req.body.messages) ? req.body.messages.length : 0;
   console.log(`[req ${reqId}] incoming model=${req.body.model} stream=${wantsStream} msgCount=${msgCount}`);
+  const _toolNames = Array.isArray(req.body.tools) ? req.body.tools.map(t => (t.function && t.function.name) || t.name).filter(Boolean) : [];
+  if (_toolNames.length) console.log(`[req ${reqId}] tools=[${_toolNames.join(',')}]`);
   req._reqId = reqId;
 
   if (wantsStream) {
