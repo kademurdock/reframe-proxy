@@ -904,7 +904,7 @@ function withReasoningIncluded(body) {
 // guards against a stalled upstream provider mid-stream.
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
-async function handleStreaming(req, res, upstreamBody, shimActive = false) {
+async function handleStreaming(req, res, upstreamBody, shimActive = false, shimDeepThink = false) {
   const reqId = req._reqId || '??????';
   const t0 = Date.now();
   // PHONE STREAMING FIX (July 1 2026): phone-marked turns stream content
@@ -918,6 +918,19 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false) {
   // TOOL SHIM: shim turns must be fully buffered even on the phone — live-
   // forwarding would stream raw <tool_call> JSON into the TTS pipeline.
   const phoneLive = isPhoneTurn(upstreamBody) && !shimActive;
+  // SHIM LIVE STREAMING (July 10 2026): shim turns used to be FULLY buffered
+  // (web AND phone) so <tool_call> text could be parsed before anything
+  // reached the client -- which meant every Hermes/Euryale persona reply sat
+  // in total silence until the whole generation finished, then arrived as a
+  // wall. Now shim turns stream content LIVE through a small state machine
+  // that withholds only sentinel tags: plain text is emitted as it arrives;
+  // the moment '<tool_call' shows up, emission stops and the rest of the turn
+  // is buffered + parsed into real tool_calls at the end (so raw JSON can
+  // never leak to the user or the TTS pipeline); inline '<think>' spans are
+  // swallowed. Deep-Think shim turns keep the old full-buffer path: their
+  // whole reply STARTS with a <think> block that needs the seed-chunk +
+  // <think>-injection dance (see below) to render as a reasoning bubble.
+  const shimLive = shimActive && !shimDeepThink;
   // Diagnostic: show the tail of the last user message so phone-marker
   // detection is verifiable from logs alone (the marker is a suffix).
   try {
@@ -1017,6 +1030,89 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false) {
   let usage = null;
   let sawDone = false;      // phoneLive: whether upstream's [DONE] was already forwarded
   let phoneFirstWrite = 0;  // phoneLive: t of first live content byte (latency logging)
+
+  // -- shim live-streaming state machine (only used when shimLive) -----------
+  const SHIM_SENTINELS = ['<tool_call', '<think'];
+  let shimMode = 'text';        // 'text' | 'think' | 'captured'
+  let shimProcessed = 0;        // index into contentAccum the machine has consumed
+  let shimCaptureStart = -1;    // where the captured (tool-call) region begins
+  let shimFirstWrite = 0;
+
+  function shimChunkBase() {
+    return {
+      id: template?.id,
+      object: 'chat.completion.chunk',
+      created: template?.created,
+      model: template?.model || upstreamBody.model,
+    };
+  }
+  function emitShimContent(piece) {
+    if (!piece || res.writableEnded) return;
+    // delta.role present on every chunk -- the July 1 2026 langchain-typing lesson.
+    const c = { ...shimChunkBase(), choices: [{ index: 0, delta: { role: 'assistant', content: piece }, finish_reason: null }] };
+    res.write(`data: ${JSON.stringify(c)}\n\n`);
+    if (!shimFirstWrite) {
+      shimFirstWrite = Date.now();
+      console.log(`[req ${reqId}] shim-live: first content emitted at ${shimFirstWrite - t0}ms`);
+    }
+  }
+  /**
+   * Emits everything in contentAccum that is safely plain text. Withholds:
+   * (a) a partial '<'-prefix that could still become a sentinel tag (waits for
+   * more bytes; `force` flushes it at stream end), (b) '<think>' span contents
+   * (swallowed entirely), (c) everything from '<tool_call' onward ('captured' --
+   * parsed into tool_calls after the stream ends).
+   */
+  function drainShim(force) {
+    while (true) {
+      if (shimMode === 'captured') return;
+      const pending = contentAccum.slice(shimProcessed);
+      if (!pending) return;
+      if (shimMode === 'think') {
+        const end = pending.toLowerCase().indexOf('</think>');
+        if (end === -1) {
+          // keep a small tail so a '</think' split across deltas still matches
+          shimProcessed += force ? pending.length : Math.max(0, pending.length - 8);
+          return;
+        }
+        shimProcessed += end + 8;
+        shimMode = 'text';
+        continue;
+      }
+      const lt = pending.indexOf('<');
+      if (lt === -1) {
+        emitShimContent(pending);
+        shimProcessed += pending.length;
+        return;
+      }
+      if (lt > 0) {
+        emitShimContent(pending.slice(0, lt));
+        shimProcessed += lt;
+        continue;
+      }
+      const low = pending.toLowerCase();
+      let matched = null;
+      let couldMatch = false;
+      for (const sentinel of SHIM_SENTINELS) {
+        if (low.startsWith(sentinel)) { matched = sentinel; break; }
+        if (!force && low.length < sentinel.length && sentinel.startsWith(low)) { couldMatch = true; }
+      }
+      if (matched === '<tool_call') {
+        shimMode = 'captured';
+        shimCaptureStart = shimProcessed;
+        console.log(`[req ${reqId}] shim-live: <tool_call detected at ${Date.now() - t0}ms -> capturing rest of turn`);
+        return;
+      }
+      if (matched === '<think') {
+        shimMode = 'think';
+        shimProcessed += matched.length;
+        continue;
+      }
+      if (couldMatch) return; // partial sentinel prefix -- wait for more bytes
+      emitShimContent('<');
+      shimProcessed += 1;
+    }
+  }
 
   function startPassthrough(currentEvent, leftoverBuffer) {
     toolMode = true;
@@ -1134,7 +1230,13 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false) {
             res.write(`data: ${JSON.stringify(heartbeat)}\n\n`);
             handledLive = true;
           }
-          if (typeof delta.content === 'string') contentAccum += delta.content;
+          if (typeof delta.content === 'string') {
+            contentAccum += delta.content;
+            if (shimLive && delta.content.length > 0) {
+              drainShim(false);
+              handledLive = true;
+            }
+          }
         }
         if (toolMode) break;
         if (phoneLive && !handledLive) {
@@ -1149,7 +1251,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false) {
           res.write(rawEvent + '\n\n');
           continue;
         }
-        if (!handledLive) {
+        if (!handledLive && !shimLive) {
           rawPending += rawEvent + '\n\n';
         }
       }
@@ -1178,6 +1280,43 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false) {
     // live passthrough already wrote everything incl. upstream's [DONE]
     console.log(`[req ${reqId}] tool-mode response ended at ${Date.now() - t0}ms`);
     try { res.end(); } catch (e) {}
+    return;
+  }
+
+  if (shimLive) {
+    drainShim(true); // flush any withheld tail (unclosed <think> content stays swallowed)
+    if (shimMode === 'captured') {
+      const captured = contentAccum.slice(shimCaptureStart);
+      const pseudo = {
+        id: template?.id,
+        object: 'chat.completion',
+        created: template?.created,
+        model: template?.model || upstreamBody.model,
+        choices: [{ index: 0, message: { role: 'assistant', content: captured }, finish_reason: 'stop' }],
+        usage,
+      };
+      if (parseShimToolCalls(pseudo)) {
+        // buildFakeSSE emits any leftover remainder text + the tool_calls delta +
+        // finish 'tool_calls' + [DONE]. Text emitted live before the capture point
+        // is NOT in `pseudo`, so nothing repeats.
+        res.write(buildFakeSSE(pseudo));
+        try { res.end(); } catch (e) {}
+        console.log(`[req ${reqId}] shim-live: tool turn done at ${Date.now() - t0}ms (${pseudo.choices[0].message.tool_calls.length} call(s), ${shimCaptureStart} chars streamed live first)`);
+        return;
+      }
+      // Unparseable capture -> show the raw text rather than half-execute (same
+      // policy as the buffered path).
+      emitShimContent(captured);
+    }
+    const fin = { ...shimChunkBase(), choices: [{ index: 0, delta: {}, finish_reason: finishReason || 'stop' }] };
+    try {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify(fin)}\n\n`);
+        res.write('data: [DONE]\n\n');
+      }
+      res.end();
+    } catch (e) {}
+    console.log(`[req ${reqId}] shim-live: content turn done at ${Date.now() - t0}ms, ${contentAccum.length} chars, first byte at ${shimFirstWrite ? shimFirstWrite - t0 : -1}ms`);
     return;
   }
 
@@ -1288,7 +1427,12 @@ app.post('/chat/completions', async (req, res) => {
     const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: true })));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
-    return handleStreaming(req, res, upstreamBody, shim.active);
+    // Deep-Think shim turns need the buffered path (their reply is one big
+    // <think> block that becomes the reasoning bubble). Detect on the ORIGINAL
+    // body -- withReasoningIncluded/withDeepThinkStripped removed the marker
+    // from upstreamBody already.
+    const shimDeepThink = shim.active && deepThinkRequested(req.body);
+    return handleStreaming(req, res, upstreamBody, shim.active, shimDeepThink);
   }
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
