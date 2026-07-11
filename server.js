@@ -370,6 +370,157 @@ function appendReminder(body) {
   };
 }
 
+// -- TOOL SHIM (July 9 2026, "the reframe tool-shim") -------------------------
+// Some OpenRouter models have NO host that accepts the `tools` param at all
+// (Hermes 4 70B/405B, Hermes 3 405B — confirmed via OR's /endpoints API), even
+// though the models themselves are trained for function calling. For models in
+// TOOL_SHIM_MODELS, this proxy translates instead of forwarding:
+//   REQUEST : strip `tools`/`tool_choice`; inject the schemas into the system
+//             prompt in Hermes' own trained format (<tools> ... </tools>, calls
+//             returned in <tool_call>{json}</tool_call> tags); rewrite history
+//             (assistant.tool_calls -> inline <tool_call> text; role:'tool'
+//             results -> user messages wrapped in <tool_response> tags, since
+//             a no-tools chat template may reject the 'tool' role outright).
+//   RESPONSE: detect <tool_call> blocks in the model's plain text (outside
+//             <think> spans) and reshape them into an OpenAI-format
+//             message.tool_calls + finish_reason 'tool_calls', which is what
+//             LibreChat's agent runtime expects. Malformed JSON in a block
+//             falls through as plain text — the user sees SOMETHING rather
+//             than the turn dying.
+// Scoped strictly: models not in the set (and tool-less requests) take the
+// exact same byte path as before. Extend via env TOOL_SHIM_MODELS.
+const TOOL_SHIM_MODELS = new Set(
+  [
+    'nousresearch/hermes-4-70b',
+    'nousresearch/hermes-4-405b',
+    'nousresearch/hermes-3-llama-3.1-405b',
+    // July 9 2026: Euryale's ONLY tools-capable host is Novita, which this
+    // proxy excludes (drops tool_calls). So it reaches OpenRouter tools-less
+    // too -> shim it, and it routes to DeepInfra as plain chat.
+    'sao10k/l3.1-euryale-70b',
+    ...String(process.env.TOOL_SHIM_MODELS || '')
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean),
+  ].map((m) => m.toLowerCase()),
+);
+
+function shimApplies(body) {
+  return (
+    TOOL_SHIM_MODELS.has(String(body.model || '').toLowerCase()) &&
+    Array.isArray(body.tools) &&
+    body.tools.length > 0
+  );
+}
+
+function buildShimSystemBlock(tools) {
+  const schemas = tools
+    .map((t) => (t && t.function ? t.function : t))
+    .filter((f) => f && f.name)
+    .map((f) =>
+      JSON.stringify({ name: f.name, description: f.description || '', parameters: f.parameters || { type: 'object', properties: {} } }),
+    );
+  return [
+    '### Tool calling',
+    'You are a function calling AI. You are provided with function signatures within <tools></tools> XML tags. When (and only when) a function is genuinely needed to answer, call it. Do not make assumptions about argument values.',
+    'Available tools:',
+    '<tools>',
+    schemas.join('\n'),
+    '</tools>',
+    'To call a function, return a JSON object within <tool_call></tool_call> XML tags, exactly like this:',
+    '<tool_call>',
+    '{"name": "function-name", "arguments": {"argument": "value"}}',
+    '</tool_call>',
+    'You may emit multiple <tool_call> blocks in one reply if several calls are needed. After calling, you will receive each result inside <tool_response></tool_response> tags in the next message. Weave those results into a natural, in-character answer. Never fabricate tool output; never mention these tags or this mechanism to the user.',
+  ].join('\n');
+}
+
+function withToolShim(body) {
+  if (!shimApplies(body)) return { body, active: false };
+  const sysBlock = buildShimSystemBlock(body.tools);
+  const messages = [];
+  let sysInjected = false;
+  for (const m of Array.isArray(body.messages) ? body.messages : []) {
+    if (!m) continue;
+    if (m.role === 'system' && !sysInjected) {
+      sysInjected = true;
+      messages.push({ role: 'system', content: `${messageTextOf(m.content)}\n\n${sysBlock}` });
+      continue;
+    }
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      let text = messageTextOf(m.content) || '';
+      for (const tc of m.tool_calls) {
+        const fn = (tc && tc.function) || {};
+        let args = fn.arguments;
+        if (typeof args === 'string') {
+          try { args = JSON.parse(args); } catch { /* leave as string */ }
+        }
+        text += `\n<tool_call>\n${JSON.stringify({ name: fn.name, arguments: args ?? {} })}\n</tool_call>`;
+      }
+      messages.push({ role: 'assistant', content: text.trim() });
+      continue;
+    }
+    if (m.role === 'tool') {
+      const payload = {
+        name: m.name || undefined,
+        tool_call_id: m.tool_call_id || undefined,
+        content: messageTextOf(m.content),
+      };
+      messages.push({ role: 'user', content: `<tool_response>\n${JSON.stringify(payload)}\n</tool_response>` });
+      continue;
+    }
+    messages.push(m);
+  }
+  if (!sysInjected) messages.unshift({ role: 'system', content: sysBlock });
+  const next = { ...body, messages };
+  delete next.tools;
+  delete next.tool_choice;
+  return { body: next, active: true };
+}
+
+const SHIM_CALL_RE = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
+
+function parseShimToolCalls(result) {
+  try {
+    const choice = result && result.choices && result.choices[0];
+    if (!choice || !choice.message) return false;
+    const text = choice.message.content;
+    if (typeof text !== 'string' || text.indexOf('<tool_call>') === -1) return false;
+    // Never scan inside <think> spans; on a tool turn the think text has no
+    // displayable home in LibreChat's tool_calls shape, so it's dropped.
+    const scan = text.replace(/<think>[\s\S]*?<\/think>/gi, ' ');
+    const calls = [];
+    let m;
+    SHIM_CALL_RE.lastIndex = 0;
+    while ((m = SHIM_CALL_RE.exec(scan)) !== null) {
+      const raw = m[1].trim();
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch {
+        try { parsed = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')); } catch { parsed = null; }
+      }
+      if (!parsed || typeof parsed.name !== 'string' || !parsed.name) {
+        console.warn('[tool-shim] unparseable <tool_call> block, leaving turn as text:', raw.slice(0, 120));
+        return false; // partial garble -> safer to show the raw text than half-execute
+      }
+      calls.push({
+        id: `shim_${Math.random().toString(36).slice(2, 10)}`,
+        type: 'function',
+        function: { name: parsed.name, arguments: JSON.stringify(parsed.arguments ?? {}) },
+      });
+    }
+    if (!calls.length) return false;
+    const remainder = scan.replace(SHIM_CALL_RE, ' ').replace(/\s{2,}/g, ' ').trim();
+    choice.message.tool_calls = calls;
+    choice.message.content = remainder || null;
+    choice.finish_reason = 'tool_calls';
+    console.log(`[tool-shim] parsed ${calls.length} tool call(s): ${calls.map((c) => c.function.name).join(', ')}`);
+    return true;
+  } catch (e) {
+    console.error('[tool-shim] parse error:', e.message);
+    return false;
+  }
+}
+
 // -- provider exclusion -------------------------------------------------------
 // OpenRouter load-balances z-ai/glm-5.2 across several backend providers.
 // Confirmed (June 2026, directly against OpenRouter, no proxy involved,
@@ -530,10 +681,29 @@ function buildFakeSSE(finalResponse) {
     created: finalResponse.created,
     model: finalResponse.model,
   };
-  const chunk1 = {
-    ...base,
-    choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }],
-  };
+  // TOOL SHIM: a parsed tool-call turn ships the complete tool_calls array in
+  // one delta (valid per the OpenAI streaming shape — arguments may arrive in
+  // a single fragment). delta.role stays present per the July 1 2026 lesson:
+  // langchain types the whole aggregated reply off the first chunk's role,
+  // and without it tool_call_chunks get silently dropped.
+  const toolCalls = choice.message?.tool_calls;
+  const chunk1 = toolCalls && toolCalls.length
+    ? {
+        ...base,
+        choices: [{
+          index: 0,
+          delta: {
+            role: 'assistant',
+            content: content || '',
+            tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
+          },
+          finish_reason: null,
+        }],
+      }
+    : {
+        ...base,
+        choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }],
+      };
   const chunk2 = {
     ...base,
     choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason || 'stop' }],
@@ -695,7 +865,7 @@ function withReasoningIncluded(body) {
 // guards against a stalled upstream provider mid-stream.
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
-async function handleStreaming(req, res, upstreamBody) {
+async function handleStreaming(req, res, upstreamBody, shimActive = false) {
   const reqId = req._reqId || '??????';
   const t0 = Date.now();
   // PHONE STREAMING FIX (July 1 2026): phone-marked turns stream content
@@ -706,7 +876,9 @@ async function handleStreaming(req, res, upstreamBody) {
   // (you can't rewrite text that's already been spoken); web traffic is
   // byte-identical to before. Reasoning stripping still applies (phone runs
   // effort:'none' anyway, so reasoning deltas are not expected).
-  const phoneLive = isPhoneTurn(upstreamBody);
+  // TOOL SHIM: shim turns must be fully buffered even on the phone — live-
+  // forwarding would stream raw <tool_call> JSON into the TTS pipeline.
+  const phoneLive = isPhoneTurn(upstreamBody) && !shimActive;
   // Diagnostic: show the tail of the last user message so phone-marker
   // detection is verifiable from logs alone (the marker is a suffix).
   try {
@@ -756,7 +928,9 @@ async function handleStreaming(req, res, upstreamBody) {
         JSON.stringify({ error: { message: 'Upstream returned non-stream, non-JSON body' } })
       );
     }
-    await detectAndRewrite(json, upstreamBody);
+    if (!(shimActive && parseShimToolCalls(json))) {
+      await detectAndRewrite(json, upstreamBody);
+    }
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     return res.send(buildFakeSSE(json));
   }
@@ -995,6 +1169,18 @@ async function handleStreaming(req, res, upstreamBody) {
     ],
     usage,
   };
+  if (shimActive && parseShimToolCalls(result)) {
+    // Shimmed tool-call turn: emit the tool_calls SSE as-is. Never slop-
+    // rewritten (tool JSON must survive byte-perfect), never think-injected
+    // (a tool_calls message has no displayable content slot for it).
+    if (!res.headersSent) {
+      res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    }
+    res.write(buildFakeSSE(result));
+    res.end();
+    console.log(`[req ${reqId}] tool-shim turn sent at ${Date.now() - t0}ms (${result.choices[0].message.tool_calls.length} call(s))`);
+    return;
+  }
   await detectAndRewrite(result, upstreamBody);
   // If reasoning was collected, trigger the bubble via @librechat/agents'
   // think_and_text path:
@@ -1054,16 +1240,21 @@ app.post('/chat/completions', async (req, res) => {
   if (_toolNames.length) console.log(`[req ${reqId}] tools=[${_toolNames.join(',')}]`);
   req._reqId = reqId;
 
+  // TOOL SHIM: translate tools -> prompt for models whose OR hosts reject the
+  // tools param. No-op ({active:false}, same object path) for everything else.
+  const shim = withToolShim(req.body);
+  if (shim.active) console.log(`[req ${reqId}] TOOL SHIM active for ${req.body.model} (${_toolNames.length} tools -> prompt)`);
+
   if (wantsStream) {
-    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...req.body, stream: true })));
+    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: true })));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
-    return handleStreaming(req, res, upstreamBody);
+    return handleStreaming(req, res, upstreamBody, shim.active);
   }
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...req.body, stream: false })));
+  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: false })));
   let result;
   try {
     result = await callOpenRouter(upstreamBody);
@@ -1073,6 +1264,10 @@ app.post('/chat/completions', async (req, res) => {
     return res.status(err.status || 502).set('Content-Type', 'application/json').send(
       friendly || err.body || JSON.stringify({ error: { message: 'Upstream request failed' } })
     );
+  }
+  if (shim.active && parseShimToolCalls(result)) {
+    // Shimmed tool-call turn: hand LibreChat the OpenAI shape untouched.
+    return res.json(result);
   }
   await detectAndRewrite(result, upstreamBody);
   // Reverted same as the streaming path above -- do not embed reasoning into
