@@ -828,8 +828,47 @@ function withDeepThinkStripped(body) {
   }
 }
 
+// SHIM-MODEL reasoning (July 9 2026): Hermes/Euryale served via Nebius/DeepInfra
+// LEAK raw chain-of-thought straight into message.content when OpenRouter's
+// reasoning.enabled is set -- with NO <think> wrapper, so LibreChat can't route
+// it to the collapsible bubble and TTS would read the model's private thinking
+// out loud (live-seen: a deep-think turn whose reply began "Okay, let's see. The
+// user is asking..."). So we NEVER send enabled/effort to shim models. Deep Think
+// instead injects Hermes' trained thinking instruction, which measurably improves
+// answers (got the strawberry r-count right where Instant said "twice") and keeps
+// the reply clean; if the model DOES wrap thought in <think></think>, LibreChat's
+// existing think_and_text parser bubbles it away from TTS just like GLM. Instant
+// (no marker) sends no reasoning at all -> fast, fully non-thinking.
+const HERMES_THINK_SYS =
+  'For this reply, think carefully and step by step before answering. Put your private reasoning inside <think> </think> tags, then give your actual in-character reply after the closing </think> tag.';
+
+function injectHermesThinking(body) {
+  const msgs = Array.isArray(body.messages) ? body.messages.slice() : [];
+  const i = msgs.findIndex((m) => m && m.role === 'system');
+  if (i >= 0) {
+    msgs[i] = { ...msgs[i], content: `${messageTextOf(msgs[i].content)}\n\n${HERMES_THINK_SYS}` };
+  } else {
+    msgs.unshift({ role: 'system', content: HERMES_THINK_SYS });
+  }
+  return { ...body, messages: msgs };
+}
+
 function withReasoningIncluded(body) {
   const existing = body.reasoning || {};
+  // SHIM MODELS: never pass reasoning.enabled/effort (leaks raw CoT into
+  // content on Nebius). Deep Think -> inject Hermes' thinking instruction.
+  const isShimModel = TOOL_SHIM_MODELS.has(String(body.model || '').toLowerCase());
+  if (isShimModel) {
+    const cleaned = { ...existing };
+    delete cleaned.enabled;
+    delete cleaned.effort;
+    let next = { ...body, reasoning: { ...cleaned, exclude: false } };
+    if (deepThinkRequested(body)) {
+      console.log('[deep-think] shim model -> Hermes thinking instruction injected (no reasoning.enabled)');
+      next = injectHermesThinking(next);
+    }
+    return withDeepThinkStripped(next);
+  }
   // Phone calls are marked by the kade-ai-bridge PHONE_SUFFIX ("[PHONE CALL ...")
   // in the last user message. For those, force reasoning effort to NONE (fully
   // off) — applies to EVERY agent on the phone. Verified live against OpenRouter
