@@ -66,6 +66,13 @@ const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
 const PROXY_SHARED_SECRET = process.env.PROXY_SHARED_SECRET;
 const REFRAME_LEVEL = process.env.REFRAME_LEVEL || 'balanced';
 const OPENROUTER_BASE = process.env.OPENROUTER_BASE || 'https://openrouter.ai/api/v1';
+// -- Moonshot / Kimi direct routing (July 21 2026) ---------------------------
+// OpenRouter's Kimi hosting is thin/unreliable (live-seen: empty responses on
+// moonshotai/kimi-k2.6). Models in KIMI_MODEL_MAP are routed STRAIGHT to
+// Moonshot's own API instead, transparently -- LibreChat still thinks it's
+// talking to the OpenRouter endpoint, agents keep provider "OpenRouter".
+const MOONSHOT_KEY = process.env.MOONSHOT_KEY || '';
+const MOONSHOT_BASE = process.env.MOONSHOT_BASE || 'https://api.moonshot.ai/v1';
 
 if (!OPENROUTER_KEY) {
   console.error('FATAL: OPENROUTER_KEY env var is not set.');
@@ -152,10 +159,68 @@ function openRouterHeaders() {
   };
 }
 
+// Picker string (left side, OpenRouter-style, what agents are configured with)
+// -> Moonshot's own model name. Bare names included so the map is idempotent
+// (adaptForKimi may see an already-rewritten body on retry paths).
+const KIMI_MODEL_MAP = {
+  'moonshotai/kimi-k2.6': 'kimi-k2.6',
+  'moonshotai/kimi-k3': 'kimi-k3',
+  'kimi-k2.6': 'kimi-k2.6',
+  'kimi-k3': 'kimi-k3',
+};
+function isKimiModel(model) {
+  return Object.prototype.hasOwnProperty.call(KIMI_MODEL_MAP, String(model || '').toLowerCase());
+}
+function chatCompletionsUrl(model) {
+  return isKimiModel(model) ? `${MOONSHOT_BASE}/chat/completions` : `${OPENROUTER_BASE}/chat/completions`;
+}
+function chatHeaders(model) {
+  if (isKimiModel(model)) {
+    return { Authorization: `Bearer ${MOONSHOT_KEY}`, 'Content-Type': 'application/json' };
+  }
+  return openRouterHeaders();
+}
+
+// adaptForKimi: Moonshot HARD-validates temperature against reasoning mode
+// (verified live July 21 2026): reasoning ON accepts ONLY temperature 1;
+// reasoning_effort:"none" accepts ONLY temperature 0.6. Any other combo 400s.
+// So whatever temperature LibreChat/agents send is REPLACED here, and the
+// OpenRouter-style `reasoning` object (set by withReasoningIncluded: Deep
+// Think marker -> effort high, phone -> effort none, default -> no effort)
+// is translated to Moonshot's reasoning_effort. Default is reasoning OFF
+// (fast ~5s workhorse turns); a fresh Deep Think marker or an agent-level
+// effort setting turns reasoning ON for that turn. With reasoning ON the
+// model spends hundreds of reasoning_tokens BEFORE content, so max_tokens is
+// floored at 3000 or content comes back empty (also verified live).
+function adaptForKimi(body) {
+  if (!isKimiModel(body.model)) return body;
+  const next = { ...body, model: KIMI_MODEL_MAP[String(body.model).toLowerCase()] };
+  const r = next.reasoning || {};
+  const wantsReasoning =
+    r.enabled === true ||
+    (typeof r.effort === 'string' && !['none', 'minimal'].includes(r.effort.toLowerCase()));
+  delete next.reasoning;
+  delete next.reasoning_effort;
+  delete next.provider;   // OpenRouter-only routing hints
+  delete next.transforms;
+  delete next.route;
+  delete next.include_reasoning;
+  if (wantsReasoning) {
+    next.temperature = 1;
+    const mt = Number(next.max_tokens);
+    next.max_tokens = Number.isFinite(mt) ? Math.max(mt, 3000) : 3000;
+  } else {
+    next.reasoning_effort = 'none';
+    next.temperature = 0.6;
+  }
+  return next;
+}
+
 async function callOpenRouterOnce(body, timeoutMs) {
+  body = adaptForKimi(body);
   const upstream = await fetchWithTimeout(
-    `${OPENROUTER_BASE}/chat/completions`,
-    { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(body) },
+    chatCompletionsUrl(body.model),
+    { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body) },
     timeoutMs
   );
   const text = await upstream.text();
@@ -945,11 +1010,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     }
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
+  upstreamBody = adaptForKimi(upstreamBody);
   let upstream;
   try {
     upstream = await fetchWithTimeout(
-      `${OPENROUTER_BASE}/chat/completions`,
-      { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(upstreamBody) },
+      chatCompletionsUrl(upstreamBody.model),
+      { method: 'POST', headers: chatHeaders(upstreamBody.model), body: JSON.stringify(upstreamBody) },
       STREAM_IDLE_TIMEOUT_MS
     );
   } catch (err) {
