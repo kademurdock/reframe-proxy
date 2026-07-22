@@ -851,6 +851,17 @@ function deepThinkRequested(body) {
           return true;
         }
       }
+      // Session 23 (Kade's live report: "deepthink is stuck on... It says
+      // it's off sure, but it still was thinking" -- receipts in her own
+      // log: an unmarked 01:22 send still ran deep because the 01:20
+      // message's marker, replayed as history, was inside the 10-minute
+      // window). ONLY the NEWEST user message decides: the toggle stamps
+      // every send while on, so its absence on the latest message IS the
+      // off signal. Older history markers are inert regardless of age.
+      // The freshness check above still guards the one replay case where
+      // an old marked message legitimately IS the newest (web regenerate
+      // of a recent deep-think question re-runs it deeply -- correct).
+      return false;
     }
   } catch { /* fall through */ }
   return false;
