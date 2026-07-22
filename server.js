@@ -58,6 +58,7 @@
 'use strict';
 
 const express = require('express');
+const crypto = require('crypto');
 const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
 
@@ -1048,6 +1049,29 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
   upstreamBody = adaptForKimi(upstreamBody);
+  // Session 22 (Kade: "Check caching, because that saves money in multiple
+  // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
+  // repeated ~9K-token prefix -> cached_tokens 8192, hit rate $0.16/M vs
+  // $0.95/M miss, TTFT 2.8s -> 1.3-2.0s) -- but production call turns showed
+  // ZERO benefit (turn 1: 2.9s headers, turns 2-3: 5.3s+), meaning something
+  // in the payload head changes per turn and kills the prefix match. Two
+  // receipts to name the breaker: (a) per-message fingerprints (role, chars,
+  // sha1-8) -- diff consecutive turns' lines and the first changed hash IS
+  // the breaker; (b) ask Moonshot for stream usage so cached_tokens lands in
+  // the read-loop-ended line. The usage-only frame is swallowed below when
+  // WE added the request for it -- the client never asked, never sees it.
+  let addedUsage = false;
+  if (/^kimi-/.test(String(upstreamBody.model)) && upstreamBody.stream && !upstreamBody.stream_options) {
+    upstreamBody = { ...upstreamBody, stream_options: { include_usage: true } };
+    addedUsage = true;
+  }
+  try {
+    const fps = (Array.isArray(upstreamBody.messages) ? upstreamBody.messages : []).map((m) => {
+      const t = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+      return `${m.role}:${t.length}ch:${crypto.createHash('sha1').update(t).digest('hex').slice(0, 8)}`;
+    });
+    console.log(`[req ${reqId}] msg-fingerprints: ${fps.join(' | ')}`);
+  } catch {}
   let upstream;
   try {
     upstream = await fetchWithTimeout(
@@ -1286,6 +1310,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
           if (!template) template = chunk;
           if (chunk.usage) usage = chunk.usage;
+          if (addedUsage && chunk.usage && (!Array.isArray(chunk.choices) || chunk.choices.length === 0)) {
+            handledLive = true; // usage-only frame we asked for ourselves -- logged at loop end, never forwarded
+          }
           const delta = chunk.choices?.[0]?.delta || {};
           const fr = chunk.choices?.[0]?.finish_reason;
           if (fr) finishReason = fr;
@@ -1378,6 +1405,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
 
   stopHeartbeat();
   console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, reasoningAccum.length=${reasoningAccum.length}, finishReason=${finishReason}`);
+  if (usage) {
+    const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;
+    console.log(`[req ${reqId}] upstream usage: prompt=${usage.prompt_tokens ?? '?'} cached=${cached} completion=${usage.completion_tokens ?? '?'}${cached ? ` -- CACHE HIT ${Math.round((cached / (usage.prompt_tokens || 1)) * 100)}%` : ' -- no cache hit'}`);
+  }
 
   if (toolMode) {
     // live passthrough already wrote everything incl. upstream's [DONE]
