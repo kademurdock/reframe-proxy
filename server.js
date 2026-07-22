@@ -426,12 +426,38 @@ function toolNotesFor(body) {
   }
 }
 
+// KADE July 22 2026, two of her asks in one note: (1) "Make sure agents can
+// tell the difference between having a text conversation and a call" -- call
+// turns already carry the bridge's own [PHONE CALL...] framing (both real
+// phone AND app/web streaming calls append PHONE_SUFFIX), so only TEXT
+// turns need their lane named; (2) "I really like emotional steering...
+// Hopefully the prompt that makes them do that is not making them
+// underreact" -- the text lane is where replies double as voice messages,
+// so the steering tags get an explicit commit-to-the-feeling push there.
+// isPhoneTurn is declared later in this file; function declarations hoist.
+function laneNoteFor(body) {
+  if (isPhoneTurn(body)) {
+    return '';
+  }
+  return [
+    ' Lane note: this is a WRITTEN text chat, not a live call -- never talk',
+    'as if you are on a call (no "go ahead, I\'m listening", no "you\'re on',
+    'the line with...", no call-isms). The reader is reading, or hearing',
+    'this replayed later as a voice message. BECAUSE replies often get',
+    'played aloud, keep using your %%%...%%% emotion steering tags and',
+    'COMMIT to them: when the moment is funny, warm, sad, hyped, or gentle,',
+    'tag it like you mean it -- one or two well-placed tags in most',
+    'replies, more when the feeling runs high. Underreacting reads flat out',
+    'loud. The tags never show on screen; they only shape the voice.',
+  ].join(' ');
+}
+
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
   const toolNotes = toolNotesFor(body);
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + currentTimeNote() + toolNotes }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + laneNoteFor(body) + currentTimeNote() + toolNotes }],
   };
 }
 
