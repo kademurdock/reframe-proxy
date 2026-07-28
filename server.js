@@ -213,6 +213,11 @@ function adaptForKimi(body) {
   // parameter at all -- strip them all so no agent's leftover sampler
   // config can 400 a turn. Temperature is pinned mode-paired below;
   // top_p stays (proven live on k2.6 since July 21).
+  // July 27 2026 addendum: the fork's direct persona lanes (Clubhouse guest,
+  // Parlor talk, card seats, Debate Room) now route through here and send
+  // OpenRouter's usage-accounting flag — not a Moonshot parameter; strip it
+  // (Moonshot returns usage in the response unconditionally anyway).
+  delete next.usage;
   delete next.presence_penalty;
   delete next.frequency_penalty;
   delete next.repetition_penalty;
