@@ -206,6 +206,19 @@ function adaptForKimi(body) {
   delete next.transforms;
   delete next.route;
   delete next.include_reasoning;
+  // July 27 2026 (fleet K3 switch, live 400 receipt: "invalid
+  // presence_penalty: only 0 is allowed for this model"): K3 hard-rejects
+  // the sampler-era penalty knobs K2.6 quietly tolerated, and the
+  // repetition_penalty/min_p/top_k/top_a family was never a Moonshot
+  // parameter at all -- strip them all so no agent's leftover sampler
+  // config can 400 a turn. Temperature is pinned mode-paired below;
+  // top_p stays (proven live on k2.6 since July 21).
+  delete next.presence_penalty;
+  delete next.frequency_penalty;
+  delete next.repetition_penalty;
+  delete next.min_p;
+  delete next.top_k;
+  delete next.top_a;
   if (wantsReasoning) {
     next.temperature = 1;
     const mt = Number(next.max_tokens);
