@@ -148,6 +148,18 @@ function friendlyErrorBody(status, rawText) {
       error: { message: OUT_OF_CREDITS_MESSAGE, type: 'insufficient_credits', code: 402 },
     });
   }
+  // July 30 2026: if a turn STILL dies after the transient retries, say it
+  // like a person instead of piping Moonshot's raw 429 into a scary trace.
+  if (status === 429 || status === 503 || /overloaded|rate limit/i.test(raw)) {
+    return JSON.stringify({
+      error: {
+        message:
+          'The thinking engine is jammed up right now -- it happens when things get busy. Give it a few seconds and ask again; your question was not lost.',
+        type: 'upstream_overloaded',
+        code: status || 429,
+      },
+    });
+  }
   return null;
 }
 
@@ -247,6 +259,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
     const err = new Error(`OpenRouter ${upstream.status}: ${text.slice(0, 500)}`);
     err.status = upstream.status;
     err.body = text;
+    err.retryAfter = upstream.headers.get('retry-after');
     throw err;
   }
   let json;
@@ -261,7 +274,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
   return json;
 }
 
-async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function callOpenRouterTimeoutGuarded(body, timeoutMs = REQUEST_TIMEOUT_MS) {
   try {
     return await callOpenRouterOnce(body, timeoutMs);
   } catch (err) {
@@ -284,6 +297,40 @@ async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
       }
     }
     throw err;
+  }
+}
+
+// July 30 2026 (Amber's armadillo dead turns, session 35): under load,
+// Moonshot answers 429 "The engine is currently overloaded" and this proxy
+// treated every one as instantly fatal -- LibreChat surfaced
+// MODEL_RATE_LIMIT and the user's turn just DIED (native showed a silent
+// no-text reply; she asked the same snake question four times). Overload
+// is the textbook transient, so 429/502/503 now get up to TWO patient
+// re-asks -- Retry-After honored when sent (capped 8s), else 2s then 5s --
+// before anyone hears an error. The AbortError single-retry above is
+// unchanged and composes beneath this (statuses only ever throw AFTER the
+// timeout guard). Total worst-case delay added to a doomed turn: ~7s.
+const TRANSIENT_UPSTREAM_STATUSES = new Set([429, 502, 503]);
+const transientRetryDelayMs = (attempt, retryAfterHeader) => {
+  const ra = Number(retryAfterHeader);
+  if (Number.isFinite(ra) && ra > 0) return Math.min(ra * 1000, 8000);
+  return attempt === 0 ? 2000 : 5000;
+};
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callOpenRouterTimeoutGuarded(body, timeoutMs);
+    } catch (err) {
+      if (attempt < 2 && TRANSIENT_UPSTREAM_STATUSES.has(err.status)) {
+        const wait = transientRetryDelayMs(attempt, err.retryAfter);
+        console.warn(`upstream ${err.status} (attempt ${attempt + 1} of 3) -- retrying in ${wait}ms`);
+        await sleepMs(wait);
+        continue;
+      }
+      throw err;
+    }
   }
 }
 
@@ -1091,18 +1138,28 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     console.log(`[req ${reqId}] msg-fingerprints: ${fps.join(' | ')}`);
   } catch {}
   let upstream;
-  try {
-    upstream = await fetchWithTimeout(
-      chatCompletionsUrl(upstreamBody.model),
-      { method: 'POST', headers: chatHeaders(upstreamBody.model), body: JSON.stringify(upstreamBody) },
-      STREAM_IDLE_TIMEOUT_MS
-    );
-  } catch (err) {
-    const status = err.name === 'AbortError' ? 504 : 502;
-    console.error(`[req ${reqId}] initial fetch failed after ${Date.now() - t0}ms: ${err.name} ${err.message}`);
-    return res.status(status).set('Content-Type', 'application/json').send(
-      JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
-    );
+  // July 30 2026: same transient-status patience as callOpenRouter above --
+  // safe HERE because nothing has been written to `res` until after the
+  // status check below, so a retried fetch is invisible to the client.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      upstream = await fetchWithTimeout(
+        chatCompletionsUrl(upstreamBody.model),
+        { method: 'POST', headers: chatHeaders(upstreamBody.model), body: JSON.stringify(upstreamBody) },
+        STREAM_IDLE_TIMEOUT_MS
+      );
+    } catch (err) {
+      const status = err.name === 'AbortError' ? 504 : 502;
+      console.error(`[req ${reqId}] initial fetch failed after ${Date.now() - t0}ms: ${err.name} ${err.message}`);
+      return res.status(status).set('Content-Type', 'application/json').send(
+        JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
+      );
+    }
+    if (upstream.ok || attempt >= 2 || !TRANSIENT_UPSTREAM_STATUSES.has(upstream.status)) break;
+    const wait = transientRetryDelayMs(attempt, upstream.headers.get('retry-after'));
+    console.warn(`[req ${reqId}] upstream ${upstream.status} (attempt ${attempt + 1} of 3) -- retrying in ${wait}ms`);
+    try { await upstream.text(); } catch {}
+    await sleepMs(wait);
   }
   console.log(`[req ${reqId}] upstream headers received after ${Date.now() - t0}ms, status=${upstream.status}, content-type=${upstream.headers.get('content-type')}`);
 
