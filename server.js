@@ -938,6 +938,25 @@ function deepThinkRequested(body) {
   try {
     const now = Date.now();
     const msgs = Array.isArray(body?.messages) ? body.messages : [];
+    // July 30 2026 (session 35 part 2): gen-title/summarizer requests carry
+    // the WHOLE conversation inside one user message -- fresh markers
+    // included -- and have neither a system message nor tools. Never
+    // deep-think those (live receipt: a title call logged "fresh marker
+    // found" and burned reasoning pricing a title). Real agent turns always
+    // carry a system message (instructions + style note ride every agent).
+    const hasSystem = msgs.some((m) => m && m.role === 'system');
+    const hasTools = Array.isArray(body?.tools) && body.tools.length > 0;
+    if (!hasSystem && !hasTools) {
+      return false;
+    }
+    // ALSO July 30 2026: the newest-user-message rule below is DEFEATED on
+    // the app/web chat lane -- the fork injects memories/web-context as a
+    // trailing user-role message, so the newest "user" message is never the
+    // person's send. The real per-turn decision therefore moved to the
+    // fork's buildOptions (agents/build.js), which reads req.body.text and
+    // sends an explicit reasoning flag. This scan remains as the PHONE
+    // bridge's lane (its marker rides the actual last user message) and as
+    // a harmless legacy for any caller without the fork-side flag.
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (!msgs[i] || msgs[i].role !== 'user') continue;
       const text = messageTextOf(msgs[i].content);
