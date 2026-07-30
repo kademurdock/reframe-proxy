@@ -239,7 +239,13 @@ function adaptForKimi(body) {
   if (wantsReasoning) {
     next.temperature = 1;
     const mt = Number(next.max_tokens);
-    next.max_tokens = Number.isFinite(mt) ? Math.max(mt, 3000) : 3000;
+    // July 30 2026 (Amber's limerick receipts): 3000 was exactly the budget
+    // K3 exhausted on a conflicted prompt -- ~12K chars of deliberation,
+    // finish=length, ZERO content, four turns in a row. 8000 gives real
+    // deliberation room; the empty-after-length fallback in handleStreaming
+    // is the net under it. Only binds reasoning-ON turns, so fast-lane cost
+    // is untouched.
+    next.max_tokens = Number.isFinite(mt) ? Math.max(mt, 8000) : 8000;
   } else {
     next.reasoning_effort = 'none';
     next.temperature = 0.6;
@@ -1539,6 +1545,46 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       res.end();
     } catch (e) {}
     return;
+  }
+
+  // July 30 2026 (Amber's limerick receipts, session 35 part 2): a Deep
+  // Think turn can spend its ENTIRE token budget deliberating -- the read
+  // loop ends finishReason=length with thousands of reasoning chars and
+  // ZERO content, and the person gets a wordless turn (the native app's
+  // old fallback line then blamed "tool activity," which is how this got
+  // reported as "it keeps calling tools"). When that exact signature shows
+  // up on the kimi lane, re-ask ONCE with reasoning OFF (buffered, rides
+  // the transient retries): the person gets the plain answer and the
+  // reasoning bubble still shows the deliberation that ran long. Fail-soft
+  // top to bottom -- if the re-ask dies too, the turn proceeds exactly as
+  // it would have before this existed. (Known gap, deliberate: the
+  // fallback call's tokens aren't merged into `usage`, so such a turn
+  // under-meters by one fast-lane completion.)
+  if (
+    isKimiModel(upstreamBody.model) &&
+    finishReason === 'length' &&
+    contentAccum.length === 0 &&
+    reasoningAccum.length > 0
+  ) {
+    console.warn(`[req ${reqId}] reasoning ate the whole budget (finish=length, 0 content, ${reasoningAccum.length} reasoning chars) -- re-asking once with reasoning off`);
+    try {
+      const fallbackBody = { ...upstreamBody, stream: false };
+      delete fallbackBody.stream_options;
+      delete fallbackBody.reasoning;
+      delete fallbackBody.include_reasoning;
+      delete fallbackBody.reasoning_effort;
+      const fb = await callOpenRouter(fallbackBody);
+      const fbText = fb && fb.choices && fb.choices[0] && fb.choices[0].message && fb.choices[0].message.content;
+      if (typeof fbText === 'string' && fbText.trim().length > 0) {
+        contentAccum = fbText;
+        finishReason = (fb.choices[0].finish_reason) || 'stop';
+        console.log(`[req ${reqId}] reasoning-off fallback landed ${fbText.length} chars at ${Date.now() - t0}ms`);
+      } else {
+        console.warn(`[req ${reqId}] reasoning-off fallback returned no content -- leaving the turn as it was`);
+      }
+    } catch (fbErr) {
+      console.warn(`[req ${reqId}] reasoning-off fallback failed: ${fbErr.message} -- leaving the turn as it was`);
+    }
   }
 
   // pure CONTENT turn: build a buffered result, detect/rewrite, emit fake SSE
