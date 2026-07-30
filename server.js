@@ -1080,7 +1080,13 @@ function withReasoningIncluded(body) {
   // (July 4 2026) low/medium/high -> one "High" tier at ~8s first token while
   // UNSET maps to the Max tier at ~11.8s -- 'high' is the depth win without
   // the worst-case latency.
-  const isDeep = deepThinkRequested(body);
+  // July 30 2026 (session 35 part 2): the marker-scan is PHONE-ONLY now.
+  // App/web turns carry an explicit reasoning flag from the fork's
+  // buildOptions (which reads req.body.text -- immune to the injected
+  // trailing user-role context block that defeated this scan), and title/
+  // summarizer calls must never deep-think. Phone keeps the scan: the
+  // bridge appends the marker to the caller's actual last message.
+  const isDeep = isPhoneTurn(body) && deepThinkRequested(body);
   const reasoning = isDeep
     ? { ...existing, effort: 'high', enabled: true, exclude: false }
     : isPhone
