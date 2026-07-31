@@ -245,7 +245,12 @@ function adaptForKimi(body) {
     // deliberation room; the empty-after-length fallback in handleStreaming
     // is the net under it. Only binds reasoning-ON turns, so fast-lane cost
     // is untouched.
-    next.max_tokens = Number.isFinite(mt) ? Math.max(mt, 8000) : 8000;
+    // July 31 2026, HER PHILOSOPHY, verbatim: "I don't understand why
+    // thinking needs limits anyway. Like we're ok with waiting on agents
+    // to submit answers." 8000 -> 16000: a deep turn gets ROOM. Worst
+    // case fully-burned turn ≈ a few cents, her explicit trade. The
+    // wordless-turn fallback net below stays as the floor under the floor.
+    next.max_tokens = Number.isFinite(mt) ? Math.max(mt, 16000) : 16000;
   } else {
     next.reasoning_effort = 'none';
     next.temperature = 0.6;
