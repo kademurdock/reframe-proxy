@@ -330,6 +330,17 @@ const transientRetryDelayMs = (attempt, retryAfterHeader) => {
 const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
+  // Aug 1 2026 (the 504→fallback chain quietly eating deep room turns): a
+  // reasoning-on 16K-budget turn legitimately runs past 90s, and hanging
+  // up HERE converted the good turns into thoughtless fallbacks
+  // downstream (fork log receipts: kimi "failed (504)" → flash-lite).
+  // Reasoning bodies get a window that matches their budget; everything
+  // else keeps 90s. Callers passing an explicit timeout are untouched.
+  const reasoningCfg = body && body.reasoning;
+  const isDeepBody = !!reasoningCfg
+    && reasoningCfg.enabled !== false
+    && !['none', 'minimal'].includes(String(reasoningCfg.effort || '').toLowerCase());
+  if (isDeepBody && timeoutMs === REQUEST_TIMEOUT_MS) timeoutMs = 280_000;
   for (let attempt = 0; ; attempt++) {
     try {
       return await callOpenRouterTimeoutGuarded(body, timeoutMs);
