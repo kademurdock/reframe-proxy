@@ -1274,6 +1274,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let toolMode = false;
   let contentAccum = '';
   let reasoningAccum = '';
+  let reasoningLive = false; // Aug 4 2026: reasoning deltas forwarded live this turn (see the reasoning branch)
   let template = null; // first parsed chunk, reused to shape the fake SSE on content turns
   let finishReason = 'stop';
   let usage = null;
@@ -1449,17 +1450,23 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
             typeof delta.reasoning === 'string' ? delta.reasoning :
             typeof delta.reasoning_content === 'string' ? delta.reasoning_content : '';
           if (reasoningText.length > 0) {
-            // Accumulate reasoning for end-of-turn <think> injection (see
-            // below). Do NOT forward raw delta.reasoning chunks live — the
-            // ON_REASONING_DELTA path in @librechat/agents dispatched events
-            // but the browser stepMap lookup returned null so no bubble
-            // appeared. Instead, keep the connection alive by forwarding a
-            // structurally identical chunk with an empty delta.content (so
-            // LibreChat's LLM client sees a continuous stream and never times
-            // out), but strip delta.reasoning so the streaming handler treats
-            // it as an innocuous keep-alive. The full reasoning is injected as
-            // <think>...</think> at the head of the synthetic content chunk
-            // after the read loop; see the block below for details.
+            // Aug 4 2026 (Kade: "I still don't see thoughts populating the
+            // bubble until streaming is basically done"): reasoning deltas
+            // now go downstream LIVE for web/app turns, so the thinking
+            // bubble fills as the model thinks instead of all at once at the
+            // end. The old fear (ON_REASONING_DELTA dispatched but the
+            // browser stepMap lookup returned null, June era) is dead in
+            // @librechat/agents 3.2.46: getMessageId() MINTS an id when none
+            // exists, so the first live reasoning chunk dispatches
+            // ON_RUN_STEP itself and every delta after it renders. Each
+            // chunk is fabricated in the exact shape of the proven seed
+            // chunk below (delta.role present -- the July 1 2026 langchain
+            // typing lesson -- plus delta.reasoning, which this stack
+            // provably routes into additional_kwargs, since the seed works).
+            // PHONE turns keep the empty-content heartbeat: the bridge's
+            // TTS pipeline must never meet thoughts (Kade's explicit rule:
+            // thoughts are never spoken). SHIM turns keep it too -- their
+            // deep path still needs the full-buffer <think> dance.
             reasoningAccum += reasoningText;
             // CRITICAL: delta.role must be present. These fabricated heartbeats
             // are usually the FIRST chunks LibreChat sees on a reasoning turn,
@@ -1472,14 +1479,25 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
             // in, the aggregated message lost them, the agent graph routed to
             // END, the turn saved with text:"" and args:"". This one missing
             // property was the whole "streaming agents are tool-broken" bug.
+            const forwardReasoningLive = !phoneLive && !shimActive;
             const heartbeat = {
               id: chunk.id,
               object: chunk.object || 'chat.completion.chunk',
               created: chunk.created,
               model: chunk.model,
-              choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
+              choices: [{
+                index: 0,
+                delta: forwardReasoningLive
+                  ? { role: 'assistant', content: '', reasoning: reasoningText }
+                  : { role: 'assistant', content: '' },
+                finish_reason: null,
+              }],
             };
             res.write(`data: ${JSON.stringify(heartbeat)}\n\n`);
+            if (forwardReasoningLive && !reasoningLive) {
+              reasoningLive = true;
+              console.log(`[req ${reqId}] reasoning streaming LIVE (first delta at ${Date.now() - t0}ms)`);
+            }
             handledLive = true;
           }
           if (typeof delta.content === 'string') {
@@ -1683,7 +1701,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   // think_and_text path splits it into structured THINK+TEXT content parts
   // before storage. LibreChat saves [{type:"think",...},{type:"text",...}] so
   // auto-titling and TTS only ever see the text part — zero contamination. ✓
-  if (reasoningAccum.length > 0 && result.choices[0].message.content.length > 0) {
+  if (reasoningLive) {
+    // Aug 4 2026: thoughts already streamed live as delta.reasoning --
+    // re-injecting them here would render the whole block a second time
+    // (the live bubble would double). The agents lib aggregates the live
+    // deltas into the SAME stored think part the injection used to
+    // create, so persistence/auto-title/TTS behavior is unchanged.
+    console.log(`[req ${reqId}] reasoning streamed live (${reasoningAccum.length} chars) -- <think> injection skipped`);
+  } else if (reasoningAccum.length > 0 && result.choices[0].message.content.length > 0) {
     const seed = {
       id: result.id,
       object: 'chat.completion.chunk',
