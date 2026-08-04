@@ -1223,6 +1223,13 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       return `${m.role}:${t.length}ch:${crypto.createHash('sha1').update(t).digest('hex').slice(0, 8)}`;
     });
     console.log(`[req ${reqId}] msg-fingerprints: ${fps.join(' | ')}`);
+    // Aug 4 2026 cache hunt: tools serialize AHEAD of messages in provider
+    // prompt caches -- a per-turn wobble here zeroes every hit even when all
+    // messages are byte-stable. Hash the exact serialized form.
+    if (Array.isArray(upstreamBody.tools) && upstreamBody.tools.length > 0) {
+      const tjson = JSON.stringify(upstreamBody.tools);
+      console.log(`[req ${reqId}] tools-fingerprint: ${upstreamBody.tools.length} tools, ${tjson.length}ch, sha ${crypto.createHash('sha1').update(tjson).digest('hex').slice(0, 8)}`);
+    }
   } catch {}
   let upstream;
   // July 30 2026: same transient-status patience as callOpenRouter above --
