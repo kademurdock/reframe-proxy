@@ -1488,7 +1488,16 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
               choices: [{
                 index: 0,
                 delta: forwardReasoningLive
-                  ? { role: 'assistant', content: '', reasoning: reasoningText }
+                  // BOTH field spellings on purpose. @langchain/openai 1.5.0
+                  // (the fork's pinned converter, converters/completions.js
+                  // line 264) maps ONLY delta.reasoning_content into
+                  // additional_kwargs -- delta.reasoning is silently dropped
+                  // (the old seed chunk's field never actually mapped; the
+                  // dance worked via <think>-in-content, proven Aug 4 when a
+                  // reasoning-only live test stored no think part). Keeping
+                  // `reasoning` too is free future-proofing; even if both map
+                  // someday, dispatch happens once per chunk, no doubling.
+                  ? { role: 'assistant', content: '', reasoning: reasoningText, reasoning_content: reasoningText }
                   : { role: 'assistant', content: '' },
                 finish_reason: null,
               }],
