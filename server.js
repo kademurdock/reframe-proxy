@@ -194,6 +194,32 @@ function chatHeaders(model) {
   return openRouterHeaders();
 }
 
+// -- MOONSHOT BALANCE FALLBACK (Aug 4 2026, Kade: "maybe we should bounce to
+// open router if moonshot runs out") -----------------------------------------
+// When Moonshot answers a kimi call with an auth/payment-class status (401/
+// 402/403 -- an empty balance surfaces in this class), the SAME request is
+// retried ONCE against OpenRouter's own kimi hosting so the fleet degrades
+// instead of dying. OpenRouter's kimi hosts are thinner (that's WHY direct is
+// primary), but a slower answer beats a dead family platform. The model name
+// maps back from Moonshot's bare form to the OpenRouter string, and the log
+// line is LOUD on purpose -- chronic fallback means one thing: TOP UP THE
+// MOONSHOT BALANCE at platform.moonshot.ai.
+const MOONSHOT_FALLBACK_STATUSES = new Set([401, 402, 403]);
+const OPENROUTER_KIMI_NAMES = {
+  'kimi-k2.6': 'moonshotai/kimi-k2.6',
+  'kimi-k3': 'moonshotai/kimi-k3',
+  'moonshotai/kimi-k2.6': 'moonshotai/kimi-k2.6',
+  'moonshotai/kimi-k3': 'moonshotai/kimi-k3',
+};
+function moonshotFallbackBody(body) {
+  const orModel = OPENROUTER_KIMI_NAMES[String(body.model || '').toLowerCase()];
+  if (!orModel) return null;
+  return { ...body, model: orModel };
+}
+function shouldFallbackToOpenRouter(model, status) {
+  return isKimiModel(model) && MOONSHOT_FALLBACK_STATUSES.has(status);
+}
+
 // adaptForKimi: Moonshot HARD-validates temperature against reasoning mode
 // (verified live July 21 2026): reasoning ON accepts ONLY temperature 1;
 // reasoning_effort:"none" accepts ONLY temperature 0.6. Any other combo 400s.
@@ -260,11 +286,25 @@ function adaptForKimi(body) {
 
 async function callOpenRouterOnce(body, timeoutMs) {
   body = adaptForKimi(body);
-  const upstream = await fetchWithTimeout(
+  let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
     { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body) },
     timeoutMs
   );
+  // Moonshot balance fallback (see the helper block above): auth/payment
+  // failure on a kimi call -> one retry via OpenRouter's kimi hosting.
+  if (!upstream.ok && shouldFallbackToOpenRouter(body.model, upstream.status)) {
+    const fbBody = moonshotFallbackBody(body);
+    if (fbBody) {
+      try { await upstream.text(); } catch {}
+      console.error(`MOONSHOT FALLBACK ACTIVE (non-stream, status ${upstream.status}) -- retrying ${fbBody.model} via OpenRouter. TOP UP THE MOONSHOT BALANCE.`);
+      upstream = await fetchWithTimeout(
+        `${OPENROUTER_BASE}/chat/completions`,
+        { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+        timeoutMs
+      );
+    }
+  }
   const text = await upstream.text();
   if (!upstream.ok) {
     const err = new Error(`OpenRouter ${upstream.status}: ${text.slice(0, 500)}`);
@@ -1210,6 +1250,26 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   }
   console.log(`[req ${reqId}] upstream headers received after ${Date.now() - t0}ms, status=${upstream.status}, content-type=${upstream.headers.get('content-type')}`);
 
+  if (!upstream.ok && shouldFallbackToOpenRouter(upstreamBody.model, upstream.status)) {
+    // Moonshot balance fallback (Aug 4 2026): same request, OpenRouter's kimi
+    // hosting, so a drained Moonshot balance degrades the fleet instead of
+    // killing it. Nothing has been written to `res` yet, so this retry is
+    // invisible to the client.
+    const fbBody = moonshotFallbackBody(upstreamBody);
+    if (fbBody) {
+      try { await upstream.text(); } catch {}
+      console.error(`[req ${reqId}] MOONSHOT FALLBACK ACTIVE (stream, status ${upstream.status}) -- retrying ${fbBody.model} via OpenRouter. TOP UP THE MOONSHOT BALANCE.`);
+      try {
+        upstream = await fetchWithTimeout(
+          `${OPENROUTER_BASE}/chat/completions`,
+          { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+          STREAM_IDLE_TIMEOUT_MS
+        );
+      } catch (fbErr) {
+        console.error(`[req ${reqId}] fallback fetch failed: ${fbErr.message}`);
+      }
+    }
+  }
   if (!upstream.ok) {
     const text = await upstream.text();
     console.error(`[req ${reqId}] upstream not ok: ${upstream.status} ${text.slice(0,300)}`);
