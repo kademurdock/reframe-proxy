@@ -234,6 +234,34 @@ function shouldFallbackToOpenRouter(model, status) {
 function adaptForKimi(body) {
   if (!isKimiModel(body.model)) return body;
   const next = { ...body, model: KIMI_MODEL_MAP[String(body.model).toLowerCase()] };
+  // Aug 5 2026 -- THE ARRAY-ASSISTANT BUG, fixed at the last hop (receipts in
+  // PROJECT_STATUS Part 13): @langchain/openai flattens all-text USER content
+  // arrays to plain strings upstream but passes ASSISTANT and SYSTEM arrays
+  // through untouched, and the agents package re-normalizes content to parts
+  // internally -- a fork-side pre-flatten provably fired ("kade array-assistant
+  // flatten: 1 message(s)") while the wire STILL carried the array. Kimi's chat
+  // template effectively skips array-shaped assistant turns: live byte-proof
+  // was soft follow-ups getting the PREVIOUS reply repeated BYTE-IDENTICAL
+  // (1344ch + completion=342 twice; reproduced across two convos), and the
+  // ~90ch JSON scaffold is per-turn byte-noise against Moonshot's prefix
+  // cache. Nothing rewrites the body after this function, so the flatten holds
+  // here: assistant/system content arrays whose parts are all text join to one
+  // plain string (the canonical OpenAI form). User arrays stay untouched
+  // (image parts must survive).
+  if (Array.isArray(next.messages)) {
+    next.messages = next.messages.map((m) => {
+      if (
+        m &&
+        (m.role === 'assistant' || m.role === 'system') &&
+        Array.isArray(m.content) &&
+        m.content.length > 0 &&
+        m.content.every((p) => p && p.type === 'text' && typeof p.text === 'string')
+      ) {
+        return { ...m, content: m.content.map((p) => p.text).join('\n').trim() };
+      }
+      return m;
+    });
+  }
   const r = next.reasoning || {};
   const wantsReasoning =
     r.enabled === true ||
