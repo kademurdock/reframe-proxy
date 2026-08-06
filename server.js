@@ -261,6 +261,40 @@ function adaptForKimi(body) {
       }
       return m;
     });
+    /* Aug 6 2026 — THE TAGGED-REPLY PRE-SCRUB (Part 12's queued "nibbler"
+     * fix, idea 2 in PLATFORM_IMPROVEMENT_IDEAS_2026-08-06). The recorded
+     * receipt: a steering-tagged assistant reply re-rendered in history one
+     * turn late (1010ch → 919ch = exactly the tag), costing a prefix-cache
+     * break at that seat on its second appearance. The cure is uniformity at
+     * THE choke point (nothing rewrites the body after adaptForKimi): every
+     * assistant HISTORY message is scrubbed of complete %%%…%%% spans on
+     * EVERY render, so its bytes are identical from its first appearance to
+     * its hundredth. The model never needed its own past stage directions
+     * (the platform note teaches the convention fresh each turn); TTS and
+     * the fork read the SAVED message, which keeps its tags — this touches
+     * only what Moonshot sees. Sloppy 2-4-percent variants normalize first
+     * (same tolerance the response path applies), then whole spans lift out;
+     * a dangling unclosed opener is left alone (eating real text is worse
+     * than one odd render). Kill switch: KADE_HISTORY_PRESCRUB=0. */
+    if (process.env.KADE_HISTORY_PRESCRUB !== '0') {
+      let scrubbed = 0;
+      next.messages = next.messages.map((m) => {
+        if (!m || m.role !== 'assistant' || typeof m.content !== 'string' || m.content.indexOf('%%') === -1) {
+          return m;
+        }
+        const before = m.content;
+        const after = before
+          .replace(/%{2,4}([a-zA-Z][a-zA-Z \u2019',!-]{0,60}?)%{2,4}/g, '%%%$1%%%')
+          .replace(/%%%[\s\S]*?%%%/g, '')
+          .replace(/[ \t]{2,}/g, ' ')
+          .replace(/^[ \t]+/gm, '')
+          .replace(/^\s+/, '');
+        if (after === before) return m;
+        scrubbed += 1;
+        return { ...m, content: after };
+      });
+      if (scrubbed) console.log(`[prescrub] steering tags lifted from ${scrubbed} assistant history message(s) — byte-stable from first render`);
+    }
   }
   const r = next.reasoning || {};
   const wantsReasoning =
