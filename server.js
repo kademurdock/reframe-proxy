@@ -900,6 +900,46 @@ function restoreSentinelTags(text, tags) {
 // percent signs (printf-style "%%d") is never touched.
 // (Phone turns stream through untouched; the TTS proxy carries its own copy
 // of this tolerance for that path.)
+/**
+ * KADE Aug 7 2026 — SEARCH-CITATION ARTIFACT SCRUB (her live catch: a reply
+ * carried literal "\\ue202turn0search0\\ue202turn0search4" — kimi emitting
+ * OpenAI-style web-search citation markers as raw text after a web_search
+ * turn. It landed in her copy-paste AND got read aloud by TTS).
+ *
+ * Three shapes, all meaningless to a human:
+ *   1. REAL private-use chars U+E200–U+E2FF (OpenAI's citation delimiter
+ *      range — never legitimate content; the proxy's own \uF001/\uF002
+ *      sentinels sit far outside it and are injected AFTER this runs).
+ *   2. The same escapes as LITERAL TEXT ("\\ue202" as six characters) —
+ *      the form that actually hit her chat.
+ *   3. The citation tokens themselves: turn0search4, citeturn…, navlist,
+ *      plus 【…】 CJK-bracket reference stubs.
+ *
+ * Runs at the TOP of detectAndRewrite → covers the buffered streaming path,
+ * the deep-think shim path, and the non-streaming path in one seam, BEFORE
+ * slop detection (so rewrites never preserve artifacts) and BEFORE the
+ * steering-tag placeholder dance (so no collision). Phone-live events get a
+ * best-effort per-event pass at their forward point; the TTS proxy carries
+ * its own final net for speech.
+ */
+const SEARCH_ARTIFACT_PATTERNS = [
+  /[\uE200-\uE2FF]/g,
+  /\\u[eE]2[0-9a-fA-F]{2}/g,
+  /\b(?:cite)?(?:turn\d{1,3}(?:search|news|view|image|forecast|maps|academia|sports|finance)\d{1,3})+\b/g,
+  /\bnavlist\b/g,
+  /【[^】\n]{0,60}】/g,
+];
+function scrubSearchArtifacts(text) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  let out = text;
+  for (const re of SEARCH_ARTIFACT_PATTERNS) {
+    out = out.replace(re, '');
+  }
+  if (out === text) return text;
+  // collapse doubled spaces the removals leave behind (never touch newlines)
+  return out.replace(/ {2,}/g, ' ').replace(/ +([.,;:!?])/g, '$1');
+}
+
 function normalizeVoiceTagTypos(text) {
   if (!text || text.indexOf('%%') === -1) return text;
   return text.replace(/%{2,4}([a-zA-Z][a-zA-Z ’',!-]{0,60}?)%{2,4}/g, '%%%$1%%%');
@@ -909,6 +949,14 @@ async function detectAndRewrite(result, upstreamBody) {
   const choice = result.choices?.[0];
   let content = choice?.message?.content;
   if (typeof content !== 'string' || content.length === 0) return result;
+  // Search-citation artifacts go first — nothing downstream should ever see
+  // them (slop detection, storage, copy, TTS all included).
+  const descrubbed = scrubSearchArtifacts(content);
+  if (descrubbed !== content) {
+    console.log(`[artifact-scrub] search-citation artifact(s) removed from reply (${content.length - descrubbed.length} chars)`);
+    content = descrubbed;
+    choice.message.content = descrubbed;
+  }
   // Normalize voice-tag typos first so protection/rewrite and every consumer
   // downstream (fork stripper, TTS steering) see only the canonical %%% form.
   const normalized = normalizeVoiceTagTypos(content);
@@ -1666,7 +1714,21 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
             phoneFirstWrite = Date.now();
             console.log(`[req ${reqId}] phone: first live event forwarded at ${phoneFirstWrite - t0}ms`);
           }
-          res.write(rawEvent + '\n\n');
+          /* Best-effort artifact scrub on phone-live events (whole tokens in
+           * one delta; split-across-deltas fragments are caught by the TTS
+           * proxy's own net). Only offending events get re-serialized. */
+          let phoneOut = rawEvent;
+          try {
+            const pl = chunk.choices?.[0]?.delta;
+            if (pl && typeof pl.content === 'string' && pl.content.length > 0) {
+              const scrubbedDelta = scrubSearchArtifacts(pl.content);
+              if (scrubbedDelta !== pl.content) {
+                pl.content = scrubbedDelta;
+                phoneOut = `data: ${JSON.stringify(chunk)}`;
+              }
+            }
+          } catch (e) { /* forward raw over breaking a phone turn */ }
+          res.write(phoneOut + '\n\n');
           continue;
         }
         if (!handledLive && !shimLive) {
