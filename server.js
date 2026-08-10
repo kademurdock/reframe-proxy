@@ -507,6 +507,21 @@ function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
   return lines.join('\n');
 }
 
+// Aug 10 2026 — HER STUCK TEMP CHAT, ROOT-CAUSED (receipts in the logs,
+// reqs zotl8q/vezelj): K3 answered her 29K-char worldbuilding ask with a
+// full 17-19K-char reply, finishReason=stop — then the slop pass tripped on
+// em-dash density (long-form docs read as "tics" to the detector) and sent
+// the WHOLE reply back out for a cosmetic rewrite. Regenerating 17K chars
+// can never finish inside the 90s timeout, so the pass stalled 3-5 minutes
+// (timeout + retry), everything downstream hung up, and the fork saved an
+// EMPTY reply. Two rules now: (1) long-form replies keep their original
+// text — the pass is for chat tics, not documents (the fork's stripAiTells
+// still scrubs phrases on save); (2) the rewrite gets its own tight budget
+// and NO retry — the real reply is already in hand, and a cosmetic pass
+// must never cost minutes or kill a delivered turn.
+const SLOP_REWRITE_MAX_CHARS = parseInt(process.env.SLOP_REWRITE_MAX_CHARS || '8000', 10);
+const SLOP_REWRITE_TIMEOUT_MS = parseInt(process.env.SLOP_REWRITE_TIMEOUT_MS || '25000', 10);
+
 async function rewritePass(originalBody, offendingText, matches, hasProtectedTags = false) {
   const rewriteBody = {
     model: originalBody.model,
@@ -516,7 +531,7 @@ async function rewritePass(originalBody, offendingText, matches, hasProtectedTag
       { role: 'user', content: offendingText },
     ],
   };
-  const result = await callOpenRouter(rewriteBody);
+  const result = await callOpenRouterOnce(rewriteBody, SLOP_REWRITE_TIMEOUT_MS);
   const text = result?.choices?.[0]?.message?.content;
   return { text: text ? text.trim() : null, usage: result?.usage || null };
 }
@@ -980,6 +995,12 @@ async function detectAndRewrite(result, upstreamBody) {
     console.error('detectSlop() threw, skipping:', err.message);
   }
 
+  if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
+    console.log(
+      `[slop] tripped (${matches.length} match(es)) but reply is ${content.length} chars > ${SLOP_REWRITE_MAX_CHARS} — long-form reply keeps its original text (see Aug 10 2026 note above rewritePass)`
+    );
+    return result;
+  }
   if (matches.length > 0) {
     console.log(
       `[slop] tripped (${matches.length} match(es): ${matches.map((m) => m.pattern).join(', ')}) — running rewrite pass`
