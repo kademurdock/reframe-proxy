@@ -358,7 +358,15 @@ function adaptForKimi(body) {
 }
 
 async function callOpenRouterOnce(body, timeoutMs) {
-  body = await maybeAutoThink(body);
+  // Aug 14 2026 (Part 63, the ?????? receipts): auto-think used to live HERE,
+  // which meant every INTERNAL model call routed too -- the slop rewritePass
+  // (system prompt + no reasoning field) got classified off the REPLY text it
+  // was cleaning and voted deep three times in one evening's logs (21:13:28,
+  // 21:16:39, 21:45:13Z), turning a 0.3-temp cleanup into a temperature-1,
+  // 16k-floor thinking marathon inside the delivery path, capped only by the
+  // 25s rewrite timeout. Routing now happens ONLY at the two person-facing
+  // entry points (handleStreaming + the non-stream main route), each with a
+  // real reqId, so internal helpers can never re-enter the router.
   body = adaptForKimi(body);
   let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
@@ -538,6 +546,15 @@ async function rewritePass(originalBody, offendingText, matches, hasProtectedTag
   const rewriteBody = {
     model: originalBody.model,
     temperature: 0.3,
+    // Part 63: the rewrite NEVER thinks. It exists to swap phrases, not to
+    // deliberate; reasoning here was pure latency and Moonshot spend in the
+    // reply delivery path (and adaptForKimi's reasoning branch clobbered the
+    // 0.3 temp to 1). The real guarantee is that callOpenRouterOnce no longer
+    // routes at all; this pin documents intent and locks the non-reasoning
+    // adaptForKimi lane. (Note it can NOT short-circuit the router by itself:
+    // effort:'none' deliberately doesn't count as "someone chose" there,
+    // because half the fleet carries it as an unchosen default.)
+    reasoning: { effort: 'none', enabled: false },
     messages: [
       { role: 'system', content: buildRewriteSystemPrompt(matches, hasProtectedTags) },
       { role: 'user', content: offendingText },
@@ -2182,7 +2199,11 @@ app.post('/chat/completions', async (req, res) => {
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: false })));
+  let upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: false })));
+  // Part 63: the router moved out of callOpenRouterOnce (see the comment
+  // there). Non-stream person/room turns route here, same policy as the
+  // streaming path at handleStreaming -- and now with a reqId in the logs.
+  upstreamBody = await maybeAutoThink(upstreamBody, reqId);
   let result;
   try {
     result = await callOpenRouter(upstreamBody);
