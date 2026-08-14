@@ -326,6 +326,16 @@ function adaptForKimi(body) {
   delete next.top_a;
   if (wantsReasoning) {
     next.temperature = 1;
+    /* Aug 14 2026 (auto-think tiers): an explicit low/medium/high effort now
+     * passes through to Moonshot's reasoning_effort (verified live same day:
+     * all three accepted on k2.6, budgets scale ~347/275/518 thinking tokens
+     * on the same question). Absent/enabled-only keeps today's behavior
+     * (Moonshot default budget). 'low' turns get an 8000 floor instead of
+     * 16000 — they think in hundreds of tokens, not thousands. */
+    const effortWord = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
+    if (['low', 'medium', 'high'].includes(effortWord)) {
+      next.reasoning_effort = effortWord;
+    }
     const mt = Number(next.max_tokens);
     // July 30 2026 (Amber's limerick receipts): 3000 was exactly the budget
     // K3 exhausted on a conflicted prompt -- ~12K chars of deliberation,
@@ -338,7 +348,8 @@ function adaptForKimi(body) {
     // to submit answers." 8000 -> 16000: a deep turn gets ROOM. Worst
     // case fully-burned turn ≈ a few cents, her explicit trade. The
     // wordless-turn fallback net below stays as the floor under the floor.
-    next.max_tokens = Number.isFinite(mt) ? Math.max(mt, 16000) : 16000;
+    const floorTokens = next.reasoning_effort === 'low' ? 8000 : 16000;
+    next.max_tokens = Number.isFinite(mt) ? Math.max(mt, floorTokens) : floorTokens;
   } else {
     next.reasoning_effort = 'none';
     next.temperature = 0.6;
@@ -347,6 +358,7 @@ function adaptForKimi(body) {
 }
 
 async function callOpenRouterOnce(body, timeoutMs) {
+  body = await maybeAutoThink(body);
   body = adaptForKimi(body);
   let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
@@ -1222,6 +1234,184 @@ function withDeepThinkStripped(body) {
 const HERMES_THINK_SYS =
   'For this reply, think carefully and step by step before answering. Put your private reasoning inside <think> </think> tags, then give your actual in-character reply after the closing </think> tag.';
 
+
+// -- AUTO DEEP THINK (Aug 14 2026, her design, her words: "it auto decides
+// between deepthink and instant for you... Everything on everybody should be
+// auto by default, with choices for instant and deep if desired") -----------
+// When a kimi turn arrives with NO meaningful reasoning choice (absent, or
+// the fleet-default effort:'none' that half the agents carry), the proxy
+// decides the thinking budget itself, three verified tiers (live-measured
+// this same day on k2.6: none=1 thinking token ~5s and fumbled a format;
+// low=347 tokens ~7.5s correct; default/high=518 ~12s):
+//   instant -> effort none (today's default experience, unchanged)
+//   quick   -> effort low  (~2s over instant, real thought)
+//   deep    -> enabled (Moonshot default budget, same as Deep Think today)
+// LATENCY DOCTRINE: the auto lane must never slow chitchat. A zero-cost
+// heuristic passes obvious small talk straight to instant with NO added
+// wait; only messages wearing think-about-it clothes (question shapes,
+// length, code/math) pay a ~0.5-1.2s classifier call, hard-capped at 1.2s
+// with instant as the timeout answer. EXPLICIT CHOICES ALWAYS WIN: a fresh
+// [DEEP THINK] marker arrives as effort high (skipped here); a fresh
+// [INSTANT <epoch-ms>] marker (new, mirror machinery -- the fork's future
+// "answer now" button and per-user Instant setting ride it, and typing it
+// works today) forces effort none. Phone turns keep their own lane
+// (dead air on a call is worse than shallow). Title/summarizer calls are
+// excluded by the same no-system-no-tools rule deep-think uses. Kill
+// switch: KADE_AUTO_DEEPTHINK=0. Every decision logs one [auto-think] line.
+const AUTO_DEEPTHINK = process.env.KADE_AUTO_DEEPTHINK !== '0';
+const INSTANT_RE = /\[INSTANT(?:\s+(\d{10,17}))?\]/gi;
+const AUTO_CLASSIFY_TIMEOUT_MS = Math.max(400, parseInt(process.env.AUTO_CLASSIFY_TIMEOUT_MS, 10) || 1200);
+
+function instantRequested(text) {
+  const now = Date.now();
+  for (const m of String(text).matchAll(INSTANT_RE)) {
+    const ts = m[1] ? parseInt(m[1], 10) : NaN;
+    if (Number.isFinite(ts) && now - ts <= DEEP_THINK_FRESH_MS && ts - now <= 120_000) return true;
+  }
+  return false;
+}
+
+function stripInstantFromBody(body) {
+  try {
+    const msgs = Array.isArray(body?.messages) ? body.messages : [];
+    let touched = false;
+    const cleaned = msgs.map((m) => {
+      if (!m || m.role !== 'user') return m;
+      if (typeof m.content === 'string') {
+        if (!INSTANT_RE.test(m.content)) { INSTANT_RE.lastIndex = 0; return m; }
+        INSTANT_RE.lastIndex = 0;
+        touched = true;
+        return { ...m, content: m.content.replace(INSTANT_RE, '').replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/gm, '') };
+      }
+      if (Array.isArray(m.content)) {
+        let any = false;
+        const parts = m.content.map((p) => {
+          if (p && p.type === 'text' && typeof p.text === 'string' && /\[INSTANT/i.test(p.text)) {
+            any = true;
+            return { ...p, text: p.text.replace(INSTANT_RE, '').replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/gm, '') };
+          }
+          return p;
+        });
+        if (any) { touched = true; return { ...m, content: parts }; }
+      }
+      return m;
+    });
+    return touched ? { ...body, messages: cleaned } : body;
+  } catch { return body; }
+}
+
+// The person's likely question: join the trailing user text (the fork can
+// append memory/context as extra user messages, so one message alone lies).
+function autoThinkExcerpt(body) {
+  const msgs = Array.isArray(body?.messages) ? body.messages : [];
+  const texts = [];
+  for (let i = msgs.length - 1; i >= 0 && texts.length < 3; i--) {
+    if (msgs[i] && msgs[i].role === 'user') {
+      const t = messageTextOf(msgs[i].content);
+      if (t.trim()) texts.unshift(t);
+    }
+  }
+  return texts.join('\n')
+    .replace(DEEP_THINK_RE, '')
+    .replace(INSTANT_RE, '')
+    .replace(/\[PHONE CALL[^\]]*\]/gi, '')
+    .trim()
+    .slice(-1500);
+}
+
+const AUTO_DEEP_LEXICON = /\b(why|how (do|does|would|should|can|to)|explain|understand|plan|design|compare|versus|vs\.?|should (i|we)|help me (decide|figure|pick|choose)|debug|analy[sz]e|strateg|calculat|math|prove|budget|worth it|pros and cons|difference between|what if|figure out|think through|advice|decide)\b/i;
+
+const AUTO_MATH_SHAPE = /\d\s*(%|percent)|\d\s*[*\/x×^]\s*\d/i;
+
+function autoThinkHeuristic(excerpt) {
+  const t = excerpt.trim();
+  if (!t) return 'instant';
+  if (AUTO_MATH_SHAPE.test(t)) return 'classify';
+  if (t.length < 140 && !AUTO_DEEP_LEXICON.test(t) && !t.includes('```') && (t.match(/\?/g) || []).length < 2) {
+    return 'instant';
+  }
+  if (t.length > 600 || AUTO_DEEP_LEXICON.test(t) || t.includes('```') || (t.match(/\?/g) || []).length >= 2) {
+    return 'classify';
+  }
+  return 'instant';
+}
+
+async function classifyThinkTier(excerpt, reqId) {
+  const body = {
+    model: 'kimi-k2.6',
+    messages: [
+      { role: 'system', content: 'You route incoming chat messages to a thinking budget. Reply with exactly one word and nothing else. instant = greetings, small talk, reactions, roleplay banter, simple facts, requests a good friend answers without pausing. quick = benefits from a moment of real thought: everyday advice, explanations, small math, comparisons, feelings that deserve care. deep = genuinely hard: multi-step reasoning or planning, tricky math or logic, code, big or contested decisions.' },
+      { role: 'user', content: excerpt },
+    ],
+    temperature: 0.6,
+    reasoning_effort: 'none',
+    max_tokens: 4,
+    stream: false,
+  };
+  const t0 = Date.now();
+  try {
+    const r = await fetchWithTimeout(
+      chatCompletionsUrl(body.model),
+      { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(adaptForKimi(body)) },
+      AUTO_CLASSIFY_TIMEOUT_MS
+    );
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const word = String(j?.choices?.[0]?.message?.content || '').toLowerCase();
+    const tier = word.includes('deep') ? 'deep' : word.includes('quick') ? 'quick' : 'instant';
+    console.log(`[auto-think][req ${reqId}] classifier -> ${tier} (${Date.now() - t0}ms)`);
+    return tier;
+  } catch (e) {
+    console.log(`[auto-think][req ${reqId}] classifier fell back to instant (${e.message}, ${Date.now() - t0}ms)`);
+    return 'instant';
+  }
+}
+
+async function maybeAutoThink(body, reqId = '??????') {
+  try {
+    if (!AUTO_DEEPTHINK || !isKimiModel(body?.model)) return body;
+    const r = body.reasoning || {};
+    const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
+    // Someone already chose: deep marker/setting (enabled or a real effort).
+    if (r.enabled === true || ['low', 'medium', 'high'].includes(effort)) return body;
+    const msgs = Array.isArray(body.messages) ? body.messages : [];
+    const hasSystem = msgs.some((m) => m && m.role === 'system');
+    const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+    if (!hasSystem && !hasTools) return body; // titles/summaries: never think
+    if (isPhoneTurn(body)) return body;       // the phone keeps its own lane
+    const excerpt = autoThinkExcerpt(body);
+    // Fresh explicit instant beats the router (button/setting/typed).
+    let forcedInstant = false;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i] && msgs[i].role === 'user') {
+        if (instantRequested(messageTextOf(msgs[i].content))) forcedInstant = true;
+        break;
+      }
+    }
+    const cleaned = stripInstantFromBody(body);
+    if (forcedInstant) {
+      console.log(`[auto-think][req ${reqId}] fresh [INSTANT] -> effort none, router skipped`);
+      return { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } };
+    }
+    const heur = autoThinkHeuristic(excerpt);
+    const tier = heur === 'classify' ? await classifyThinkTier(excerpt, reqId) : 'instant';
+    if (tier === 'instant') {
+      if (heur === 'classify') console.log(`[auto-think][req ${reqId}] -> instant`);
+      return cleaned;
+    }
+    console.log(`[auto-think][req ${reqId}] -> ${tier} ("${excerpt.slice(-70).replace(/\s+/g, ' ')}")`);
+    return {
+      ...cleaned,
+      reasoning: tier === 'deep'
+        ? { ...(cleaned.reasoning || {}), enabled: true, exclude: false }
+        : { ...(cleaned.reasoning || {}), effort: 'low', enabled: true, exclude: false },
+    };
+  } catch (e) {
+    console.log(`[auto-think][req ${reqId}] error, untouched: ${e.message}`);
+    return body;
+  }
+}
+
 function injectHermesThinking(body) {
   const msgs = Array.isArray(body.messages) ? body.messages.slice() : [];
   const i = msgs.findIndex((m) => m && m.role === 'system');
@@ -1331,6 +1521,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     }
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
+  upstreamBody = await maybeAutoThink(upstreamBody, reqId);
   upstreamBody = adaptForKimi(upstreamBody);
   // Session 22 (Kade: "Check caching, because that saves money in multiple
   // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
