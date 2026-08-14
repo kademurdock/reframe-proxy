@@ -1300,23 +1300,30 @@ function stripInstantFromBody(body) {
   } catch { return body; }
 }
 
-// The person's likely question: join the trailing user text (the fork can
-// append memory/context as extra user messages, so one message alone lies).
-function autoThinkExcerpt(body) {
+// The person's actual send. Live receipts (first smoke, Aug 14 20:48Z):
+// the fork stacks platform-note/diary/memory blobs as user messages AFTER
+// the person's turn, so "last user message" is a blob and a tail-slice of
+// joined texts drowned the real question — the SSI test classified off a
+// diary line. The person's message is the FIRST message of the TRAILING
+// user-run (the injections only ever append behind it), and the excerpt
+// keeps the FRONT, where the question lives.
+function autoThinkPersonText(body) {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
-  const texts = [];
-  for (let i = msgs.length - 1; i >= 0 && texts.length < 3; i--) {
-    if (msgs[i] && msgs[i].role === 'user') {
-      const t = messageTextOf(msgs[i].content);
-      if (t.trim()) texts.unshift(t);
-    }
-  }
-  return texts.join('\n')
+  let end = msgs.length - 1;
+  while (end >= 0 && (!msgs[end] || msgs[end].role !== 'user')) end--;
+  if (end < 0) return '';
+  let start = end;
+  while (start - 1 >= 0 && msgs[start - 1] && msgs[start - 1].role === 'user') start--;
+  return messageTextOf(msgs[start].content);
+}
+
+function autoThinkExcerpt(body) {
+  return autoThinkPersonText(body)
     .replace(DEEP_THINK_RE, '')
     .replace(INSTANT_RE, '')
     .replace(/\[PHONE CALL[^\]]*\]/gi, '')
     .trim()
-    .slice(-1500);
+    .slice(0, 1500);
 }
 
 const AUTO_DEEP_LEXICON = /\b(why|how (do|does|would|should|can|to)|explain|understand|plan|design|compare|versus|vs\.?|should (i|we)|help me (decide|figure|pick|choose)|debug|analy[sz]e|strateg|calculat|math|prove|budget|worth it|pros and cons|difference between|what if|figure out|think through|advice|decide)\b/i;
@@ -1380,14 +1387,9 @@ async function maybeAutoThink(body, reqId = '??????') {
     if (!hasSystem && !hasTools) return body; // titles/summaries: never think
     if (isPhoneTurn(body)) return body;       // the phone keeps its own lane
     const excerpt = autoThinkExcerpt(body);
-    // Fresh explicit instant beats the router (button/setting/typed).
-    let forcedInstant = false;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i] && msgs[i].role === 'user') {
-        if (instantRequested(messageTextOf(msgs[i].content))) forcedInstant = true;
-        break;
-      }
-    }
+    // Fresh explicit instant beats the router (button/setting/typed) —
+    // read off the person's send, same message the excerpt uses.
+    const forcedInstant = instantRequested(autoThinkPersonText(body));
     const cleaned = stripInstantFromBody(body);
     if (forcedInstant) {
       console.log(`[auto-think][req ${reqId}] fresh [INSTANT] -> effort none, router skipped`);
