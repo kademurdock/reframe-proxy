@@ -1343,6 +1343,33 @@ function autoThinkExcerpt(body) {
     .slice(0, 1500);
 }
 
+// How many user messages the trailing user-run held. The fork stacks
+// platform-note/diary/memory blobs as SEPARATE user messages behind the
+// person's turn, so run > 1 means blobs were stacked (and correctly skipped,
+// since the excerpt keeps the FIRST message of the run); run === 1 with a
+// blob visible in the excerpt means the blob is INSIDE her own message —
+// a different bug with a different fix. Read-only, mirrors autoThinkPersonText.
+function autoThinkRunLen(body) {
+  const msgs = Array.isArray(body?.messages) ? body.messages : [];
+  let end = msgs.length - 1;
+  while (end >= 0 && (!msgs[end] || msgs[end].role !== 'user')) end--;
+  if (end < 0) return 0;
+  let start = end;
+  while (start - 1 >= 0 && msgs[start - 1] && msgs[start - 1].role === 'user') start--;
+  return end - start + 1;
+}
+
+// The decision receipt, BOTH ends on purpose. Part 65 logged only the tail and
+// caught a deep vote whose tail was a dated diary line — which by itself cannot
+// say whether the router read her question (head hers, blob riding behind it)
+// or never saw it at all (head also a blob). The question lives at the FRONT,
+// so the head is the tell. Short excerpts print whole; no fake ellipsis.
+function excerptReceipt(excerpt) {
+  const flat = String(excerpt || '').replace(/\s+/g, ' ').trim();
+  if (flat.length <= 115) return flat;
+  return `${flat.slice(0, 70)} … ${flat.slice(-40)}`;
+}
+
 const AUTO_DEEP_LEXICON = /\b(why|how (do|does|would|should|can|to)|explain|understand|plan|design|compare|versus|vs\.?|should (i|we)|help me (decide|figure|pick|choose)|debug|analy[sz]e|strateg|calculat|math|prove|budget|worth it|pros and cons|difference between|what if|figure out|think through|advice|decide)\b/i;
 
 const AUTO_MATH_SHAPE = /\d\s*(%|percent)|\d\s*[*\/x×^]\s*\d/i;
@@ -1447,10 +1474,12 @@ async function maybeAutoThink(body, reqId = '??????') {
       tier = 'quick';
     }
     if (tier === 'instant') {
-      if (heur === 'classify') console.log(`[auto-think][req ${reqId}] -> instant`);
+      if (heur === 'classify') {
+        console.log(`[auto-think][req ${reqId}] -> instant (len ${excerpt.length}, run ${autoThinkRunLen(body)}) "${excerptReceipt(excerpt)}"`);
+      }
       return cleaned; // call turns keep the effort:'none' they arrived with
     }
-    console.log(`[auto-think][req ${reqId}] -> ${tier} ("${excerpt.slice(-70).replace(/\s+/g, ' ')}")`);
+    console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}) "${excerptReceipt(excerpt)}"`);
     return {
       ...cleaned,
       reasoning: tier === 'deep'
