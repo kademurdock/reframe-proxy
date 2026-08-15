@@ -1175,7 +1175,17 @@ function deepThinkRequested(body) {
     // a harmless legacy for any caller without the fork-side flag.
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (!msgs[i] || msgs[i].role !== 'user') continue;
-      const text = messageTextOf(msgs[i].content);
+      /* Part 66 final check: the newest-message-decides rule assumed a marked
+       * OLDER message is a separate message and therefore inert. The voice
+       * lane's composeTextWithHistory breaks that assumption by folding the
+       * whole transcript INTO the newest message — so a mid-call "think hard"
+       * marker rode the replay, its timestamp stayed inside the 10-minute
+       * freshness window, and every following call turn re-triggered FULL
+       * deep: ~12s of dead air per turn, the exact disease the call cap
+       * exists to prevent, resurrected through the wrapper. Markers inside
+       * the replay block are history by definition; her live words sit after
+       * it and survive the strip. */
+      const text = stripContextReplay(messageTextOf(msgs[i].content));
       for (const m of text.matchAll(DEEP_THINK_RE)) {
         const ts = m[1] ? parseInt(m[1], 10) : NaN;
         // A marker with no/garbled timestamp is ignored (someone literally
