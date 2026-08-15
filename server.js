@@ -2355,6 +2355,33 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
 }
 
 // -- main route --------------------------------------------------------------
+// Part 68 (Aug 15 2026): deepseek-v4-flash writes literal special-token TEXT
+// -- "<|end_of_sentence|>" -- into generated conversation titles (seen live on
+// camera in the App-Review recording). Same hard-floor philosophy as the
+// never-reason guard in withReasoningIncluded: scrub title/summarizer response
+// CONTENT of <|...|> token text server-side, whatever model is configured, so
+// the fix can't expire when someone changes titleModel. Title/summarizer calls
+// are the no-system no-tools shape (checked on the ORIGINAL request body);
+// real agent turns always carry a system message and are never touched.
+function scrubSpecialTokensFromTitleReply(result, originalBody) {
+  try {
+    const msgs = Array.isArray(originalBody.messages) ? originalBody.messages : [];
+    const hasSystem = msgs.some((m) => m && m.role === 'system');
+    const hasTools = Array.isArray(originalBody.tools) && originalBody.tools.length > 0;
+    if (hasSystem || hasTools) return;
+    for (const c of (result && result.choices) || []) {
+      if (c && c.message && typeof c.message.content === 'string') {
+        const before = c.message.content;
+        const after = before.replace(/<\|[^|<>]{1,48}\|>/g, '').replace(/[ \t]{2,}/g, ' ').trim();
+        if (after !== before) {
+          c.message.content = after;
+          console.log(`[title-scrub] special-token text removed ("${before.slice(0, 60)}" -> "${after.slice(0, 60)}")`);
+        }
+      }
+    }
+  } catch (e) { /* fail-soft: an ugly title beats a dead title call */ }
+}
+
 app.post('/chat/completions', async (req, res) => {
   const wantsStream = !!req.body.stream;
   const reqId = Math.random().toString(36).slice(2, 8);
@@ -2403,6 +2430,7 @@ app.post('/chat/completions', async (req, res) => {
     return res.json(result);
   }
   await detectAndRewrite(result, upstreamBody);
+  scrubSpecialTokensFromTitleReply(result, req.body);
   // Reverted same as the streaming path above -- do not embed reasoning into
   // message.content. See the long comment in handleStreaming() for why.
   res.json(result);
