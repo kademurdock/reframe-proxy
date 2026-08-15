@@ -1334,14 +1334,63 @@ function stripInstantFromBody(body) {
 // diary line. The person's message is the FIRST message of the TRAILING
 // user-run (the injections only ever append behind it), and the excerpt
 // keeps the FRONT, where the question lives.
-function autoThinkPersonText(body) {
+/* THE DYNAMIC TAIL, and the receipt that found it (Part 67, Aug 15 2026).
+ * Part 66 fixed the phone lane's replay wrapper and the morning check said so:
+ * "[EARLIER IN THIS CONVERSATION" was gone from every excerpt head. What sat
+ * there instead, on EVERY typed turn in the live window, was
+ *     (len 1500, run 2) "# `web_search` Runtime Context Conversation Date …"
+ * — a different machine blob, same disease. The router was still voting on
+ * text nobody said.
+ *
+ * Cause, and the fork says it out loud in its own comment
+ * (api/server/controllers/agents/client.js, the Aug-4 cache-breaker note):
+ * `additional_instructions` is "the SDK's dynamic system tail that gets
+ * re-inserted BEFORE the newest message every turn." So the trailing user-run
+ * is [tail blob, her message] — and "keep the FIRST message of the run," which
+ * was right for the July geometry where blobs were APPENDED behind her, lands
+ * exactly on the blob here.
+ *
+ * That is now THREE opposite geometries across two lanes, so this stops being
+ * positional. A message is skipped when it STARTS WITH a literal header the
+ * fork itself writes — nothing heuristic, nothing that could swallow a real
+ * message that merely happens to use markdown. If every message in the run
+ * looks injected, fall back to the first one: a bad excerpt still beats an
+ * empty one, which would route everything to instant silently. */
+const DYNAMIC_TAIL_MARKERS = [
+  /^#\s*`[a-z_]+`\s+Runtime Context/i,     // buildWebSearchDynamicContext + siblings
+  /^#\s*`[a-z_]+`:/i,                        // buildWebSearchContext-shaped tool blocks
+  /^#\s*Waiting nudges for this user/i,    // kadeNudges
+  /^#\s*Logbook recall/i,                  // kadeDiary getDiaryTailBlock
+  /^#\s*Existing memory about the user:/i,   // memory cards, if they ever ride the tail
+];
+
+function looksInjected(text) {
+  const t = stripContextReplay(text).trim();
+  if (!t) return false;
+  return DYNAMIC_TAIL_MARKERS.some((re) => re.test(t));
+}
+
+/* Read-only: which message of the trailing user-run is the person's, plus how
+ * many injected ones sat in front of it. Returned together so the log line can
+ * SHOW the skip — the next surprise blob shape should appear in a receipt, not
+ * quietly poison a month of routing votes the way this one did. */
+function autoThinkPersonPick(body) {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
   let end = msgs.length - 1;
   while (end >= 0 && (!msgs[end] || msgs[end].role !== 'user')) end--;
-  if (end < 0) return '';
+  if (end < 0) return { text: '', skipped: 0, runLen: 0 };
   let start = end;
   while (start - 1 >= 0 && msgs[start - 1] && msgs[start - 1].role === 'user') start--;
-  return messageTextOf(msgs[start].content);
+  const runLen = end - start + 1;
+  for (let i = start; i <= end; i++) {
+    const text = messageTextOf(msgs[i].content);
+    if (!looksInjected(text)) return { text, skipped: i - start, runLen };
+  }
+  return { text: messageTextOf(msgs[start].content), skipped: 0, runLen };
+}
+
+function autoThinkPersonText(body) {
+  return autoThinkPersonPick(body).text;
 }
 
 /* THE CONTEXT-REPLAY WRAPPER, and the receipt that found it (Part 66,
@@ -1387,13 +1436,7 @@ function autoThinkExcerpt(body) {
 // blob visible in the excerpt means the blob is INSIDE her own message —
 // a different bug with a different fix. Read-only, mirrors autoThinkPersonText.
 function autoThinkRunLen(body) {
-  const msgs = Array.isArray(body?.messages) ? body.messages : [];
-  let end = msgs.length - 1;
-  while (end >= 0 && (!msgs[end] || msgs[end].role !== 'user')) end--;
-  if (end < 0) return 0;
-  let start = end;
-  while (start - 1 >= 0 && msgs[start - 1] && msgs[start - 1].role === 'user') start--;
-  return end - start + 1;
+  return autoThinkPersonPick(body).runLen;
 }
 
 // The decision receipt, BOTH ends on purpose. Part 65 logged only the tail and
@@ -1515,11 +1558,11 @@ async function maybeAutoThink(body, reqId = '??????') {
     }
     if (tier === 'instant') {
       if (heur === 'classify') {
-        console.log(`[auto-think][req ${reqId}] -> instant (len ${excerpt.length}, run ${autoThinkRunLen(body)}) "${excerptReceipt(excerpt)}"`);
+        console.log(`[auto-think][req ${reqId}] -> instant (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
       }
       return cleaned; // call turns keep the effort:'none' they arrived with
     }
-    console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}) "${excerptReceipt(excerpt)}"`);
+    console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
     return {
       ...cleaned,
       reasoning: tier === 'deep'
