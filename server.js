@@ -1515,15 +1515,29 @@ async function classifyThinkTier(excerpt, reqId) {
 
 async function maybeAutoThink(body, reqId = '??????') {
   try {
-    if (!AUTO_DEEPTHINK || !isKimiModel(body?.model)) return body;
+    /* Part 67 (Aug 15): every silent exit now names itself. Her live web
+     * turns produced ZERO auto-think lines while everything visible looked
+     * eligible — kimi model, system+tools, no explicit choice — and the
+     * quiet returns below made that undebuggable from logs alone. One line
+     * per skip; the next mystery names its own gate. */
+    if (!AUTO_DEEPTHINK || !isKimiModel(body?.model)) {
+      console.log(`[auto-think][req ${reqId}] skip: ${!AUTO_DEEPTHINK ? 'KADE_AUTO_DEEPTHINK=0' : `non-kimi model (${String(body?.model || '(none)')})`}`);
+      return body;
+    }
     const r = body.reasoning || {};
     const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
     // Someone already chose: deep marker/setting (enabled or a real effort).
-    if (r.enabled === true || ['low', 'medium', 'high'].includes(effort)) return body;
+    if (r.enabled === true || ['low', 'medium', 'high'].includes(effort)) {
+      console.log(`[auto-think][req ${reqId}] skip: explicit choice already made (enabled=${r.enabled === true}, effort=${effort || '(none)'})`);
+      return body;
+    }
     const msgs = Array.isArray(body.messages) ? body.messages : [];
     const hasSystem = msgs.some((m) => m && m.role === 'system');
     const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
-    if (!hasSystem && !hasTools) return body; // titles/summaries: never think
+    if (!hasSystem && !hasTools) {
+      console.log(`[auto-think][req ${reqId}] skip: bare title/summarizer shape`);
+      return body; // titles/summaries: never think
+    }
     /* CALLS RIDE AUTO TOO, CAPPED (Aug 14 2026, her ask: "let's turn the phone
      * line and app calls on auto too"). This used to be a flat skip — every
      * call turn was instant, always. Now the router runs on calls as well, but
