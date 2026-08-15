@@ -1476,6 +1476,30 @@ function injectHermesThinking(body) {
 
 function withReasoningIncluded(body) {
   const existing = body.reasoning || {};
+  /* TITLE / SUMMARIZER CALLS NEVER REASON (Aug 15 2026) — a hard floor, not a
+   * per-model choice. This exact class of bug has now bitten twice: July 16,
+   * glm-5.2's hidden think block ended up INSIDE generated titles ("junk in
+   * titles"); Aug 15, deepseek-v4-flash spent the ENTIRE max_tokens budget on
+   * reasoning and returned an EMPTY title (600 tokens of reasoning, no title,
+   * ~9x the cost of a good one). Both times the fix was "pick a different
+   * model," which is a fix that expires the next time someone changes
+   * titleModel. So the guard lives here instead: title/summarizer requests
+   * carry the whole conversation in ONE user message with no system message
+   * and no tools — the same shape deepThinkRequested and maybeAutoThink
+   * already use to refuse to deep-think them — and now they also get reasoning
+   * pinned hard off, whatever model is configured. Cheap, silent, and it makes
+   * ANY model safe as titleModel. */
+  {
+    const msgs = Array.isArray(body.messages) ? body.messages : [];
+    const hasSystem = msgs.some((m) => m && m.role === 'system');
+    const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+    if (!hasSystem && !hasTools) {
+      return withDeepThinkStripped({
+        ...body,
+        reasoning: { ...existing, effort: 'none', enabled: false, exclude: false },
+      });
+    }
+  }
   // SHIM MODELS: never pass reasoning.enabled/effort (leaks raw CoT into
   // content on Nebius). Deep Think -> inject Hermes' thinking instruction.
   const isShimModel = TOOL_SHIM_MODELS.has(String(body.model || '').toLowerCase());
