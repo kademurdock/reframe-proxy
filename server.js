@@ -1402,7 +1402,20 @@ async function maybeAutoThink(body, reqId = '??????') {
     const hasSystem = msgs.some((m) => m && m.role === 'system');
     const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
     if (!hasSystem && !hasTools) return body; // titles/summaries: never think
-    if (isPhoneTurn(body)) return body;       // the phone keeps its own lane
+    /* CALLS RIDE AUTO TOO, CAPPED (Aug 14 2026, her ask: "let's turn the phone
+     * line and app calls on auto too"). This used to be a flat skip — every
+     * call turn was instant, always. Now the router runs on calls as well, but
+     * a call can never be voted DEEP: deep measured ~12s on k2.6, and twelve
+     * seconds of silence on a phone call reads as a dropped call (her dead-air
+     * rule, which stands). Quick is +~2s over instant — a natural conversational
+     * pause — so deep is capped down to quick and instant stays instant.
+     * The escape hatch is unchanged and better than a cap: saying "think hard"
+     * on a call sets a fresh [DEEP THINK] marker, which withReasoningIncluded
+     * turns into effort:'high' BEFORE this function runs, and the explicit-choice
+     * guard above returns early — so a caller who actually wants deep still gets
+     * the full budget by asking out loud. Covers the app/web call lane too: the
+     * bridge appends the same [PHONE CALL ...] suffix on those sessions. */
+    const isCall = isPhoneTurn(body);
     const excerpt = autoThinkExcerpt(body);
     // Fresh explicit instant beats the router (button/setting/typed) —
     // read off the person's send, same message the excerpt uses.
@@ -1413,10 +1426,14 @@ async function maybeAutoThink(body, reqId = '??????') {
       return { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } };
     }
     const heur = autoThinkHeuristic(excerpt);
-    const tier = heur === 'classify' ? await classifyThinkTier(excerpt, reqId) : 'instant';
+    let tier = heur === 'classify' ? await classifyThinkTier(excerpt, reqId) : 'instant';
+    if (isCall && tier === 'deep') {
+      console.log(`[auto-think][req ${reqId}] call turn: deep capped to quick (dead-air rule)`);
+      tier = 'quick';
+    }
     if (tier === 'instant') {
       if (heur === 'classify') console.log(`[auto-think][req ${reqId}] -> instant`);
-      return cleaned;
+      return cleaned; // call turns keep the effort:'none' they arrived with
     }
     console.log(`[auto-think][req ${reqId}] -> ${tier} ("${excerpt.slice(-70).replace(/\s+/g, ' ')}")`);
     return {
