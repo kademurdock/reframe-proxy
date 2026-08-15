@@ -1334,8 +1334,35 @@ function autoThinkPersonText(body) {
   return messageTextOf(msgs[start].content);
 }
 
+/* THE CONTEXT-REPLAY WRAPPER, and the receipt that found it (Part 66,
+ * Aug 15 2026). Printing the excerpt HEAD as well as the tail settled the
+ * open question from Part 65 immediately and unpleasantly: EVERY classified
+ * turn in the live window logged
+ *     (len 1500, run 2) "[EARLIER IN THIS CONVERSATION — context only, …"
+ * — 1500 characters of replayed transcript, her actual sentence nowhere in
+ * it. The router has been voting on machine text, not on what anybody said.
+ *
+ * Cause, and it is nobody's mistake twice: the proxy's composeTextWithHistory
+ * folds prior turns into ONE user message with the transcript PREPENDED and
+ * the person's words at the very END (inworld-tts-proxy/librechat.js) — that
+ * is the voice/phone lane. Part 61 fixed the opposite shape on the typed lane,
+ * where the fork APPENDS diary and platform blobs BEHIND her message, and the
+ * fix there was "keep the FRONT." Both observations were correct about their
+ * own lane, which is exactly why one log line could never settle it.
+ *
+ * So: strip the wrapper by its own literal delimiters rather than guessing at
+ * either end. What is left is what the person actually said, wherever it sat.
+ * If a message is nothing BUT wrapper, keep the original text — a bad excerpt
+ * still beats an empty one, which would silently route everything to instant. */
+const CONTEXT_REPLAY_RE = /\[EARLIER IN THIS CONVERSATION[\s\S]*?Reply ONLY to what follows\.\]/gi;
+
+function stripContextReplay(text) {
+  const cut = String(text || '').replace(CONTEXT_REPLAY_RE, ' ').trim();
+  return cut.length >= 2 ? cut : String(text || '');
+}
+
 function autoThinkExcerpt(body) {
-  return autoThinkPersonText(body)
+  return stripContextReplay(autoThinkPersonText(body))
     .replace(DEEP_THINK_RE, '')
     .replace(INSTANT_RE, '')
     .replace(/\[PHONE CALL[^\]]*\]/gi, '')
@@ -1461,7 +1488,10 @@ async function maybeAutoThink(body, reqId = '??????') {
     const excerpt = autoThinkExcerpt(body);
     // Fresh explicit instant beats the router (button/setting/typed) —
     // read off the person's send, same message the excerpt uses.
-    const forcedInstant = instantRequested(autoThinkPersonText(body));
+    /* Same wrapper, same problem: a replayed transcript can contain a marker
+     * from an EARLIER turn, and a stale [INSTANT] in the history must not
+     * force this turn instant. Read the marker off her words only. */
+    const forcedInstant = instantRequested(stripContextReplay(autoThinkPersonText(body)));
     const cleaned = stripInstantFromBody(body);
     if (forcedInstant) {
       console.log(`[auto-think][req ${reqId}] fresh [INSTANT] -> effort none, router skipped`);
