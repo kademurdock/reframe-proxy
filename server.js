@@ -1571,9 +1571,11 @@ async function maybeAutoThink(body, reqId = '??????') {
       tier = 'quick';
     }
     if (tier === 'instant') {
-      if (heur === 'classify') {
-        console.log(`[auto-think][req ${reqId}] -> instant (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
-      }
+      /* Part 67, the last silent path: heuristic-instant used to return with
+       * no line at all — which read as "auto-think is broken" the first time
+       * anyone checked the logs after the excerpt fix made real excerpts
+       * short again. The file's own promise is one line per decision. */
+      console.log(`[auto-think][req ${reqId}] -> instant (${heur === 'classify' ? 'classifier' : 'heuristic'}, len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
       return cleaned; // call turns keep the effort:'none' they arrived with
     }
     console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
