@@ -1360,15 +1360,30 @@ function autoThinkHeuristic(excerpt) {
   return 'instant';
 }
 
+/* THE ROUTER'S OWN MODEL (Aug 15 2026 — her call, "switch all those background
+ * processes"). Moved off kimi-k2.6, and deliberately NOT to deepseek-v4-flash:
+ * this call is hard-capped at AUTO_CLASSIFY_TIMEOUT_MS (1200ms) with instant as
+ * the timeout answer, so a slow classifier doesn't fail loudly — it silently
+ * turns auto-think OFF. Measured on classifier-shaped calls (max_tokens 4):
+ *   deepseek-v4-flash  median 2078ms, worst 5521ms — 4 of 6 OVER the cap.
+ *   gemini-2.5-flash-lite  median 460ms, worst 617ms — 0 of 6 over, and it got
+ *   all three routing calls right (deep / quick / instant).
+ * Flash-lite is also ~6.5x cheaper in and ~8.5x cheaper out than k2.6
+ * ($0.10/$0.40 vs $0.65/$3.41 per M) and — the part that matters most — it
+ * moves this per-turn burn OFF the Moonshot pot (the strained one that carries
+ * the whole fleet) and onto OpenRouter. Same model the fork already uses for
+ * titles. Non-kimi models route to OpenRouter automatically via
+ * chatCompletionsUrl/chatHeaders, and adaptForKimi passes them through
+ * untouched. Revert = put 'kimi-k2.6' back on this line. */
 async function classifyThinkTier(excerpt, reqId) {
   const body = {
-    model: 'kimi-k2.6',
+    model: 'google/gemini-2.5-flash-lite',
     messages: [
       { role: 'system', content: 'You route incoming chat messages to a thinking budget. Reply with exactly one word and nothing else. instant = greetings, small talk, reactions, roleplay banter, simple facts, requests a good friend answers without pausing. quick = benefits from a moment of real thought: everyday advice, explanations, small math, comparisons, feelings that deserve care. deep = genuinely hard: multi-step reasoning or planning, tricky math or logic, code, big or contested decisions.' },
       { role: 'user', content: excerpt },
     ],
     temperature: 0.6,
-    reasoning_effort: 'none',
+    reasoning_effort: 'none', // harmless on flash-lite; kept for an easy revert to k2.6
     max_tokens: 4,
     stream: false,
   };
