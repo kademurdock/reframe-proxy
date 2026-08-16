@@ -17,7 +17,7 @@ const LEVEL_RANK = { strict: 1, balanced: 2, aggressive: 3 };
 
 const SUBJ = "(?:it|that|this|these|those)";
 const COP  = "(?:'s|’s|s| is| are)?";
-const COP2 = "(?:'s|’s|s| is| are)";
+const COP2 = "(?:'s|’s|s| is| are| ain't| ain’t| aint)";
 const EMPH = "(?:just|merely|simply|only)";
 const ART  = "(?:a|an|the)";
 const SEP  = "(?:\\s*[,\\u2014\\u2013:;]\\s*|\\.\\s+)";
@@ -41,10 +41,21 @@ const DETECTORS = [
     ),
   },
   {
+    // "that ain't X. That's just Y" — ain't carries its own negation, so the
+    // bare-pivot pattern's separate "not" never matches the dialect form.
+    pattern: 'reframe_bare_aint',
+    tightness: 'balanced',
+    xy: [2, 4],
+    re: new RegExp(
+      `\\b(${SUBJ})\\s+ain['’]?t\\s+(?:${EMPH}\\s+)?(${RUN})${SEP}(${SUBJ})${COP2}\\s+(?:${EMPH}\\s+)?(?:${ART}\\s+)?(${RUN_END})\\s*[.!?]`,
+      'gi'
+    ),
+  },
+  {
     pattern: 'reframe_second_person',
     tightness: 'balanced',
     xy: [2, 3],
-    re: /\b(?:you|she|he|they|we)\s+(?:were|was|are|is|do|does|did)\s*n[o'\u2019]t\s+(?:just\s+)?([^,.;:!?]{2,60}),\s*(?:you|she|he|they|we)\b([^.!?]{2,90})[.!?]/gi,
+    re: /\b(?:you|she|he|they|we)\s+(?:(?:were|was|are|is|do|does|did)\s*n[o'\u2019]t|ain['\u2019]?t)\s+(?:just\s+)?([^,.;:!?]{2,60}),\s*(?:you|she|he|they|we)\b([^.!?]{2,90})[.!?]/gi,
   },
   {
     pattern: 'reframe_emphatic',
