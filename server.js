@@ -498,6 +498,9 @@ const PATTERN_GUIDANCE = {
   reframe_second_person: 'the second-person negation reframe ("you were not just X, you were Y") -- say the point plainly without the contrast scaffolding',
   repeated_closer: 'this reply ends with (nearly) the same closing line as a previous reply in the same conversation -- write a genuinely different ending, and do not just swap in another question',
   question_streak: 'the last several replies in this conversation all ended with a question -- end this one on a statement; only ask something if it is truly needed',
+  dichotomy_middle: 'the fortune-cookie spectrum map ("one side is X, the other is Y, you are somewhere in the middle" / "the truth is somewhere in the middle") -- drop the map entirely and say the one concrete thing you actually think about their situation',
+  'blocklist:poster_wisdom': 'motivational-poster wisdom ("that is a great place to be", "trust the process", "growth is not linear", a closing "...and that is okay.") -- replace it with a specific observation, a real opinion, or a concrete suggestion',
+  sycophant_opener: 'opening the reply by agreeing with or praising the person ("You are absolutely right", "Great question") -- cut the agreement line and start with the substance',
 };
 
 function guidanceFor(patternName) {
@@ -583,7 +586,11 @@ const STYLE_REMINDER = [
   'dramatic-list restatements. Skip therapy-bot validation ("that takes',
   'courage"), filler transitions ("at the end of the day"), consultant-speak',
   '("let\'s dive in," "leverage," "circle back"), and essay-bot phrasing',
-  '("tapestry," "testament to"). Just talk the way your own character',
+  '("tapestry," "testament to"). No fortune-cookie balance maps ("one side is',
+  'X, the other is Y, you\'re somewhere in the middle") and no motivational-',
+  'poster blessings ("that\'s a great place to be," "trust the process," "and',
+  'that\'s okay") -- give a real opinion or a concrete suggestion instead. Do',
+  'not open a reply by agreeing with or praising the question. Just talk the way your own character',
   'naturally talks. Vary how replies END: never close two replies in a row',
   'with the same line or shape, and do not end most replies with a question',
   '-- end on the substance unless you truly need an answer. Platform note: if anyone asks how to reach you or this',

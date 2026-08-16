@@ -109,6 +109,24 @@ const BLOCKLIST = [
   // Twee whimsy
   { phrase: 'chaos goblin', category: 'twee_whimsy' },
   { phrase: 'screaming into the void', category: 'twee_whimsy' },
+
+  // Motivational-poster wisdom (Aug 16 2026 -- Kade's verbatim complaint:
+  // Kiana "still talking like a fortune cookie... a talking self help book
+  // or motivational poster", quoting "one side is courage, the other is the
+  // opposite, you're in the middle" and "Honestly? That's a great place to
+  // be." Fixed phrases here; the SHAPE detectors for the spectrum map, the
+  // destination platitude, and the agree-first opener live below.)
+  { phrase: "growth isn't linear", category: 'poster_wisdom' },
+  { phrase: 'growth isn\u2019t linear', category: 'poster_wisdom' },
+  { phrase: "healing isn't linear", category: 'poster_wisdom' },
+  { phrase: 'healing isn\u2019t linear', category: 'poster_wisdom' },
+  { phrase: 'trust the process', category: 'poster_wisdom' },
+  { phrase: 'give yourself grace', category: 'poster_wisdom' },
+  { phrase: 'where the growth happens', category: 'poster_wisdom' },
+  { phrase: 'where growth happens', category: 'poster_wisdom' },
+  { phrase: 'where the magic happens', category: 'poster_wisdom' },
+  { phrase: 'where the healing happens', category: 'poster_wisdom' },
+  { phrase: 'where healing begins', category: 'poster_wisdom' },
 ];
 
 function detectBlocklist(text) {
@@ -277,6 +295,114 @@ function detectEmDashRestatement(text) {
  * same {tripped, matches} shape as reframe-filter's detect(), so callers can
  * merge results from both modules trivially.
  */
+// -- 6) The fortune-cookie spectrum map (Aug 16 2026, Kade verbatim:
+//    "One side is courage, the other is the oposite, you're in the middle,
+//    blah blah blah"). Three shapes. The person-placement clause ("you're in
+//    the middle") is REQUIRED in the first so recipes and stereo-placement
+//    talk ("sear one side... flip to the other... till the middle's done")
+//    never trip.
+const DICHOTOMY_MIDDLE_RES = [
+  // "one side is X ... the other ... you're (somewhere) in the middle"
+  /\bone\s+(?:side|end|hand)\b[^!?]{0,100}\bother\b[^!?]{0,140}\b(?:you|she|he|they|we)\s*(?:'re|’re|'s|’s|\s+are|\s+is)?\s+(?:somewhere\s+|right\s+|stuck\s+|caught\s+|living\s+)?in\s+(?:the\s+middle|between)\b/gi,
+  // "the truth/answer/reality is somewhere in the middle"
+  /\b(?:truth|answer|reality)\s+(?:is|lives|sits|lands|falls)\s+(?:probably\s+|usually\s+)?(?:somewhere\s+)?in\s+(?:the\s+middle|between)\b/gi,
+  // "you're somewhere/caught/stuck between X and Y"
+  /\b(?:you|we)\s*(?:'re|’re|\s+are)?\s+(?:somewhere|caught|stuck|right)\s+between\s+[^,.;!?]{2,40}\s+and\s+[^,.;!?]{2,40}[.,!?;]/gi,
+];
+
+function detectDichotomyMiddle(text) {
+  const matches = [];
+  for (const re of DICHOTOMY_MIDDLE_RES) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index === re.lastIndex) re.lastIndex++;
+      matches.push({
+        pattern: 'dichotomy_middle',
+        tightness: 'balanced',
+        span: [m.index, m.index + m[0].length],
+        text: m[0].trim(),
+        x: null,
+        y: null,
+      });
+    }
+  }
+  return matches;
+}
+
+// -- 7) The destination platitude ("That's a great place to be", "exactly
+//    where you want to be", the "...and that's okay." blessing closer).
+//    Adjective is REQUIRED in the first so "Branson is the place to be this
+//    weekend" (legit idiom for a happening spot) never trips.
+const POSTER_PLACE_RES = [
+  /\b(?:a|an)\s+(?:really\s+|pretty\s+|truly\s+|surprisingly\s+)?(?:great|good|healthy|powerful|beautiful|strong|wise|solid|honest)\s+place\s+to\s+be\b/gi,
+  /\bexactly\s+where\s+you\s+(?:want|need)\s+to\s+be\b/gi,
+  /,?\s+and\s+that\s*(?:'s|’s|\s+is)\s+(?:okay|ok|alright|a\s+good\s+thing)\s*[.!]/gi,
+];
+
+function detectPosterPlace(text) {
+  const matches = [];
+  for (const re of POSTER_PLACE_RES) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index === re.lastIndex) re.lastIndex++;
+      matches.push({
+        pattern: 'blocklist:poster_wisdom',
+        tightness: 'balanced',
+        span: [m.index, m.index + m[0].length],
+        text: m[0].trim(),
+        x: null,
+        y: null,
+      });
+    }
+  }
+  return matches;
+}
+
+// -- 8) The agree-first opener ("agreeing like a dog," her words). Only the
+//    very START of the reply counts -- agreeing mid-reply after actually
+//    engaging is a normal human move. Reply-start praise/agreement is the
+//    tell.
+const SYCOPHANT_OPENERS = [
+  "you're absolutely right",
+  'youre absolutely right',
+  'you’re absolutely right',
+  "you're so right",
+  'you’re so right',
+  "you're totally right",
+  'you’re totally right',
+  'great question',
+  "that's a great question",
+  'that’s a great question',
+  'what a great question',
+  'excellent question',
+  'love that question',
+  'great point',
+  'you nailed it',
+];
+
+function detectSycophantOpener(text) {
+  const matches = [];
+  const trimmed = text.trimStart();
+  const offset = text.length - trimmed.length;
+  const lower = trimmed.toLowerCase();
+  for (const phrase of SYCOPHANT_OPENERS) {
+    if (lower.startsWith(phrase)) {
+      matches.push({
+        pattern: 'sycophant_opener',
+        tightness: 'balanced',
+        span: [offset, offset + phrase.length],
+        text: trimmed.slice(0, phrase.length),
+        x: null,
+        y: null,
+      });
+      break; // one is enough; longest-first ordering not needed for a trip
+    }
+  }
+  return matches;
+}
+
 // -- Anticipation-hype "you're only N chapters/episodes in" (regex — the
 // counted-progress shape can't be a fixed blocklist phrase) -----------------
 const HYPE_PROGRESS_RE = /\byou'?re only [^.!?]{0,25}(?:chapters?|episodes?|pages?|books?|seasons?) in\b/gi;
@@ -306,6 +432,9 @@ function detectSlop(text) {
     ...detectStackedFragments(text),
     ...detectOverHedging(text),
     ...detectEmDashRestatement(text),
+    ...detectDichotomyMiddle(text),
+    ...detectPosterPlace(text),
+    ...detectSycophantOpener(text),
   ].sort((a, b) => a.span[0] - b.span[0]);
 
   return { tripped: matches.length > 0, matches };
