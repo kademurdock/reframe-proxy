@@ -492,6 +492,12 @@ const PATTERN_GUIDANCE = {
   'blocklist:consultant_verb': 'consultant-speak (e.g. "let\'s dive in", "circle back", "leverage")',
   'blocklist:essay_bot_noun': 'essay-bot noun phrasing (e.g. "tapestry", "testament to", "the beauty of")',
   'blocklist:twee_whimsy': 'twee whimsy phrasing (e.g. "chaos goblin", "screaming into the void")',
+  'blocklist:hype_wait': 'anticipation-hype ("just you wait", "wait till you get to...", "only N chapters in") -- react to what they actually said instead of teasing what is coming',
+  'blocklist:fake_profundity': 'fake-profundity ("that says/tells you everything about...", "speaks volumes") -- make the actual observation instead',
+  reframe_bare: 'the rhetorical reframe device "That is not X, that is Y" -- state the real claim directly, no fake contrast',
+  reframe_second_person: 'the second-person negation reframe ("you were not just X, you were Y") -- say the point plainly without the contrast scaffolding',
+  repeated_closer: 'this reply ends with (nearly) the same closing line as a previous reply in the same conversation -- write a genuinely different ending, and do not just swap in another question',
+  question_streak: 'the last several replies in this conversation all ended with a question -- end this one on a statement; only ask something if it is truly needed',
 };
 
 function guidanceFor(patternName) {
@@ -578,7 +584,9 @@ const STYLE_REMINDER = [
   'courage"), filler transitions ("at the end of the day"), consultant-speak',
   '("let\'s dive in," "leverage," "circle back"), and essay-bot phrasing',
   '("tapestry," "testament to"). Just talk the way your own character',
-  'naturally talks. Platform note: if anyone asks how to reach you or this',
+  'naturally talks. Vary how replies END: never close two replies in a row',
+  'with the same line or shape, and do not end most replies with a question',
+  '-- end on the substance unless you truly need an answer. Platform note: if anyone asks how to reach you or this',
   'platform by phone, the number is 1-833-530-0313 -- calling it rings the',
   'Kade-AI voice line where any character can be asked for by name.',
 ].join(' ');
@@ -989,6 +997,70 @@ function normalizeVoiceTagTypos(text) {
   return text.replace(/%{2,4}([a-zA-Z][a-zA-Z ’',!-]{0,60}?)%{2,4}/g, '%%%$1%%%');
 }
 
+// -- cadence lock-in detection (Part 70.5, Aug 15 2026) -----------------------
+// Kade read a real convo where the SAME closing question ended 8 of 52 Kiana
+// replies and 45% of all replies ended on a question. Regexes on one message
+// can't see that; the request body can -- it carries the prior turns. Trips:
+//   repeated_closer  -- this reply's (normalized) closing line matches either
+//                       of the last two assistant replies, exact or >=75%
+//                       word overlap.
+//   question_streak  -- this reply ends with "?" AND both prior assistant
+//                       replies did too (three in a row = engagement-bait
+//                       cadence, the "every message ends the same way" feel).
+function lastSentenceOf(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  const parts = t.split(/(?<=[.!?])\s+/);
+  return (parts[parts.length - 1] || '').trim();
+}
+function cadenceMsgText(m) {
+  if (!m) return '';
+  if (typeof m.content === 'string') return m.content;
+  if (Array.isArray(m.content)) {
+    return m.content
+      .map((p) => (typeof p === 'string' ? p : p && typeof p.text === 'string' ? p.text : ''))
+      .join('');
+  }
+  return '';
+}
+function normalizeCloser(sent) {
+  return String(sent || '').toLowerCase().replace(/[0-9]+/g, '#').replace(/[^a-z#? ]+/g, '').trim();
+}
+function closerWordOverlap(a, b) {
+  const A = new Set(a.split(' ').filter(Boolean));
+  const B = new Set(b.split(' ').filter(Boolean));
+  if (A.size < 5 || B.size < 5) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter += 1;
+  return inter / Math.max(A.size, B.size);
+}
+function detectCadenceLockins(content, upstreamBody) {
+  const out = [];
+  const msgs = Array.isArray(upstreamBody && upstreamBody.messages) ? upstreamBody.messages : [];
+  const priorAssistant = msgs.filter((m) => m && m.role === 'assistant').slice(-2);
+  if (priorAssistant.length === 0) return out;
+  const newLast = lastSentenceOf(content);
+  if (newLast.length < 9) return out;
+  const newNorm = normalizeCloser(newLast);
+  const priorClosers = priorAssistant.map((m) => lastSentenceOf(cadenceMsgText(m)));
+  const priorNorms = priorClosers.map(normalizeCloser);
+  for (const pn of priorNorms) {
+    if (!pn || pn.length < 9) continue;
+    if (pn === newNorm || closerWordOverlap(pn, newNorm) >= 0.75) {
+      out.push({ pattern: 'repeated_closer', tightness: 'strict', span: [0, 0], text: newLast.slice(0, 80), x: null, y: null });
+      break;
+    }
+  }
+  if (
+    newLast.endsWith('?') &&
+    priorAssistant.length === 2 &&
+    priorClosers.every((cl) => cl.endsWith('?'))
+  ) {
+    out.push({ pattern: 'question_streak', tightness: 'strict', span: [0, 0], text: newLast.slice(0, 80), x: null, y: null });
+  }
+  return out;
+}
+
 async function detectAndRewrite(result, upstreamBody) {
   const choice = result.choices?.[0];
   let content = choice?.message?.content;
@@ -1010,6 +1082,24 @@ async function detectAndRewrite(result, upstreamBody) {
     choice.message.content = normalized;
   }
 
+  // Aug 15 2026 (Part 70.5): MACHINE-LANE EXEMPTION. Internal helpers (memory
+  // consolidation, the diary voice repair, anything asking a model for strict
+  // JSON) ride this same proxy, and tonight the slop pass was caught
+  // REWRITING A JSON ARRAY INTO PROSE (the diary repair's "unparseable reply"
+  // failures -- receipts in PROJECT_STATUS Part 70). Person-facing chat never
+  // opens with a bare JSON value; if the whole reply parses as JSON, it is
+  // machine mail -- leave it untouched.
+  const jsonProbe = content.trim();
+  if (jsonProbe.startsWith('{') || jsonProbe.startsWith('[')) {
+    try {
+      JSON.parse(jsonProbe);
+      console.log('[slop] reply is valid bare JSON -- machine lane, detection skipped');
+      return result;
+    } catch (_e) {
+      /* not valid JSON -- treat as prose, fall through */
+    }
+  }
+
   let matches = [];
   try {
     const reframeDetection = detect(content, { level: REFRAME_LEVEL });
@@ -1022,6 +1112,13 @@ async function detectAndRewrite(result, upstreamBody) {
     if (slopDetection.tripped) matches.push(...slopDetection.matches);
   } catch (err) {
     console.error('detectSlop() threw, skipping:', err.message);
+  }
+
+  try {
+    const structural = detectCadenceLockins(content, upstreamBody);
+    if (structural.length > 0) matches.push(...structural);
+  } catch (err) {
+    console.error('cadence check threw, skipping:', err.message);
   }
 
   if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {

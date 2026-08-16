@@ -25,6 +25,27 @@ const RUN  = "[^,.;:!?\\u2014\\u2013]+?";
 const RUN_END = "[^.;:!?\\u2014\\u2013]+?";
 
 const DETECTORS = [
+  // Aug 15 2026 (Part 70.5, Kade reading Amber's logs): two shapes measured
+  // slipping through on live family chat — the BARE pivot with no emphasis
+  // word ("That's not concern, that's control.") and the SECOND-PERSON pivot
+  // ("You weren't standing, you were standing back..."), which was literally
+  // her quoted example. Both are rewrite-trips, not blocks, so leaning
+  // aggressive matches her explicit "absolutely cannot stand" verdict.
+  {
+    pattern: 'reframe_bare',
+    tightness: 'balanced',
+    xy: [2, 4],
+    re: new RegExp(
+      `\\b(${SUBJ})${COP2}\\s+not\\s+(${RUN})${SEP}(${SUBJ})${COP2}\\s+(?:${ART}\\s+)?(${RUN_END})\\s*[.!?]`,
+      'gi'
+    ),
+  },
+  {
+    pattern: 'reframe_second_person',
+    tightness: 'balanced',
+    xy: [2, 3],
+    re: /\b(?:you|she|he|they|we)\s+(?:were|was|are|is|do|does|did)\s*n[o'\u2019]t\s+(?:just\s+)?([^,.;:!?]{2,60}),\s*(?:you|she|he|they|we)\b([^.!?]{2,90})[.!?]/gi,
+  },
   {
     pattern: 'reframe_emphatic',
     tightness: 'strict',

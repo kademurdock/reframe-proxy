@@ -46,6 +46,25 @@ const BLOCKLIST = [
   { phrase: 'sending you love', category: 'validation_slop' },
   { phrase: 'sending you good vibes', category: 'validation_slop' },
 
+  // Anticipation hype (Aug 15 2026 — Kade's verbatim peeve from Amber's logs:
+  // "oh, you're only 5 chapters in, just you wait")
+  { phrase: 'just you wait', category: 'hype_wait' },
+  { phrase: 'wait till you get', category: 'hype_wait' },
+  { phrase: 'wait until you get', category: 'hype_wait' },
+  { phrase: 'wait till you see', category: 'hype_wait' },
+  { phrase: 'wait until you see', category: 'hype_wait' },
+  { phrase: 'wait till you hit', category: 'hype_wait' },
+  { phrase: 'wait until you hit', category: 'hype_wait' },
+  { phrase: 'wait till you reach', category: 'hype_wait' },
+  { phrase: 'wait until you reach', category: 'hype_wait' },
+  { phrase: "you're in for a treat", category: 'hype_wait' },
+  { phrase: 'youre in for a treat', category: 'hype_wait' },
+
+  // Fake profundity (same audit: "That tells you everything about who he is")
+  { phrase: 'says everything about', category: 'fake_profundity' },
+  { phrase: 'tells you everything about', category: 'fake_profundity' },
+  { phrase: 'speaks volumes', category: 'fake_profundity' },
+
   // Therapy-bot closers
   { phrase: 'be gentle with yourself', category: 'therapy_closer' },
   { phrase: 'take a deep breath', category: 'therapy_closer' },
@@ -258,9 +277,30 @@ function detectEmDashRestatement(text) {
  * same {tripped, matches} shape as reframe-filter's detect(), so callers can
  * merge results from both modules trivially.
  */
+// -- Anticipation-hype "you're only N chapters/episodes in" (regex — the
+// counted-progress shape can't be a fixed blocklist phrase) -----------------
+const HYPE_PROGRESS_RE = /\byou'?re only [^.!?]{0,25}(?:chapters?|episodes?|pages?|books?|seasons?) in\b/gi;
+function detectHypeProgress(text) {
+  const matches = [];
+  HYPE_PROGRESS_RE.lastIndex = 0;
+  let m;
+  while ((m = HYPE_PROGRESS_RE.exec(text)) !== null) {
+    matches.push({
+      pattern: 'blocklist:hype_wait',
+      tightness: 'balanced',
+      span: [m.index, m.index + m[0].length],
+      text: m[0],
+      x: null,
+      y: null,
+    });
+  }
+  return matches;
+}
+
 function detectSlop(text) {
   const matches = [
     ...detectBlocklist(text),
+    ...detectHypeProgress(text),
     ...detectThroatClearing(text),
     ...detectRhetoricalQA(text),
     ...detectStackedFragments(text),
