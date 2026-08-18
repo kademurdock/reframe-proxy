@@ -2647,7 +2647,14 @@ function scrubSpecialTokensFromTitleReply(result, originalBody) {
          * concatenating everything either side of a separator. Falls back to
          * the old whole-string scrub if splitting yields nothing, so a title
          * can never come back empty. */
-        const TOKEN_RE = /<\|[^|<>]{1,48}\|>/g;
+        /* Aug 18 2026 -- THE REGEX NEVER MATCHED THE REAL TOKEN. DeepSeek's
+         * end-of-sentence marker uses FULL-WIDTH pipes: <｜end▁of▁sentence｜>
+         * (U+FF5C), not the ASCII <|...|> this pattern was written for. Found
+         * by reading her actual database: a stored title still carried
+         * "...body vs. flow<｜end▁of▁sentence｜>" AFTER the scrub had "run" --
+         * the log line that looked like a successful scrub was only the
+         * whitespace trim doing the work. Both pipe forms now. */
+        const TOKEN_RE = /<[|\uFF5C][^|\uFF5C<>]{1,48}[|\uFF5C]>/g;
         const flat = before.replace(TOKEN_RE, '').replace(/[ \t]{2,}/g, ' ').trim();
         let after = flat;
         if (TOKEN_RE.test(before)) {
