@@ -2572,10 +2572,48 @@ function scrubSpecialTokensFromTitleReply(result, originalBody) {
     for (const c of (result && result.choices) || []) {
       if (c && c.message && typeof c.message.content === 'string') {
         const before = c.message.content;
-        const after = before.replace(/<\|[^|<>]{1,48}\|>/g, '').replace(/[ \t]{2,}/g, ' ').trim();
-        if (after !== before) {
+        /* Aug 18 2026 -- THE TOKEN IS A DELIMITER, NOT JUST LITTER.
+         * Her report: "conversation titling is messed up majorly once again."
+         * The live receipt that explains it, 08:58:43Z:
+         *   " You're in the same time zone.<|...|>Menstrual disc sizing: body vs"
+         * deepseek-v4-flash finished a STRAY LEFTOVER SENTENCE, emitted its
+         * end-of-sentence token, and only THEN wrote the real title. The
+         * Part-68 scrub deleted the token -- correctly -- but deleting a
+         * delimiter GLUES the junk to the title with no space, which is
+         * exactly the mess she saw:
+         *   "You're in the same time zone.Menstrual disc sizing: body vs."
+         * So: split on the token and keep the LAST non-empty segment (the
+         * model's final answer -- the title it actually wrote), rather than
+         * concatenating everything either side of a separator. Falls back to
+         * the old whole-string scrub if splitting yields nothing, so a title
+         * can never come back empty. */
+        const TOKEN_RE = /<\|[^|<>]{1,48}\|>/g;
+        const flat = before.replace(TOKEN_RE, '').replace(/[ \t]{2,}/g, ' ').trim();
+        let after = flat;
+        if (TOKEN_RE.test(before)) {
+          TOKEN_RE.lastIndex = 0;
+          const segments = before
+            .split(TOKEN_RE)
+            .map((seg) => seg.replace(/[ \t]{2,}/g, ' ').trim())
+            .filter(Boolean);
+          if (segments.length > 1) {
+            after = segments[segments.length - 1];
+            console.log(`[title-scrub] token was a DELIMITER -- kept the last of ${segments.length} segments`);
+          } else if (segments.length === 1) {
+            after = segments[0];
+          }
+        }
+        /* Never hand back an EMPTY title: a reply that was nothing but a
+         * token would otherwise scrub down to "" and the conversation would
+         * lose its name entirely. An ugly title beats a nameless thread --
+         * same fail-soft philosophy as the catch below. */
+        if (after && after !== before) {
           c.message.content = after;
-          console.log(`[title-scrub] special-token text removed ("${before.slice(0, 60)}" -> "${after.slice(0, 60)}")`);
+          /* Log the FULL raw reply, not the first 60 chars. The truncated
+           * version of this line is why the delimiter behaviour above went
+           * undiagnosed the first time -- the token itself fell off the end
+           * of the log. Titles are short; this costs nothing. */
+          console.log(`[title-scrub] raw=${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
         }
       }
     }
