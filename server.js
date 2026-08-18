@@ -1622,6 +1622,11 @@ const AUTO_DEEP_LEXICON = /\b(why|how (do|does|would|should|can|to)|explain|unde
 // Was 600 (Aug 14 - Aug 17 2026); her ask widened it. Tune: KADE_AUTO_CLASSIFY_MIN_LEN.
 const AUTO_CLASSIFY_MIN_LEN = Number(process.env.KADE_AUTO_CLASSIFY_MIN_LEN || 350);
 
+// Mid-band default (140 chars .. AUTO_CLASSIFY_MIN_LEN, no other signal).
+// 'classify' since Aug 17 2026 at her word; set KADE_AUTO_CLASSIFY_MIDBAND=instant to revert.
+const AUTO_CLASSIFY_MIDBAND =
+  String(process.env.KADE_AUTO_CLASSIFY_MIDBAND || 'classify').toLowerCase() === 'instant' ? 'instant' : 'classify';
+
 const AUTO_MATH_SHAPE = /\d\s*(%|percent)|\d\s*[*\/x×^]\s*\d/i;
 
 function autoThinkHeuristic(excerpt) {
@@ -1634,7 +1639,15 @@ function autoThinkHeuristic(excerpt) {
   if (t.length > AUTO_CLASSIFY_MIN_LEN || AUTO_DEEP_LEXICON.test(t) || t.includes('```') || (t.match(/\?/g) || []).length >= 2) {
     return 'classify';
   }
-  return 'instant';
+  /* THE MID BAND (Aug 17 2026, her second widening: "Send almost everything to
+   * the classifier"). Anything between the 140-char chatter floor and the
+   * length gate above used to default to INSTANT on the theory that a
+   * medium-length message with no trigger word was small talk. It often
+   * isn't -- it's someone saying a hard thing plainly, which is exactly the
+   * shape the lexicon can't catch by construction. Now the router asks.
+   * The <140 fast path above is untouched, so "hey" / "lol okay" / "thanks"
+   * still cost nothing. Revert: KADE_AUTO_CLASSIFY_MIDBAND=instant. */
+  return AUTO_CLASSIFY_MIDBAND;
 }
 
 /* THE ROUTER'S OWN MODEL (Aug 15 2026 — her call, "switch all those background
