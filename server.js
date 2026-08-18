@@ -1603,7 +1603,24 @@ function excerptReceipt(excerpt) {
   return `${flat.slice(0, 70)} … ${flat.slice(-40)}`;
 }
 
-const AUTO_DEEP_LEXICON = /\b(why|how (do|does|would|should|can|to)|explain|understand|plan|design|compare|versus|vs\.?|should (i|we)|help me (decide|figure|pick|choose)|debug|analy[sz]e|strateg|calculat|math|prove|budget|worth it|pros and cons|difference between|what if|figure out|think through|advice|decide)\b/i;
+/* THE DEEP LEXICON (widened Aug 17 2026 at her ask: "I definitely want more
+ * turns reaching the classifier"). The original list was built around
+ * QUESTIONS -- why/how/compare/decide. It missed the way she actually opens a
+ * hard turn, which is usually a statement: "walk me through it", "I can't tell
+ * if", "help me think", "I keep going back and forth". Live proof the night
+ * this was widened: a 470-character message about whether to take a teaching
+ * job -- guilt versus meaning, genuinely deliberation-shaped -- voted INSTANT
+ * by heuristic, because it never used one of the old trigger words.
+ * Also lowered the raw-length gate below from 600 to 350 for the same reason:
+ * a long message is itself evidence someone is working something out.
+ * The classifier is gemini-flash-lite at max_tokens 4 -- fractions of a cent
+ * per call -- so the cost of asking more often is latency (~500ms), not money,
+ * and the fast <140-char chatter path is deliberately untouched. */
+const AUTO_DEEP_LEXICON = /\b(why|how (do|does|would|should|can|to)|explain|understand|plan|design|compare|versus|vs\.?|should (i|we)|help me (decide|figure|pick|choose|think|understand|make sense)|debug|analy[sz]e|strateg|calculat|math|prove|budget|worth it|pros and cons|difference between|what if|figure out|think through|advice|decide|walk me through|walk through (it|this)|talk me (through|into|out of)|can'?t tell if|not sure (if|whether)|torn|going back and forth|wrestling with|stuck on|struggling with|make sense of|process this|weigh|trade-?offs?|what do you think|thoughts on|sort (this|it) out|second.guess|overthink|makes me wonder|part of me)\b/i;
+
+// Raw-length gate: over this, ask the classifier regardless of wording.
+// Was 600 (Aug 14 - Aug 17 2026); her ask widened it. Tune: KADE_AUTO_CLASSIFY_MIN_LEN.
+const AUTO_CLASSIFY_MIN_LEN = Number(process.env.KADE_AUTO_CLASSIFY_MIN_LEN || 350);
 
 const AUTO_MATH_SHAPE = /\d\s*(%|percent)|\d\s*[*\/x×^]\s*\d/i;
 
@@ -1614,7 +1631,7 @@ function autoThinkHeuristic(excerpt) {
   if (t.length < 140 && !AUTO_DEEP_LEXICON.test(t) && !t.includes('```') && (t.match(/\?/g) || []).length < 2) {
     return 'instant';
   }
-  if (t.length > 600 || AUTO_DEEP_LEXICON.test(t) || t.includes('```') || (t.match(/\?/g) || []).length >= 2) {
+  if (t.length > AUTO_CLASSIFY_MIN_LEN || AUTO_DEEP_LEXICON.test(t) || t.includes('```') || (t.match(/\?/g) || []).length >= 2) {
     return 'classify';
   }
   return 'instant';

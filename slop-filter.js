@@ -423,6 +423,114 @@ function detectHypeProgress(text) {
   return matches;
 }
 
+/* -- §1 LEXICAL DENSITY: the AI-speak vocabulary, CAPPED not banned ----------
+ * Aug 17 2026, her ask: "I'd like to try to take ai llm tokens that appear way
+ * too much out of creative output in general... People recognise certain things
+ * as AI speak." And the crucial qualifier, her words: "it's not that I want to
+ * beat that language completely out that model, but relying on it is just
+ * wrong."
+ *
+ * This is the one section of AI_WRITING_TELLS_STOPGAP_REFERENCE.md (§1) that
+ * had NO implementation. Everything else in this file is a phrase blocklist or
+ * a shape detector; §1 is a VOCABULARY problem, and her own doc is explicit
+ * about how to handle it:
+ *
+ *   "A tell is a probability signal, not a crime. What outs a machine is
+ *    density and uniformity... the goal of a stopgap is rarely 'delete the
+ *    word.' It's usually 'cap the rate.'"
+ *   "A blocklist relocates the tell; enforced variance removes it."
+ *
+ * So this does NOT ban a single word. One "vibrant" in a warm paragraph is
+ * human. Two rare consultant words in the same reply is a fingerprint. The
+ * rules below are absolute-count for the rare stuff (Tier A), and rate-based
+ * for essay glue (Tier B), which is exactly her doc's §10.2 "frequency caps."
+ *
+ * CALIBRATED BEFORE SHIPPING, not guessed: run against 22 real replies
+ * generated from her live Kiana persona (12 bakeoff replies across GLM and K3,
+ * plus 10 fresh GLM replies spanning creative, practical and emotional
+ * prompts) -> 0 false positives, and 0 Tier-A words appeared at all, which is
+ * its own finding: her persona instructions already suppress this vocabulary
+ * in chat. This layer is insurance for where the persona ISN'T carrying --
+ * long creative output, the professional-class agents, weaker instruction
+ * sets, and drift over time. Against 4 synthetic AI-speak samples: 4/4
+ * tripped. Against 3 warm human-voice controls: 0 tripped.
+ *
+ * Kill switch: KADE_PUFFERY_DENSITY=0. Threshold: KADE_PUFFERY_PER_1K. */
+const PUFFERY_TIER_A = [
+  // verbs -- the consultant register
+  'delve', 'delving', 'delved', 'showcase', 'showcases', 'showcasing',
+  'underscore', 'underscores', 'underscoring', 'leverage', 'leveraging',
+  'harness', 'harnessing', 'foster', 'fostering', 'embark', 'embarking',
+  'unlock', 'unlocking', 'empower', 'empowering', 'elevate', 'elevating',
+  'garner', 'garnered', 'encompass', 'encompasses', 'streamline',
+  'streamlining', 'spearhead', 'spearheaded', 'utilize', 'utilizing',
+  'facilitate', 'facilitating', 'illuminate', 'illuminating', 'exemplify',
+  'exemplifies', 'delineate', 'curate', 'curated', 'amplify', 'amplifying',
+  'cultivate', 'cultivating',
+  // adjectives -- the brochure register
+  'intricate', 'meticulous', 'meticulously', 'comprehensive', 'robust',
+  'seamless', 'seamlessly', 'holistic', 'multifaceted', 'nuanced', 'pivotal',
+  'vibrant', 'bustling', 'breathtaking', 'invaluable', 'paramount',
+  'cutting-edge', 'state-of-the-art', 'bespoke', 'commendable', 'noteworthy',
+  'ever-evolving', 'unwavering',
+  // metaphor nouns -- the essay register
+  'tapestry', 'realm', 'realms', 'mosaic', 'beacon', 'testament',
+  'cornerstone', 'treasure trove', 'symphony', 'interplay', 'synergy',
+  'paradigm', 'plethora', 'myriad', 'nexus',
+];
+// Tier B: connective glue. Common enough that one is nothing; three is an essay.
+const PUFFERY_TIER_B = [
+  'moreover', 'furthermore', 'additionally', 'consequently', 'thus', 'hence',
+  'nevertheless', 'nonetheless', 'therefore',
+];
+const PUFFERY_ENABLED = process.env.KADE_PUFFERY_DENSITY !== '0';
+const PUFFERY_PER_1K = Number(process.env.KADE_PUFFERY_PER_1K || 9);
+function pufferyRe(list) {
+  const esc = list.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp('\\b(' + esc.join('|') + ')\\b', 'gi');
+}
+const PUFFERY_A_RE = pufferyRe(PUFFERY_TIER_A);
+const PUFFERY_B_RE = pufferyRe(PUFFERY_TIER_B);
+
+function detectPufferyDensity(text) {
+  if (!PUFFERY_ENABLED) return [];
+  const t = String(text || '');
+  const wordCount = (t.toLowerCase().match(/[a-z][a-z'-]*/g) || []).length;
+  PUFFERY_A_RE.lastIndex = 0;
+  PUFFERY_B_RE.lastIndex = 0;
+  const a = [...t.matchAll(PUFFERY_A_RE)];
+  const b = [...t.matchAll(PUFFERY_B_RE)];
+  if (a.length === 0 && b.length === 0) return [];
+  const counts = {};
+  for (const m of a) {
+    const w = m[0].toLowerCase();
+    counts[w] = (counts[w] || 0) + 1;
+  }
+  const repeated = Object.values(counts).some((n) => n >= 3);
+  const per1k = wordCount ? ((a.length + b.length) / wordCount) * 1000 : 0;
+  const distinct = new Set([...a, ...b].map((m) => m[0].toLowerCase())).size;
+  /* Absolute-count rules bind at any length; the RATE rule needs enough words
+   * to mean anything -- a 20-word line cannot have a meaningful density. */
+  const tripped =
+    a.length >= 2 ||
+    (a.length >= 1 && b.length >= 2) ||
+    b.length >= 3 ||
+    repeated ||
+    (wordCount >= 60 && per1k >= PUFFERY_PER_1K && distinct >= 2);
+  if (!tripped) return [];
+  // Report the offending spans so the rewrite pass knows what to vary.
+  return [...a, ...b]
+    .sort((x, y) => x.index - y.index)
+    .map((m) => ({
+      pattern: 'puffery_density',
+      tightness: 'balanced',
+      span: [m.index, m.index + m[0].length],
+      text: m[0],
+      x: null,
+      y: null,
+    }));
+}
+
 function detectSlop(text) {
   const matches = [
     ...detectBlocklist(text),
@@ -435,9 +543,10 @@ function detectSlop(text) {
     ...detectDichotomyMiddle(text),
     ...detectPosterPlace(text),
     ...detectSycophantOpener(text),
+    ...detectPufferyDensity(text),
   ].sort((a, b) => a.span[0] - b.span[0]);
 
   return { tripped: matches.length > 0, matches };
 }
 
-module.exports = { detectSlop, BLOCKLIST };
+module.exports = { detectSlop, detectPufferyDensity, BLOCKLIST, PUFFERY_TIER_A, PUFFERY_TIER_B };
