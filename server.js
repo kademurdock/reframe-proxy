@@ -184,6 +184,55 @@ const KIMI_MODEL_MAP = {
 function isKimiModel(model) {
   return Object.prototype.hasOwnProperty.call(KIMI_MODEL_MAP, String(model || '').toLowerCase());
 }
+/* -- WHICH MODELS CAN THINK (Aug 17 2026, Part 72) ---------------------------
+ * The fleet moved off Moonshot: 221 of 223 agents now run z-ai/glm-5.2 (only
+ * Describe-It and Whittney stay on kimi, for vision). Auto-think had been
+ * gated on isKimiModel() since it was built, so the moment the sweep landed
+ * EVERY agent logged `[auto-think] skip: non-kimi model (z-ai/glm-5.2)` and
+ * the whole router went dark -- no tiering, no "think hard", nothing. Her
+ * words: "auto think has really saved Kiana's ass... I like that it chooses
+ * different levels of reasoning."
+ *
+ * GLM-5.2 is a reasoning model too, and measured BETTER behaved than K3 on
+ * the toggle (Aug 17, live against OpenRouter with her real 34K persona):
+ *   quick  {effort:'low',enabled}  -> 1871ch content, 110 reasoning tokens,  9.7s
+ *   deep   {enabled:true}          -> 1854ch content, 230 reasoning tokens, 16.6s
+ *   medium                         -> 1401ch content, 172 reasoning tokens, 16.3s
+ *   high                           -> 1712ch content, 163 reasoning tokens, 12.9s
+ * All four returned real content with finish=stop. (K3 through OpenRouter
+ * ignores reasoning-off entirely -- see MODEL_GRIEVANCES_LOG.)
+ *
+ * ONE REAL TRAP FOUND, and it is why adaptForGlm exists below: with NO
+ * reasoning field at all, the "Morph" provider burned 1,037 reasoning tokens,
+ * returned ZERO content, finish=length, 97 SECONDS, $0.0127 -- the exact
+ * wordless-turn signature the kimi lane already had a net for. */
+const GLM_MODEL_RE = /^z-ai\/glm/i;
+function isGlmModel(model) {
+  return GLM_MODEL_RE.test(String(model || ''));
+}
+function isReasoningModel(model) {
+  return isKimiModel(model) || isGlmModel(model);
+}
+/* adaptForGlm: the kimi lane gets its max_tokens floored when reasoning is on
+ * (adaptForKimi, 8000/16000) precisely so deliberation can't eat the whole
+ * budget and hand the person a wordless turn. GLM had no such floor because
+ * nothing but kimi ever thought here. GLM's reasoning is far cheaper than
+ * K3's (110-230 tokens vs thousands), so the floor is correspondingly small --
+ * but a 900-token cap against a 1,037-token think is exactly how you get zero
+ * content, so the floor is real. Only binds turns that are ALREADY thinking;
+ * instant turns are untouched, so the fast lane's cost is unchanged.
+ * Kill/tune: KADE_GLM_THINK_MIN_TOKENS. */
+const GLM_THINK_MIN_TOKENS = Number(process.env.KADE_GLM_THINK_MIN_TOKENS || 4000);
+function adaptForGlm(body) {
+  if (!body || !isGlmModel(body.model)) return body;
+  const r = body.reasoning || {};
+  const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
+  const thinking = r.enabled === true || ['low', 'medium', 'high'].includes(effort);
+  if (!thinking) return body;
+  const mt = Number(body.max_tokens);
+  if (Number.isFinite(mt) && mt >= GLM_THINK_MIN_TOKENS) return body;
+  return { ...body, max_tokens: GLM_THINK_MIN_TOKENS };
+}
 function chatCompletionsUrl(model) {
   return isKimiModel(model) ? `${MOONSHOT_BASE}/chat/completions` : `${OPENROUTER_BASE}/chat/completions`;
 }
@@ -367,7 +416,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
   // 25s rewrite timeout. Routing now happens ONLY at the two person-facing
   // entry points (handleStreaming + the non-stream main route), each with a
   // real reqId, so internal helpers can never re-enter the router.
-  body = adaptForKimi(body);
+  body = adaptForGlm(adaptForKimi(body));
   let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
     { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body) },
@@ -1602,7 +1651,7 @@ async function classifyThinkTier(excerpt, reqId) {
   try {
     const r = await fetchWithTimeout(
       chatCompletionsUrl(body.model),
-      { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(adaptForKimi(body)) },
+      { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(adaptForGlm(adaptForKimi(body))) },
       AUTO_CLASSIFY_TIMEOUT_MS
     );
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1624,8 +1673,8 @@ async function maybeAutoThink(body, reqId = '??????') {
      * eligible — kimi model, system+tools, no explicit choice — and the
      * quiet returns below made that undebuggable from logs alone. One line
      * per skip; the next mystery names its own gate. */
-    if (!AUTO_DEEPTHINK || !isKimiModel(body?.model)) {
-      console.log(`[auto-think][req ${reqId}] skip: ${!AUTO_DEEPTHINK ? 'KADE_AUTO_DEEPTHINK=0' : `non-kimi model (${String(body?.model || '(none)')})`}`);
+    if (!AUTO_DEEPTHINK || !isReasoningModel(body?.model)) {
+      console.log(`[auto-think][req ${reqId}] skip: ${!AUTO_DEEPTHINK ? 'KADE_AUTO_DEEPTHINK=0' : `non-reasoning model (${String(body?.model || '(none)')})`}`);
       return body;
     }
     const r = body.reasoning || {};
@@ -1680,7 +1729,19 @@ async function maybeAutoThink(body, reqId = '??????') {
        * anyone checked the logs after the excerpt fix made real excerpts
        * short again. The file's own promise is one line per decision. */
       console.log(`[auto-think][req ${reqId}] -> instant (${heur === 'classify' ? 'classifier' : 'heuristic'}, len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
-      return cleaned; // call turns keep the effort:'none' they arrived with
+      /* INSTANT MUST BE SAID OUT LOUD ON THE GLM LANE (Aug 17 2026). On kimi,
+       * returning the body untouched is safe: adaptForKimi's else-branch pins
+       * reasoning_effort:'none' on every non-thinking turn, so instant really
+       * is instant. GLM has no such pinning -- it goes straight to OpenRouter,
+       * and a body with NO reasoning field lets the provider decide. Measured
+       * consequence: the Morph provider chose to think, spent 1,037 tokens,
+       * and returned ZERO content in 97 seconds. Agent params currently carry
+       * reasoning_effort:'none' so the field is normally present, but "the
+       * config happens to save us" is not a guarantee -- one agent created
+       * without it would silently draw the 97-second turn. Say it explicitly. */
+      return isGlmModel(cleaned.model)
+        ? { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } }
+        : cleaned; // kimi call turns keep the effort:'none' they arrived with
     }
     console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
     return {
@@ -1829,7 +1890,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
   upstreamBody = await maybeAutoThink(upstreamBody, reqId);
-  upstreamBody = adaptForKimi(upstreamBody);
+  upstreamBody = adaptForGlm(adaptForKimi(upstreamBody));
   // Session 22 (Kade: "Check caching, because that saves money in multiple
   // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
   // repeated ~9K-token prefix -> cached_tokens 8192, hit rate $0.16/M vs
@@ -2348,8 +2409,13 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   // it would have before this existed. (Known gap, deliberate: the
   // fallback call's tokens aren't merged into `usage`, so such a turn
   // under-meters by one fast-lane completion.)
+  /* Aug 17 2026 (Part 72): generalized from isKimiModel to isReasoningModel.
+   * GLM can produce this exact signature -- measured live, the Morph provider
+   * returned finish=length with 4,079 reasoning chars and no content at all --
+   * and until now the net only caught it on the kimi lane, so a GLM turn that
+   * hit it just handed the person silence. Same cure, same fail-soft. */
   if (
-    isKimiModel(upstreamBody.model) &&
+    isReasoningModel(upstreamBody.model) &&
     finishReason === 'length' &&
     contentAccum.length === 0 &&
     reasoningAccum.length > 0
