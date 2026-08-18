@@ -750,8 +750,45 @@ function laneNoteFor(body) {
   ].join(' ');
 }
 
+/* ⚠️ TITLE / SUMMARIZER CALLS GET NO REMINDER (Aug 18 2026) -- and this is the
+ * root cause of the THIRD titler regression, not a tidy-up.
+ *
+ * Her report: "conversation titling is messed up majorly once again. We had
+ * the titler fixed at one point." Both of the night's symptoms trace here:
+ *
+ *   EMPTY TITLES -- withReasoningIncluded pins reasoning hard off for the
+ *   title shape, which it identifies as "no system message and no tools."
+ *   But appendReminder runs FIRST at both call sites and APPENDS a system
+ *   message, so by the time the guard looks, hasSystem is true and the guard
+ *   silently declines to fire. Reasoning was therefore never pinned on any
+ *   real title call, provider roulette decided whether to think, and a
+ *   thinking provider spent the whole 40-token budget deliberating and
+ *   returned content: null. Measured live: identical call, GMICloud reasoned
+ *   (41 reasoning tokens, empty), StreamLake and SiliconFlow did not (clean
+ *   title). That is why it breaks intermittently -- and it means the Aug 15
+ *   "structurally impossible for a title call to reason" fix has never
+ *   actually run on the real path.
+ *
+ *   GARBAGE TITLES -- the reminder isn't neutral filler, it carries
+ *   currentTimeNote(): "Current date and time where the user is: ... (US
+ *   Central)." A small title model handed that note wrote it into the title.
+ *   Her live receipt: "You're in the same time zone.Menstrual disc sizing:
+ *   body vs."  The first sentence is the injected note, parroted.
+ *
+ * So: detect the title/summarizer shape on the INCOMING body -- before
+ * anything is added to it -- and leave those requests alone. A title call
+ * wants the conversation and nothing else; style guidance, the money note,
+ * the clock and the tool notes are all noise it can only hurt itself with. */
+function isTitleShapedBody(body) {
+  const msgs = Array.isArray(body && body.messages) ? body.messages : [];
+  const hasSystem = msgs.some((m) => m && m.role === 'system');
+  const hasTools = Array.isArray(body && body.tools) && body.tools.length > 0;
+  return !hasSystem && !hasTools;
+}
+
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
+  if (isTitleShapedBody(body)) return body;
   const toolNotes = toolNotesFor(body);
   return {
     ...body,
@@ -1813,10 +1850,8 @@ function withReasoningIncluded(body) {
    * pinned hard off, whatever model is configured. Cheap, silent, and it makes
    * ANY model safe as titleModel. */
   {
-    const msgs = Array.isArray(body.messages) ? body.messages : [];
-    const hasSystem = msgs.some((m) => m && m.role === 'system');
-    const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
-    if (!hasSystem && !hasTools) {
+    // Same shape test appendReminder uses, shared so the two can never drift.
+    if (isTitleShapedBody(body)) {
       /* Aug 18 2026 -- THE REASONING PIN IS NOT ENOUGH, so give the title a
        * budget it can survive. Her report: "conversation titling is messed up
        * majorly once again." Reproduced live: a title-shaped call to
@@ -2592,6 +2627,9 @@ function scrubSpecialTokensFromTitleReply(result, originalBody) {
     const hasTools = Array.isArray(originalBody.tools) && originalBody.tools.length > 0;
     if (hasSystem || hasTools) return;
     for (const c of (result && result.choices) || []) {
+      if (c && c.message && c.message.content == null) {
+        console.warn('[title-scrub] EMPTY title reply (content was null) -- a provider spent the whole budget reasoning.');
+      }
       if (c && c.message && typeof c.message.content === 'string') {
         const before = c.message.content;
         /* Aug 18 2026 -- THE TOKEN IS A DELIMITER, NOT JUST LITTER.
