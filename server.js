@@ -1817,8 +1817,30 @@ function withReasoningIncluded(body) {
     const hasSystem = msgs.some((m) => m && m.role === 'system');
     const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
     if (!hasSystem && !hasTools) {
+      /* Aug 18 2026 -- THE REASONING PIN IS NOT ENOUGH, so give the title a
+       * budget it can survive. Her report: "conversation titling is messed up
+       * majorly once again." Reproduced live: a title-shaped call to
+       * deepseek-v4-flash came back `content: null`, finish_reason "length",
+       * 41 REASONING tokens against a 40-token cap -- the model deliberated
+       * and had nothing left to answer with. The `reasoning:{effort:'none',
+       * enabled:false}` set right below is sent and IGNORED: OpenRouter's
+       * reasoning-off toggle is honoured per-provider, not per-request, and
+       * the same call routed to GMICloud reasoned while DigitalOcean and Sail
+       * Research did not. That's provider roulette, which is exactly why this
+       * breaks intermittently and why "pick a different model" kept expiring
+       * as a fix (it has now bitten three times: July's junk-in-titles,
+       * August 15th's empty titles, and tonight's).
+       *
+       * So the floor, not the flag, is the guarantee: a title that costs 256
+       * tokens instead of 40 still costs $0.000005, and it leaves room for a
+       * provider that insists on thinking to ALSO write the name. Only raises
+       * a ceiling, never lowers one -- same shape as adaptForKimi's and
+       * adaptForGlm's floors. Tune: KADE_TITLE_MIN_TOKENS. */
+      const titleMax = Number(body.max_tokens);
+      const titleFloor = Number(process.env.KADE_TITLE_MIN_TOKENS || 256);
       return withDeepThinkStripped({
         ...body,
+        max_tokens: Number.isFinite(titleMax) ? Math.max(titleMax, titleFloor) : titleFloor,
         reasoning: { ...existing, effort: 'none', enabled: false, exclude: false },
       });
     }
@@ -2602,6 +2624,9 @@ function scrubSpecialTokensFromTitleReply(result, originalBody) {
           } else if (segments.length === 1) {
             after = segments[0];
           }
+        }
+        if (!before.trim()) {
+          console.warn('[title-scrub] EMPTY title reply -- a provider spent the whole budget reasoning. Raise KADE_TITLE_MIN_TOKENS or change titleModel.');
         }
         /* Never hand back an EMPTY title: a reply that was nothing but a
          * token would otherwise scrub down to "" and the conversation would
