@@ -965,11 +965,62 @@ function parseShimToolCalls(result) {
 // needed.
 const EXCLUDED_PROVIDERS = ['novita'];
 
+/* ⭐⭐⭐ PROVIDER PINNING (Aug 19 2026, her word: "pin to fp8, cheapest first").
+ *
+ * THE FIND: OpenRouter was picking a DIFFERENT machine almost every turn. Six
+ * identical back-to-back calls to z-ai/glm-5.2 drew SIX different providers --
+ * Z.AI, Baidu, Morph, StreamLake, Decart, Together. That cost her twice over:
+ *
+ *   1. THE PREFIX CACHE. Each provider keeps its OWN cache, so hopping means
+ *      a cold read. Production receipts over 27h: the cached fraction is
+ *      BIMODAL -- 39 turns cached 0%, 30 turns cached 80-96%, almost nothing
+ *      in between, with an IDENTICAL payload-divergence shape on every turn.
+ *      A payload problem would miss consistently; this misses at random,
+ *      which is the signature of a routing problem, not a prompt problem.
+ *      (This is why the long-standing "the 828ch memory block re-seats and
+ *      breaks the cache" theory does not hold: that block does re-seat, but
+ *      it costs only the ~5-9% tail on turns that cache at all. Measured.)
+ *   2. THE PRICE SPREAD. Identical model, $0.490/M in on Baidu vs $1.400/M on
+ *      Z.AI/Together/Venice -- a 2.9x spread on input, drawn by lottery. With
+ *      the cache miss stacked on top, the same request measured $0.0011 to
+ *      $0.0106: 9.7x.
+ *   3. AND THE ONE THAT ISN'T MONEY -- QUANTIZATION. These machines do not
+ *      serve the same weights. Baidu/Sail Research/StreamLake/Ambient/Z.AI
+ *      are fp8; DeepInfra/Decart/Parasail/Morph/CoreWeave/Wafer are fp4, a
+ *      coarser compression. Unpinned, her characters were landing on fp4 some
+ *      turns and fp8 others AT RANDOM. Anything logged in
+ *      MODEL_GRIEVANCES_LOG before this pin has that as a confound.
+ *
+ * THE PIN: prefer fp8 machines, cheapest first. `allow_fallbacks` stays TRUE
+ * on purpose -- if all four are down the turn still lands, it just costs more.
+ * A family platform must never go silent to save a fraction of a cent.
+ * MEASURED after pinning: 6/6 calls on one machine, cached every time,
+ * 5.1x cheaper ($0.00110/call vs $0.00565 unpinned).
+ * Deep-think verified still working on all three cheap machines (Baidu 869
+ * reasoning tokens, Sail Research 928, StreamLake 348).
+ *
+ * GLM-ONLY by design: these provider names serve glm. Kimi never sees this at
+ * all -- adaptForKimi deletes `provider` outright (OpenRouter-only hint).
+ * Tune/revert: KADE_GLM_PROVIDER_ORDER (comma-separated), or set it empty to
+ * go back to the lottery. */
+const GLM_PROVIDER_ORDER = String(
+  process.env.KADE_GLM_PROVIDER_ORDER ?? 'Baidu,Sail Research,StreamLake,Ambient',
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 function withProviderExclusion(body) {
   const existingProvider = body.provider || {};
   const existingIgnore = Array.isArray(existingProvider.ignore) ? existingProvider.ignore : [];
   const ignore = [...new Set([...existingIgnore, ...EXCLUDED_PROVIDERS])];
-  return { ...body, provider: { ...existingProvider, ignore } };
+  const provider = { ...existingProvider, ignore };
+  // Never override an order someone set deliberately upstream.
+  if (isGlmModel(body.model) && GLM_PROVIDER_ORDER.length && !existingProvider.order) {
+    provider.order = GLM_PROVIDER_ORDER;
+    provider.allow_fallbacks = true;
+  }
+  return { ...body, provider };
 }
 
 function sumUsage(a, b) {
@@ -2177,6 +2228,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let template = null; // first parsed chunk, reused to shape the fake SSE on content turns
   let finishReason = 'stop';
   let usage = null;
+  let upstreamProvider = null;
   let sawDone = false;      // phoneLive: whether upstream's [DONE] was already forwarded
   let phoneFirstWrite = 0;  // phoneLive: t of first live content byte (latency logging)
 
@@ -2332,6 +2384,13 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
           if (!template) template = chunk;
           if (chunk.usage) usage = chunk.usage;
+          // Aug 19 2026: which MACHINE answered. OpenRouter puts the
+          // provider name on the chunks; we were not reading it, which
+          // is why provider roulette went unseen for so long -- the
+          // cache misses were visible but the cause was not. Needed now
+          // to prove the fp8 pin is holding, and to re-test the logged
+          // model grievances against a KNOWN machine instead of a draw.
+          if (!upstreamProvider && chunk.provider) upstreamProvider = chunk.provider;
           if (addedUsage && chunk.usage && (!Array.isArray(chunk.choices) || chunk.choices.length === 0)) {
             handledLive = true; // usage-only frame we asked for ourselves -- logged at loop end, never forwarded
           }
@@ -2467,6 +2526,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
 
   stopHeartbeat();
   console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, reasoningAccum.length=${reasoningAccum.length}, finishReason=${finishReason}`);
+  console.log(`[req ${reqId}] served by provider=${upstreamProvider || '(not reported)'}`);
   if (usage) {
     const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;
     console.log(`[req ${reqId}] upstream usage: prompt=${usage.prompt_tokens ?? '?'} cached=${cached} completion=${usage.completion_tokens ?? '?'}${cached ? ` -- CACHE HIT ${Math.round((cached / (usage.prompt_tokens || 1)) * 100)}%` : ' -- no cache hit'}`);
