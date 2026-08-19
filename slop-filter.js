@@ -171,6 +171,15 @@ function detectThroatClearing(text) {
   while ((m = startRe.exec(text)) !== null) {
     starts.push(m.index + m[0].length);
   }
+  /* Aug 19 2026 — same blindness as detectSycophantOpener above: this platform
+   * puts a `%%%direction%%%` at the head of most paragraphs, so the real first
+   * words of a sentence often sit just AFTER a tag rather than after
+   * punctuation. Without this, `%%%easy, unbothered%%% Look, ...` reads as one
+   * sentence starting at the tag and the opener is never seen. */
+  const tagRe = /%{2,5}[^%\n]{0,80}?%{2,5}\s*/g;
+  while ((m = tagRe.exec(text)) !== null) {
+    starts.push(m.index + m[0].length);
+  }
   for (const start of starts) {
     for (const phrase of THROAT_CLEARERS) {
       if (lower.startsWith(phrase, start)) {
@@ -380,12 +389,65 @@ const SYCOPHANT_OPENERS = [
   'love that question',
   'great point',
   'you nailed it',
+  'you are absolutely right',
+  'you are so right',
+  'you are totally right',
 ];
+
+/* ⭐⭐⭐ STEERING TAGS WERE BLINDING EVERY OPENER-ANCHORED DETECTOR
+ * (Aug 19 2026, found auditing Kade's real family chat).
+ *
+ * This platform TELLS its characters to open with a voice direction — the
+ * shared platform note says "Give EVERY paragraph its own direction" — so a
+ * huge share of replies literally begin `%%%warm, genuinely delighted%%%`.
+ * Measured: 52% of stored assistant messages carry a leading tag.
+ *
+ * `detectSycophantOpener` and `detectThroatClearing` both anchor on the START
+ * of the reply, which is correct design: praising the question is a tic when
+ * it OPENS a reply, and unremarkable mid-paragraph. But `startsWith` was being
+ * handed a string that starts with the tag, so the actual first words sat
+ * outside the window and the check quietly never fired. Live miss from her
+ * transcript, caught by hand, not by the filter:
+ *
+ *     %%%warm, genuinely delighted%%%Oh this is a great question, and…
+ *
+ * `great question` has been in SYCOPHANT_OPENERS the whole time. It could
+ * never match. Strip the leading tags first — offsets are shifted, not
+ * guessed, so spans stay honest. */
+const LEADING_STEERING_RE = /^(?:\s*%{2,5}[^%\n]{0,80}?%{2,5})+\s*/;
+function withoutLeadingSteering(text) {
+  const stripped = String(text).replace(LEADING_STEERING_RE, '');
+  return { stripped, shift: text.length - stripped.length };
+}
+
+/* A reply rarely opens with the bare tic. It opens with a breath first —
+ * "Oh this is a great question", "Ha, great point". Both are still
+ * reply-opening praise, which is the thing Kade banned; only the runway
+ * differs. So peel a SHORT, CLOSED list of interjections and deictic lead-ins
+ * and then require an exact start, which keeps the opener anchor honest:
+ * "She asked a great question at dinner" strips nothing, starts with "she",
+ * and stays clean. A window-based "within the first N chars" search would
+ * flag that sentence, which is why this is a peel and not a search. */
+const OPENER_RUNWAY_RE =
+  /^(?:(?:oh|ah|ha+|haha|wow|okay|ok|well|hm+|alright|right|yes|yeah|nah|no|hey|god|man|honestly|truly|seriously)\b[\s,.!?—–-]*)+/i;
+const OPENER_DEICTIC_RE = /^(?:this|that|it)(?:'s|\u2019s| is| was)?\s+(?:such\s+)?(?:a|an)\s+/i;
+
+function peelOpenerRunway(t) {
+  let out = t;
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(OPENER_RUNWAY_RE, '').replace(OPENER_DEICTIC_RE, '');
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
 
 function detectSycophantOpener(text) {
   const matches = [];
-  const trimmed = text.trimStart();
-  const offset = text.length - trimmed.length;
+  const { stripped, shift } = withoutLeadingSteering(text);
+  const preRunway = stripped.trimStart();
+  const trimmed = peelOpenerRunway(preRunway);
+  const offset = shift + (stripped.length - preRunway.length) + (preRunway.length - trimmed.length);
   const lower = trimmed.toLowerCase();
   for (const phrase of SYCOPHANT_OPENERS) {
     if (lower.startsWith(phrase)) {

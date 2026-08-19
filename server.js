@@ -629,6 +629,34 @@ function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
 const SLOP_REWRITE_MAX_CHARS = parseInt(process.env.SLOP_REWRITE_MAX_CHARS || '8000', 10);
 const SLOP_REWRITE_TIMEOUT_MS = parseInt(process.env.SLOP_REWRITE_TIMEOUT_MS || '25000', 10);
 
+const SLOP_VERIFY = process.env.KADE_SLOP_VERIFY !== '0';
+
+/* One place that knows what "the detectors" means. Was inline in the response
+ * path, which meant the rewrite had no way to re-check itself against the same
+ * three checks that flagged it in the first place. */
+function collectMatches(content, upstreamBody) {
+  const matches = [];
+  try {
+    const r = detect(content, { level: REFRAME_LEVEL });
+    if (r.tripped) matches.push(...r.matches);
+  } catch (err) {
+    console.error('reframe detect() threw, skipping:', err.message);
+  }
+  try {
+    const r = detectSlop(content);
+    if (r.tripped) matches.push(...r.matches);
+  } catch (err) {
+    console.error('detectSlop() threw, skipping:', err.message);
+  }
+  try {
+    const structural = detectCadenceLockins(content, upstreamBody);
+    if (structural.length > 0) matches.push(...structural);
+  } catch (err) {
+    console.error('cadence check threw, skipping:', err.message);
+  }
+  return matches;
+}
+
 async function rewritePass(originalBody, offendingText, matches, hasProtectedTags = false) {
   const rewriteBody = {
     model: originalBody.model,
@@ -1273,26 +1301,7 @@ async function detectAndRewrite(result, upstreamBody) {
     }
   }
 
-  let matches = [];
-  try {
-    const reframeDetection = detect(content, { level: REFRAME_LEVEL });
-    if (reframeDetection.tripped) matches.push(...reframeDetection.matches);
-  } catch (err) {
-    console.error('reframe detect() threw, skipping:', err.message);
-  }
-  try {
-    const slopDetection = detectSlop(content);
-    if (slopDetection.tripped) matches.push(...slopDetection.matches);
-  } catch (err) {
-    console.error('detectSlop() threw, skipping:', err.message);
-  }
-
-  try {
-    const structural = detectCadenceLockins(content, upstreamBody);
-    if (structural.length > 0) matches.push(...structural);
-  } catch (err) {
-    console.error('cadence check threw, skipping:', err.message);
-  }
+  const matches = collectMatches(content, upstreamBody);
 
   if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
     console.log(
@@ -1308,8 +1317,59 @@ async function detectAndRewrite(result, upstreamBody) {
     try {
       const rewritten = await rewritePass(upstreamBody, protectedContent, matches, tags.length > 0);
       if (rewritten.text) {
-        result.choices[0].message.content = restoreSentinelTags(rewritten.text, tags);
-        result.usage = sumUsage(result.usage, rewritten.usage);
+        let finalText = rewritten.text;
+        let usage = rewritten.usage;
+        /* ⭐⭐⭐ THE REWRITE NOW CHECKS ITS OWN WORK (Aug 19 2026).
+         *
+         * It never did. It fired, swapped some words, and shipped whatever came
+         * back — no verification, and NO LOG LINE ON SUCCESS, so from the
+         * outside a rewrite that fixed nothing looked exactly like one that
+         * worked. Measured against Kade's real family chat: ~24% of stored
+         * replies still trip the live detector, i.e. they went through this
+         * path and came out just as tic-ridden as they went in.
+         *
+         * Measured failure mode, 1 in 5 on a live sample: the model makes a
+         * SHALLOW SYNONYM SWAP that dodges nothing —
+         *   in:  "It's not just the sex. It's the being seen..."
+         *   out: "It's not ONLY the sex. It's the being seen..."
+         * Same reframe, same tic, still trips `reframe_bare`.
+         *
+         * So: re-run the SAME detector stack on the rewrite. If it still trips,
+         * take ONE more swing with the offending patterns named again — the
+         * second attempt sees a different, already-once-rewritten passage, so it
+         * is not a retry of the identical prompt. Then log what actually
+         * happened, every time, win or lose. Cost is one extra call on roughly
+         * 5% of turns (~20% of the ~24% that trip) at a fraction of a cent.
+         * Kill: KADE_SLOP_VERIFY=0. */
+        if (SLOP_VERIFY) {
+          const residual = collectMatches(finalText, upstreamBody);
+          if (residual.length > 0) {
+            console.warn(
+              `[slop] rewrite STILL trips (${residual.map((m) => m.pattern).join(', ')}) — one more swing`
+            );
+            try {
+              const second = await rewritePass(upstreamBody, finalText, residual, tags.length > 0);
+              if (second.text) {
+                const after = collectMatches(second.text, upstreamBody);
+                finalText = second.text;
+                usage = sumUsage(usage, second.usage);
+                console.log(
+                  after.length > 0
+                    ? `[slop] second pass still trips (${after.map((m) => m.pattern).join(', ')}) — shipping it anyway, the text is closer than the original`
+                    : '[slop] second pass CLEAN'
+                );
+              } else {
+                console.warn('[slop] second pass returned no text — keeping the first rewrite');
+              }
+            } catch (e2) {
+              console.warn(`[slop] second pass failed (${e2.message}) — keeping the first rewrite`);
+            }
+          } else {
+            console.log('[slop] rewrite CLEAN on verify');
+          }
+        }
+        result.choices[0].message.content = restoreSentinelTags(finalText, tags);
+        result.usage = sumUsage(result.usage, usage);
       } else {
         console.warn('[slop] rewrite pass returned no text, keeping original');
       }

@@ -120,6 +120,27 @@ const DETECTORS = [
       'gi'
     ),
   },
+  /* Aug 19 2026 — measured slipping through on Kade's real family chat, where
+   * `reframe_bare` above could not reach it: the ABOUT-pivot.
+   *
+   *   "This isn't about the dishes. It's about respect."
+   *   "That's not about money, it's about being heard."
+   *
+   * `reframe_bare` requires the negation to sit directly on the predicate
+   * (`it's not X, it's Y`). Once "about" comes between, the RUN that follows
+   * "not" swallows the preposition and the second-clause anchor never lines
+   * up. Same tic, one word of camouflage. Balanced tightness because the
+   * shape is distinctive — an X/Y pivot on a repeated "about" is a rhetorical
+   * move, not something people say by accident. */
+  {
+    pattern: 'isnt_about',
+    tightness: 'balanced',
+    xy: [2, 4],
+    re: new RegExp(
+      `\\b(${SUBJ})(?:${COP}\\s+not|\\s*(?:isn't|isn\\u2019t|aren't|aren\\u2019t|ain't|ain\\u2019t))\\s+(?:${EMPH}\\s+)?about\\s+(${RUN})${SEP}(${SUBJ})${COP2}\\s+about\\s+(${RUN_END})\\s*[.!?]`,
+      'gi'
+    ),
+  },
 ];
 
 function detect(text, options = {}) {
