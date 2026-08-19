@@ -127,6 +127,17 @@ const BLOCKLIST = [
   { phrase: 'where the magic happens', category: 'poster_wisdom' },
   { phrase: 'where the healing happens', category: 'poster_wisdom' },
   { phrase: 'where healing begins', category: 'poster_wisdom' },
+  /* Aug 19 2026 — Kade, reading her testers' real logs: "stuff like that is
+   * annoying... she just makes everything seem like a dramatic soap opera."
+   * The and-that-is-not-nothing move appeared 11 times across 267 replies. It
+   * is significance inflation: it takes an ordinary fact and awards it weight,
+   * which is the same instinct behind the whole soap-opera register she is
+   * objecting to. Cheap to catch deterministically, so catch it. */
+  { phrase: "that's not nothing", category: 'poster_wisdom' },
+  { phrase: 'that\u2019s not nothing', category: 'poster_wisdom' },
+  { phrase: 'thats not nothing', category: 'poster_wisdom' },
+  { phrase: 'which is not nothing', category: 'poster_wisdom' },
+  { phrase: 'and that is not nothing', category: 'poster_wisdom' },
 ];
 
 function detectBlocklist(text) {
