@@ -223,15 +223,44 @@ function isReasoningModel(model) {
  * instant turns are untouched, so the fast lane's cost is unchanged.
  * Kill/tune: KADE_GLM_THINK_MIN_TOKENS. */
 const GLM_THINK_MIN_TOKENS = Number(process.env.KADE_GLM_THINK_MIN_TOKENS || 4000);
+/* ⚠️⚠️ THE FLOOR MUST SCALE WITH THE EFFORT — a regression I shipped MYSELF
+ * this afternoon and caught the same evening, written down so nobody has to
+ * re-derive it.
+ *
+ * Reasoning tokens are COMPLETION tokens. They come out of the same
+ * `max_tokens` budget as the answer. This floor was a flat 4000 regardless of
+ * effort, which was fine while the deep path was accidentally sending
+ * `effort:'none'` and reasoning nothing — the whole 4000 went to the reply.
+ * The moment deep started genuinely thinking (`effort:'high'`, ~918 reasoning
+ * tokens typical, ~1500 observed), that same 4000 had to cover BOTH, and long
+ * deep answers began truncating mid-sentence.
+ *
+ * THE RECEIPT (req 2vl5kp, Aug 19 19:21Z, Forge writing a session prompt):
+ * `classifier -> deep`, reasoning streamed 4,830 chars, content 11,315 chars,
+ * `finishReason=length`, `completion=4001`. He stopped mid-word on "This".
+ * Kade saw it as "he just stopped generating in the middle of a sentence."
+ *
+ * So the floor now scales the way `adaptForKimi`'s already did (8000 for low,
+ * 16000 otherwise) — same idea, smaller numbers, because GLM's reasoning is an
+ * order of magnitude cheaper than K3's. FREE: `max_tokens` is a CEILING, not a
+ * spend. You are billed for tokens generated, never for headroom.
+ * Tune: KADE_GLM_THINK_MIN_TOKENS (quick) / KADE_GLM_DEEP_MIN_TOKENS (deep). */
+const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 8000);
 function adaptForGlm(body) {
   if (!body || !isGlmModel(body.model)) return body;
   const r = body.reasoning || {};
   const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
   const thinking = r.enabled === true || ['low', 'medium', 'high'].includes(effort);
   if (!thinking) return body;
+  // 'high' is what auto-think's DEEP tier sends, and what an explicit
+  // [DEEP THINK] marker sends. Those are the turns that reason hardest and
+  // therefore need the most room left over for the actual answer.
+  const floor = ['high', 'xhigh'].includes(effort) || (r.enabled === true && !effort)
+    ? GLM_DEEP_MIN_TOKENS
+    : GLM_THINK_MIN_TOKENS;
   const mt = Number(body.max_tokens);
-  if (Number.isFinite(mt) && mt >= GLM_THINK_MIN_TOKENS) return body;
-  return { ...body, max_tokens: GLM_THINK_MIN_TOKENS };
+  if (Number.isFinite(mt) && mt >= floor) return body;
+  return { ...body, max_tokens: floor };
 }
 function chatCompletionsUrl(model) {
   return isKimiModel(model) ? `${MOONSHOT_BASE}/chat/completions` : `${OPENROUTER_BASE}/chat/completions`;
