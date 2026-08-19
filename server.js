@@ -1811,10 +1811,55 @@ async function maybeAutoThink(body, reqId = '??????') {
         : cleaned; // kimi call turns keep the effort:'none' they arrived with
     }
     console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
+    /* ⚠️⚠️ BOTH TIERS SET `effort` EXPLICITLY. DO NOT GO BACK TO INHERITING IT.
+     *
+     * THE BUG THIS FIXES (Aug 19 2026, found in the live logs): the deep
+     * branch used to be `{ ...cleaned.reasoning, enabled: true, exclude: false }`
+     * -- it set `enabled` and `exclude` but NOT `effort`. The spread runs
+     * first, so whatever the agent sent survived. Half the fleet carries
+     * `reasoning_effort: 'none'` in its params, so a DEEP-voted turn shipped
+     * `{ effort: 'none', enabled: true }` -- "reasoning on, at effort none",
+     * which every provider that honours the flag resolves as OFF. QUICK was
+     * accidentally immune because it writes `effort: 'low'` AFTER the spread,
+     * clobbering the inherited 'none'. Hence the inversion Kade's logs showed:
+     * QUICK THOUGHT AND DEEP DID NOT.
+     *
+     * WHY IT ONLY SURFACED NOW: the kimi lane never had this. `adaptForKimi`
+     * DELETES the whole `reasoning` object and re-derives `reasoning_effort`
+     * from scratch, translating only low/medium/high -- so an inherited 'none'
+     * could never reach Moonshot as a suppressor. GLM goes straight to
+     * OpenRouter with the object intact. The fleet moved to glm-5.2 on Aug 18
+     * (221 of 223 agents); this went live with that move, silently.
+     *
+     * THE RECEIPTS (so nobody re-litigates this from theory):
+     *   - live logs, 27h window: DEEP returned reasoning text on 0 of 16
+     *     non-tool turns; QUICK on 9 of 17. INSTANT 0 of 35, correctly.
+     *   - the control: same agent (system sha 77ec8b78, tools sha 39b0b858),
+     *     same conversation, same evening -- 19:12 deep 0 chars, 19:18 deep
+     *     0, 19:27 QUICK 1,101 chars, 19:32 deep 0. Only the tier varied.
+     *   - a 12-call A/B on z-ai/glm-5.2 across 7 providers (DeepInfra,
+     *     Ambient, DigitalOcean, Alibaba, Venice, Together, Sail Research):
+     *       effort:'none' + enabled  -> 0 reasoning tokens, 3/3. DEAD.
+     *       effort:'low'  + enabled  -> 203 / 433 / 214  (avg 283)
+     *       enabled, no effort       -> 256 / 225 / 1015 (avg 499)
+     *       effort:'high' + enabled  -> 1508 / 274 / 971 (avg 918)
+     *     Not provider roulette: 'none' zeroed reasoning on every provider
+     *     that drew it, 'low' and 'high' reasoned on every provider.
+     *
+     * WHY 'high' AND NOT BARE `enabled` (Kade's call, her words: "I'd like
+     * auto think to cycle through different levels of deepthink based on the
+     * complexity of the situation"): the tiers have to be RELIABLY different,
+     * and 'high' is deterministic where a bare `enabled` leaves the budget to
+     * the provider -- and provider roulette is a documented, repeat offender
+     * in this file (see the title-reasoning comment in withReasoningIncluded).
+     * 'high' is also exactly what an explicit [DEEP THINK] marker already
+     * sends, so auto-deep and hand-asked deep now behave identically.
+     * The ladder as shipped: instant = none, quick = low (~283 reasoning
+     * tokens), deep = high (~918). Three levels that actually differ. */
     return {
       ...cleaned,
       reasoning: tier === 'deep'
-        ? { ...(cleaned.reasoning || {}), enabled: true, exclude: false }
+        ? { ...(cleaned.reasoning || {}), effort: 'high', enabled: true, exclude: false }
         : { ...(cleaned.reasoning || {}), effort: 'low', enabled: true, exclude: false },
     };
   } catch (e) {
