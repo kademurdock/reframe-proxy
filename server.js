@@ -777,10 +777,33 @@ function currentTimeNote() {
 // along automatically, and it lives in ONE place here instead of being copied
 // across 90+ agents. Fully fail-safe: no tools / unknown tools add nothing, and
 // any error yields '' so the hot path is never at risk.
+/* ── TOOL NOTES (Aug 20 2026: lifted out of personas, at her word) ──────────
+ * Her question was whether Kiana's persona could shed weight to the platform.
+ * The prohibitions could not -- measured, the universal ones are already in
+ * STYLE_REMINDER and the rest are hers alone. But 23% of her persona was not
+ * personality at all: it was a stack of TOOL MANUALS filed under a heading
+ * that said "Outbound phone calls".
+ *
+ * THE BUG THAT MADE THIS URGENT, not just tidy: those manuals lived in TWO OR
+ * THREE PERSONAS EACH, hand-written. `kade_games` full rules: Kiana, Forge,
+ * Deuce. `kade_drive_pc`: Kiana, Forge. And the QUIZ HOSTING rule -- do not
+ * tip off the answer before the player locks in -- existed in EXACTLY ONE
+ * persona on a platform with 226 agents. Hand any other character the games
+ * tool and it will cheerfully spoil the answer, because nobody ever told it
+ * not to. A rule that ships with the TOOL cannot be forgotten when the tool
+ * is handed to somebody new.
+ *
+ * These ride only when the matching tool is actually in the request, so an
+ * agent that cannot place a call never pays a byte for the call manual.
+ * Distilled to operative rules on the way over -- the persona versions had
+ * grown changelog prose ("JULY 4 2026 OVERNIGHT -- THE PARLOR TRIPLED") that
+ * a model reads as history rather than instruction. */
 const TOOL_NOTES = {
-  kade_games: 'Tool note (kade_games): the game engine is the referee. Only ever play the exact legal moves the tool hands you, never decide winners or legal plays yourself, and never read raw move tokens (like "play_KH") aloud -- say the natural name, e.g. "the King of Hearts".',
+  kade_games: 'Tool note (kade_games): the game engine is the referee. Only ever play the exact legal moves the tool hands you, never decide winners or legal plays yourself, and never read raw move tokens (like "play_KH") aloud -- say the natural name, e.g. "the King of Hearts". Patterned tokens get built from whatever the player says; the tool result shows the pattern each turn. Read the hand and the legal moves in your own natural words. If a result carries a [table:xyz] token, copy it into your reply exactly ONCE, ideally at the start, and never mention it -- it draws the table for sighted players and is invisible everywhere else. Same for [sound:x] cues: copy them exactly, never mention them. Keep narrating the game fully in words regardless, because not everyone can see the table. QUIZ HOSTING (trivia or any question-and-answer game): you may personally know the answer -- never say it, spell it, hint at it, narrate your thinking about it, emphasise the right option, or react in any way that tips it off before the player locks in. Present the question and all options plainly and evenly, then wait. The engine reveals the answer to you only after they commit, and that is the only moment you confirm right or wrong.',
   fal_studio: 'Tool note (fal_studio): video/design generation costs real money and cannot be delivered later -- you cannot message first. After starting a render, say it takes a couple minutes and ask the user to say "ready?" so you can check it on their NEXT message; name the source image you are animating.',
-  kade_phone_call: "Tool note (kade_phone_call): you place the call but cannot stay on the line or call back on your own. After placing it, report the result on the user's next message -- never promise to follow up unprompted.",
+  kade_phone_call: "Tool note (kade_phone_call): places a REAL call from the platform line (+1 833-530-0313) to a US/Canada number on behalf of the current user; a phone version of an agent speaks it, and the callee hears an AI and recording disclosure up front. Use it ONLY when the user explicitly asks for a call, and confirm the exact number and the reason first. Hard rails enforced by the tool: 15 minutes max, 4 calls per user per day, real Twilio cost lands on that user's tab, every call recorded with a transcript kept for review. Never call emergency services, and never call anyone repeatedly. You place the call but cannot stay on the line or call back on your own -- report the result on the user's next message, never promise to follow up unprompted.",
+  kade_drive_pc: "Tool note (kade_drive_pc): reaches Kade's own Windows computer through her NVDA screen reader -- co-listen and read her screen, talk in her ear, press keys at her word, or run an errand through the bridge's driver, which pauses for her yes before any step that commits. THIS IS KADE-ONLY and the tool enforces it itself: on anyone else's turn it refuses. Never offer it to other people, never retry a refusal, just say that one is Kade's alone. With Kade: start in listen mode, read her the connect words exactly as the tool hands them over, narrate every action as you take it, trust only the tool's receipts (never claim her PC did something without one), and stop the instant she says stop.",
+  kade_notify: "Tool note (kade_notify): if a request is going to take a real while -- several hand-offs, deep research, anything with a lot of steps -- say so plainly and offer to ping her phone when it is done, then actually send that ping the moment you finish, as part of your final reply. Do not offer it for ordinary quick replies.",
   kade_adventure: 'Tool note (kade_adventure): adventure progress is saved by the tool. Build only on the state it returns; do not invent past events or claim to have saved on your own.',
 };
 
