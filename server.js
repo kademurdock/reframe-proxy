@@ -63,6 +63,25 @@ const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
 const { detectDrift, driftSteerNote } = require('./cadence-drift');
 
+/* ⚠️ KILL SWITCHES FOR THE SEQUENCE DETECTOR (added Aug 20 2026, same day it
+ * shipped, because it went out without them and everything else risky in this
+ * file has one -- KADE_SLOP_VERIFY, KADE_RETRY_TRUNCATED, KADE_AUTO_DEEPTHINK,
+ * KADE_HISTORY_PRESCRUB. A kill switch is needed exactly when something is
+ * going wrong, which is the worst possible moment to need a deploy.
+ *
+ * TWO SWITCHES, NOT ONE, because the lanes carry different risk:
+ *   KADE_DRIFT_STEER=0    turns off the request-side note. Free, low risk --
+ *                         worst case a reply ends on a question. Kill this if
+ *                         replies start sounding clipped or evasive.
+ *   KADE_DRIFT_REWRITE=0  turns off the response-side channels that can fire
+ *                         a rewrite pass. This one spends money and can alter
+ *                         delivered text, so it is the first thing to pull if
+ *                         replies come back mangled or spend jumps.
+ * Set either on the reframe-proxy service in Railway; no code change, no
+ * deploy of this repo. */
+const DRIFT_STEER = process.env.KADE_DRIFT_STEER !== '0';
+const DRIFT_REWRITE = process.env.KADE_DRIFT_REWRITE !== '0';
+
 const PORT = process.env.PORT || 8080;
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
 const PROXY_SHARED_SECRET = process.env.PROXY_SHARED_SECRET;
@@ -660,12 +679,14 @@ function collectMatches(content, upstreamBody) {
    * 'rewrite' kind is added here; the 'steer' kind is handled on the REQUEST
    * side by driftSteerNote(), because a delivery lock has to be fixed before
    * the reply is written, not rewritten afterwards. */
-  try {
-    const drift = detectDrift(content, upstreamBody);
-    const rewritable = drift.matches.filter((m) => m.kind === 'rewrite');
-    if (rewritable.length > 0) matches.push(...rewritable);
-  } catch (err) {
-    console.error('drift check threw, skipping:', err.message);
+  if (DRIFT_REWRITE) {
+    try {
+      const drift = detectDrift(content, upstreamBody);
+      const rewritable = drift.matches.filter((m) => m.kind === 'rewrite');
+      if (rewritable.length > 0) matches.push(...rewritable);
+    } catch (err) {
+      console.error('drift check threw, skipping:', err.message);
+    }
   }
   return matches;
 }
@@ -915,6 +936,7 @@ function isTitleShapedBody(body) {
  * so this needs no state and no storage. Wrapped in try/catch on the standing
  * rule that a style check must never be able to kill a turn. */
 function driftNoteFor(body) {
+  if (!DRIFT_STEER) return '';
   try {
     return driftSteerNote(body) || '';
   } catch (err) {
