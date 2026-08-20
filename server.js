@@ -2326,6 +2326,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let reasoningLive = false; // Aug 4 2026: reasoning deltas forwarded live this turn (see the reasoning branch)
   let template = null; // first parsed chunk, reused to shape the fake SSE on content turns
   let finishReason = 'stop';
+  /* Set when the read loop throws (socket reset, idle timeout, upstream hangup).
+   * Distinct from finishReason==='error', which is the provider POLITELY telling
+   * us it gave up; this is the connection dying without anybody saying so, and it
+   * leaves finishReason at its 'stop' default — which would otherwise make a
+   * half-written reply look like a finished one. Same cure either way. */
+  let streamAborted = false;
   let usage = null;
   let upstreamProvider = null;
   let sawDone = false;      // phoneLive: whether upstream's [DONE] was already forwarded
@@ -2615,6 +2621,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   } catch (err) {
     console.error(`[req ${reqId}] streaming read error at ${Date.now() - t0}ms: ${err.name} ${err.message}, contentAccum.length=${contentAccum.length}, toolMode=${toolMode}`);
     stopHeartbeat();
+    streamAborted = true;
     if (toolMode) {
       // already streaming live; best we can do is end the response
       try { res.end(); } catch (e) {}
@@ -2761,12 +2768,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * KADE_RETRY_TRUNCATED=0. */
   if (
     RETRY_TRUNCATED &&
-    finishReason === 'error' &&
+    (finishReason === 'error' || streamAborted) &&
     contentAccum.length > 0 &&
     !toolMode &&
     !phoneLive
   ) {
-    console.warn(`[req ${reqId}] upstream stream ERRORED mid-generation with ${contentAccum.length} partial chars -- re-asking once rather than serving half a reply`);
+    console.warn(`[req ${reqId}] stream died mid-generation (${streamAborted ? 'connection aborted' : 'finish=error'}) with ${contentAccum.length} partial chars -- re-asking once rather than serving half a reply`);
     try {
       const retryBody = { ...upstreamBody, stream: false };
       delete retryBody.stream_options;
