@@ -630,6 +630,7 @@ const SLOP_REWRITE_MAX_CHARS = parseInt(process.env.SLOP_REWRITE_MAX_CHARS || '8
 const SLOP_REWRITE_TIMEOUT_MS = parseInt(process.env.SLOP_REWRITE_TIMEOUT_MS || '25000', 10);
 
 const SLOP_VERIFY = process.env.KADE_SLOP_VERIFY !== '0';
+const RETRY_TRUNCATED = process.env.KADE_RETRY_TRUNCATED !== '0';
 
 /* One place that knows what "the detectors" means. Was inline in the response
  * path, which meant the rewrite had no way to re-check itself against the same
@@ -2728,6 +2729,61 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       }
     } catch (fbErr) {
       console.warn(`[req ${reqId}] reasoning-off fallback failed: ${fbErr.message} -- leaving the turn as it was`);
+    }
+  }
+
+  /* ⭐⭐⭐ A STREAM THAT DIES MID-SENTENCE MUST NOT BE SERVED AS AN ANSWER
+   * (Aug 20 2026 — Kade: "it keeps eating messages... I noticed it did that to
+   * amber a also. and to me on forge earlier.")
+   *
+   * MEASURED, not guessed: 4 of 95 completions in the Aug 18-19 window came
+   * back `finishReason=error` — the provider accepted the request, returned
+   * HTTP 200, streamed part of a reply, and then quit. The proxy kept whatever
+   * had arrived and shipped it as if it were the whole thing. Those partials
+   * are exactly the "eaten" messages she found in her own transcript and in
+   * both Amber seats: 455, 1,896, 4,166 and 7,299 chars, each stopping
+   * mid-word. One live example (req mt2uxk, provider Alibaba): 200 OK,
+   * reasoning streamed fine, then dead at 8.0s with 538 completion tokens and
+   * 867 chars of a half-finished thought about a book — served to her as the
+   * answer.
+   *
+   * WHY A RETRY IS SAFE HERE AND NOWHERE EARLIER: tool turns and shim-live
+   * turns have already returned above, and phone turns stream as they go, so
+   * by this line NOTHING has been sent to the client yet — the content turn is
+   * still fully buffered. A second ask is invisible; the person just waits a
+   * beat longer for a whole reply instead of getting half of one.
+   *
+   * Non-streaming on the retry ON PURPOSE: the failure mode being cured is the
+   * stream itself dying, so asking for the answer in one piece removes the
+   * thing that broke. Fail-soft in every direction — if the retry errors,
+   * returns nothing, or comes back SHORTER than what we already have, the turn
+   * proceeds exactly as it would have before this existed. Kill:
+   * KADE_RETRY_TRUNCATED=0. */
+  if (
+    RETRY_TRUNCATED &&
+    finishReason === 'error' &&
+    contentAccum.length > 0 &&
+    !toolMode &&
+    !phoneLive
+  ) {
+    console.warn(`[req ${reqId}] upstream stream ERRORED mid-generation with ${contentAccum.length} partial chars -- re-asking once rather than serving half a reply`);
+    try {
+      const retryBody = { ...upstreamBody, stream: false };
+      delete retryBody.stream_options;
+      const rt = await callOpenRouter(retryBody);
+      const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
+      if (typeof rtText === 'string' && rtText.trim().length >= contentAccum.length) {
+        console.log(`[req ${reqId}] truncation retry landed ${rtText.length} chars (was ${contentAccum.length}) at ${Date.now() - t0}ms`);
+        contentAccum = rtText;
+        finishReason = (rt.choices[0].finish_reason) || 'stop';
+        if (rt.usage) {
+          usage = sumUsage(usage, rt.usage);
+        }
+      } else {
+        console.warn(`[req ${reqId}] truncation retry came back shorter or empty (${rtText ? rtText.length : 0} chars) -- keeping the original partial`);
+      }
+    } catch (rtErr) {
+      console.warn(`[req ${reqId}] truncation retry failed: ${rtErr.message} -- keeping the original partial`);
     }
   }
 
