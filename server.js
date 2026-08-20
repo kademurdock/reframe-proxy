@@ -61,6 +61,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
+const { detectDrift, driftSteerNote } = require('./cadence-drift');
 
 const PORT = process.env.PORT || 8080;
 const OPENROUTER_KEY = process.env.OPENROUTER_KEY;
@@ -655,6 +656,17 @@ function collectMatches(content, upstreamBody) {
   } catch (err) {
     console.error('cadence check threw, skipping:', err.message);
   }
+  /* Aug 20 2026 — the SEQUENCE channels (see cadence-drift.js). Only the
+   * 'rewrite' kind is added here; the 'steer' kind is handled on the REQUEST
+   * side by driftSteerNote(), because a delivery lock has to be fixed before
+   * the reply is written, not rewritten afterwards. */
+  try {
+    const drift = detectDrift(content, upstreamBody);
+    const rewritable = drift.matches.filter((m) => m.kind === 'rewrite');
+    if (rewritable.length > 0) matches.push(...rewritable);
+  } catch (err) {
+    console.error('drift check threw, skipping:', err.message);
+  }
   return matches;
 }
 
@@ -868,13 +880,33 @@ function isTitleShapedBody(body) {
   return !hasSystem && !hasTools;
 }
 
+/* Aug 20 2026 — THE CADENCE STEER, and why it lives on the request.
+ *
+ * Measured on 989 real assistant turns out of the Aug-19 backup: the share of
+ * turns showing a cross-message lock climbs 6.9% -> 27.5% -> 31.9% -> 36.4%
+ * -> 49.4% as a conversation deepens past 40 turns. That is the failure this
+ * proxy has never been able to see, because every other check here scores one
+ * message alone and any ONE of those turns is a perfectly good sentence.
+ *
+ * The note is computed from body.messages, which already carries the history,
+ * so this needs no state and no storage. Wrapped in try/catch on the standing
+ * rule that a style check must never be able to kill a turn. */
+function driftNoteFor(body) {
+  try {
+    return driftSteerNote(body) || '';
+  } catch (err) {
+    console.error('driftSteerNote threw, skipping:', err.message);
+    return '';
+  }
+}
+
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
   if (isTitleShapedBody(body)) return body;
   const toolNotes = toolNotesFor(body);
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + laneNoteFor(body) + currentTimeNote() + toolNotes }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + currentTimeNote() + toolNotes }],
   };
 }
 
