@@ -747,6 +747,23 @@ const STYLE_REMINDER = [
   'Kade-AI voice line where any character can be asked for by name.',
 ].join(' ');
 
+// Aug 21 2026 — THE FORMAT LINE, her wording approved this session. History:
+// the first proposal was a canonical BLIND-FIRST line (147 of 226 agents
+// mention blindness, all worded differently) and she killed it — "not
+// everyone on this platform is blind and we need to take care to remember
+// that as well." A blanket reader-identity line would tell every agent that
+// sighted family members are blind. The correct shape is a rule about the
+// OUTPUT, true regardless of who is reading; who a person actually is stays
+// in per-user memory where it already lives. Kill switch: KADE_FORMAT_NOTE=0.
+const FORMAT_NOTE_ON = process.env.KADE_FORMAT_NOTE !== '0';
+const FORMAT_NOTE = [
+  ' Format note: anything you write may be heard out loud or read by a',
+  'screen reader. Never depend on visual layout to carry meaning -- no',
+  'information that lives only in bold, color, alignment, tables, or a run',
+  'of emoji, and never point at things by position ("the button on the',
+  'right"). Say it in words that survive being read aloud.',
+].join(' ');
+
 // July 2 2026 (Kade's ask, evening session): a soft money heads-up, for
 // EVERYONE. Not a warning, not a permission gate -- just the way a friend
 // would mention it. Only for the big-ticket stuff (video gen runs multiple
@@ -951,7 +968,7 @@ function appendReminder(body) {
   const toolNotes = toolNotesFor(body);
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + currentTimeNote() + toolNotes }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + currentTimeNote() + toolNotes }],
   };
 }
 
