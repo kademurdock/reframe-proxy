@@ -1103,7 +1103,14 @@ function laneNoteFor(body) {
  * the clock and the tool notes are all noise it can only hurt itself with. */
 function isTitleShapedBody(body) {
   const msgs = Array.isArray(body && body.messages) ? body.messages : [];
-  const hasSystem = msgs.some((m) => m && m.role === 'system');
+  // The compaction date note (Part 75 §3.3) is OUR OWN furniture — a body
+  // whose only system message is that note is still title-shaped, so the
+  // reasoning pin and the think-refusals downstream keep applying to
+  // compaction calls after the note is appended. Without this, appending the
+  // note would strip the title shape and reopen the July junk-in-titles
+  // disease class on the machine lane.
+  const hasSystem = msgs.some((m) => m && m.role === 'system' &&
+    !(typeof m.content === 'string' && m.content.startsWith('For the checkpoint: today is')));
   const hasTools = Array.isArray(body && body.tools) && body.tools.length > 0;
   return !hasSystem && !hasTools;
 }
@@ -1129,9 +1136,56 @@ function driftNoteFor(body) {
   }
 }
 
+/* ── COMPACTION DATE LAW (Part 75 §3.3, Aug 21 2026) ────────────────────────
+ * The conversation-compacting checkpoint (kade-config.yaml summarization:)
+ * stands in for days of messages — the perfect place for a frozen "tomorrow"
+ * (the dry-socket disease, ADDENDUM 3). But a compaction call can arrive
+ * TITLE-SHAPED (no system message, no tools), which appendReminder skips
+ * entirely, so the checkpoint writer had NO clock at all. This hands it the
+ * date + THE DATE LAW alone — never the full style reminder (the July
+ * titler-parroting lesson: extra prose in a machine lane ends up IN the
+ * output). Detection requires our own checkpoint prompt's distinctive
+ * wording in the FINAL message, so a title call whose conversation text
+ * merely mentions checkpoints can never match. Kill: KADE_COMPACTION_DATE=0. */
+const COMPACTION_DATE_ON = process.env.KADE_COMPACTION_DATE !== '0';
+// Anchored to the checkpoint prompts' own OPENING words (kade-config.yaml
+// summarization: prompt/updatePrompt), tested within the first 120 chars of
+// the final message — a title call carries the whole conversation in ONE user
+// message, so an unanchored match on quoted checkpoint talk would false-trip
+// (caught by the spec's title-call control before shipping).
+const COMPACTION_MARKER_RE = /^\s*Hold on(?: again)? — (?:before you continue, write me a checkpoint|update your checkpoint)/;
+function isCompactionShapedBody(body) {
+  const msgs = Array.isArray(body && body.messages) ? body.messages : [];
+  if (!msgs.length) return false;
+  const last = msgs[msgs.length - 1];
+  const t = typeof last.content === 'string' ? last.content
+    : Array.isArray(last.content) ? last.content.map((p) => (p && (p.text?.value || p.text)) || '').join(' ')
+    : '';
+  return COMPACTION_MARKER_RE.test(t.slice(0, 120));
+}
+function compactionDateNote() {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+  return `For the checkpoint: today is ${fmt.format(now)} (US Central). THE DATE LAW: never write a ` +
+    `bare relative time word into the checkpoint. Convert every "today", "tomorrow", "tonight", ` +
+    `"this weekend", "next week" into the absolute day it refers to (keep the relative word in ` +
+    `parentheses only if it adds feeling), and remember any relative word in the transcript was ` +
+    `relative to when it was SAID, which may be days before today. A checkpoint is read on later ` +
+    `days — a frozen "tomorrow" becomes a lie. Open the checkpoint with "Checkpoint as of ` +
+    `<today's actual date>".`;
+}
+
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
-  if (isTitleShapedBody(body)) return body;
+  if (isTitleShapedBody(body)) {
+    if (COMPACTION_DATE_ON && isCompactionShapedBody(body)) {
+      console.log('[compaction] title-shaped body carries the checkpoint prompt — appending the date law note');
+      return { ...body, messages: [...body.messages, { role: 'system', content: compactionDateNote() }] };
+    }
+    return body;
+  }
   const toolNotes = toolNotesFor(body);
   return {
     ...body,
