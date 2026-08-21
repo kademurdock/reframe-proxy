@@ -317,6 +317,8 @@ function isZaiDirectModel(model) {
   // no ZAI_KEY the prefix is never stripped and routing stays OpenRouter.
   return ZAI_BARE_RE.test(String(model || ''));
 }
+// See THE ROLE SHIM block in handleStreaming.
+const ZAI_ROLE_SHIM = process.env.KADE_ZAI_ROLE_SHIM !== '0';
 // Utility tier: thinking always off (titles and memory cards must never
 // carry think-blocks). The 5.x fleet keeps whatever the turn asked for.
 const ZAI_NEVER_THINK = new Set(['glm-4.7-flashx', 'glm-4.7-flash', 'glm-4.7', 'glm-4.6', 'glm-4.5-air']);
@@ -2750,6 +2752,34 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   // by every spec-compliant parser, so this is invisible to the final reply.
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  /* ⭐⭐⭐ THE ROLE SHIM (Aug 21 2026) — WHY EVERY TOOL CALL DIED FLEET-WIDE
+   * THE DAY THE FLEET WENT Z.AI-DIRECT.
+   *
+   * OpenAI/OpenRouter streams open with `delta:{role:"assistant"}` before any
+   * content. Z.ai NEVER sends that opener — on a tool-call turn its only
+   * `role` rides in the FINAL chunk (alongside finish_reason), too late.
+   * LibreChat's parser (@librechat/agents 3.2.46 ChatOpenRouter — reproduced
+   * in isolation, bisected on a mock server: variant A no-opener = tool_calls
+   * NONE; variant B same bytes + role opener = parsed perfectly) discards
+   * whatever arrives before a role appears. Prose survived all day because
+   * buffered content turns are re-emitted via buildFakeSSE; TOOL turns ride
+   * raw passthrough, so the fleet lost every tool from the 08:00Z sweep to
+   * this fix: stored messages show 5 tool calls in the Aug-20 window, ZERO
+   * after the switch, with the empty-content husks to match.
+   *
+   * One synthetic opener before any upstream bytes cures every consumer at
+   * once. Harmless when the upstream sends its own role too (bisect variant
+   * E). Kill: KADE_ZAI_ROLE_SHIM=0. */
+  if (ZAI_ROLE_SHIM && isZaiDirectModel(upstreamBody.model)) {
+    try {
+      res.write(`data: ${JSON.stringify({
+        id: 'kade-role-shim', object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000), model: String(upstreamBody.model),
+        choices: [{ index: 0, delta: { role: 'assistant' } }],
+      })}\n\n`);
+    } catch (e) { /* never let the shim kill a turn */ }
+  }
 
   const HEARTBEAT_MS = 10_000;
   let heartbeatTimer = setInterval(() => {
