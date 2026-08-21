@@ -434,6 +434,43 @@ function driftSteerNote(body) {
     );
   }
 
+  /* TAG METRONOME (Aug 21 2026 — measured: 291 of 295 recent replies, 99%,
+   * open with a %%%tag%%% before a single word lands. Every message announcing
+   * itself the same way IS a machine tell, and for a TTS listener it's the
+   * same drumbeat on every reply. Fires only after 4 consecutive tag-opened
+   * replies, so one bare opening buys at least 3 quiet turns — the note can't
+   * go wallpaper, and the behavior it produces is a natural mostly-tagged
+   * rhythm with human variance, not tag elimination (the tags are load-bearing
+   * TTS steering; "drop the tag when the moment is plain" is already doctrine). */
+  {
+    let tagRun = 0;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (String(history[i]).trim().startsWith('%%%')) tagRun++; else break;
+    }
+    if (tagRun >= 4) {
+      notes.push(
+        `Delivery note: your last ${tagRun} replies all OPENED with a voice tag. ` +
+        `Open this one bare -- just start talking -- and if the moment needs a ` +
+        `direction, let the tag land mid-message where the shift actually happens.`
+      );
+    }
+  }
+
+  /* FIRST-WORD STREAK — "Okay." three replies running is a tell no
+   * single-message rule can see. Strict: 3 consecutive identical first words
+   * (after tag strip), measured base rates show no word above 7% globally so
+   * consecutive runs are genuine locks, not chance. */
+  {
+    const fw = (t) => ((stripTags(String(t)).trim().match(/^[A-Za-z']+/) || [''])[0] || '').toLowerCase();
+    const last = history.slice(-3).map(fw);
+    if (last.length === 3 && last[0] && last[0] === last[1] && last[1] === last[2]) {
+      notes.push(
+        `Style note: your last 3 replies all started with the word "${last[0]}". ` +
+        `Start this one differently -- any other way in.`
+      );
+    }
+  }
+
   /* PHRASE HABIT — verbal crutches the single-message tier can't see, because
    * any ONE of them is perfectly good speech. "here's the thing" measured in
    * 34 of 268 replies pre-v144 and still landing after. Extendable list. */
