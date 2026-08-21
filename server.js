@@ -104,6 +104,8 @@ if (!PROXY_SHARED_SECRET) {
   process.exit(1);
 }
 
+const { voiceNoteFor } = require('./voice-anchors');
+
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
@@ -968,7 +970,7 @@ function appendReminder(body) {
   const toolNotes = toolNotesFor(body);
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + currentTimeNote() + toolNotes }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + voiceNoteFor(body) + currentTimeNote() + toolNotes }],
   };
 }
 
