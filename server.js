@@ -319,6 +319,7 @@ function isZaiDirectModel(model) {
 }
 // See THE ROLE SHIM block in handleStreaming.
 const ZAI_ROLE_SHIM = process.env.KADE_ZAI_ROLE_SHIM !== '0';
+const TOOLWIRE_DEBUG = process.env.KADE_TOOLWIRE_DEBUG !== '0';
 // Utility tier: thinking always off (titles and memory cards must never
 // carry think-blocks). The 5.x fleet keeps whatever the turn asked for.
 const ZAI_NEVER_THINK = new Set(['glm-4.7-flashx', 'glm-4.7-flash', 'glm-4.7', 'glm-4.6', 'glm-4.5-air']);
@@ -2819,6 +2820,15 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let sseBuffer = '';
   let rawPending = ''; // raw SSE text buffered until mode is decided
   let toolMode = false;
+  /* TOOLWIRE DEBUG (Part 81) — the multi-round graph bug's failing rounds all
+   * share one trait: the tool call arrives ALL-AT-ONCE, 1ms after headers
+   * (17:11, 17:28, and Amber A's real dead-air turn at 18:50 on Aug 21) while
+   * slow rounds with reasoning ahead all parse. The bytes parse clean in
+   * isolation, so the next step is the exact wire: capture the first ~1.8KB
+   * written to the client on tool-mode turns and log it at stream end. Diff a
+   * failing turn against a passing one and the divergence names itself.
+   * Kill: KADE_TOOLWIRE_DEBUG=0. */
+  let wireLog = '';
   let contentAccum = '';
   let reasoningAccum = '';
   let reasoningLive = false; // Aug 4 2026: reasoning deltas forwarded live this turn (see the reasoning branch)
@@ -2940,6 +2950,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     if (currentEvent) flush += currentEvent + '\n\n';
     if (leftoverBuffer) flush += leftoverBuffer;
     if (flush) res.write(flush);
+    if (TOOLWIRE_DEBUG && flush) wireLog += flush.slice(0, Math.max(0, 1800 - wireLog.length));
     rawPending = '';
   }
 
@@ -2960,6 +2971,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       if (toolMode) {
         // already committed to live passthrough — forward raw bytes as-is
         res.write(text);
+        if (TOOLWIRE_DEBUG) wireLog += text.slice(0, Math.max(0, 1800 - wireLog.length));
         continue;
       }
       sseBuffer += text;
@@ -3139,6 +3151,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   if (toolMode) {
     // live passthrough already wrote everything incl. upstream's [DONE]
     console.log(`[req ${reqId}] tool-mode response ended at ${Date.now() - t0}ms`);
+    if (TOOLWIRE_DEBUG && wireLog) {
+      console.log(`[toolwire ${reqId}] first ${wireLog.length} bytes to client: ${JSON.stringify(wireLog)}`);
+    }
     try { res.end(); } catch (e) {}
     return;
   }
