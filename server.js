@@ -738,6 +738,9 @@ const PATTERN_GUIDANCE = {
   'blocklist:poster_wisdom': 'motivational-poster wisdom ("that is a great place to be", "trust the process", "growth is not linear", a closing "...and that is okay.") -- replace it with a specific observation, a real opinion, or a concrete suggestion',
   sycophant_opener: 'opening the reply by agreeing with or praising the person ("You are absolutely right", "Great question") -- cut the agreement line and start with the substance',
   'blocklist:everything_gush': 'the "tell me everything" demand-gush ("I wanna know everything", "every single detail", "I want all of it") -- replace it with the ONE specific question the writer actually wonders about, or a plain reaction; a friend does not take inventory',
+  nominalization: 'a feeling turned into an abstract noun and discussed as the noun ("that\'s the knowing", "the being seen") -- name the feeling in plain words a person would say ("you already know", "being seen like that")',
+  that_part_meme: 'the standalone "That part." agreement meme -- agree in your own plain words instead',
+  meme_combat: 'internet-combat formulas ("I will fight you on this", "die on this hill", "throw hands") -- state the strong opinion plainly; conviction does not need a bit',
 };
 
 function guidanceFor(patternName) {
@@ -1545,7 +1548,24 @@ function scrubSearchArtifacts(text) {
 
 function normalizeVoiceTagTypos(text) {
   if (!text || text.indexOf('%%') === -1) return text;
-  return text.replace(/%{2,4}([a-zA-Z][a-zA-Z ’',!-]{0,60}?)%{2,4}/g, '%%%$1%%%');
+  let out = text.replace(/%{2,4}([a-zA-Z][a-zA-Z ’',!-]{0,60}?)%{2,4}/g, '%%%$1%%%');
+  /* TAG DE-PUNCTUATION (Part 81, Aug 21 2026 — her words: "I just like them
+   * the way they're meant to be used, you know, without commas"). The format
+   * law has said no commas/periods inside a tag since July ("a plain run of
+   * words performs better than a punctuated list") and MEASURED reality was
+   * 336 of 853 recent tags (39%) carrying them anyway — prompt ceiling,
+   * again. So the law is enforced at birth: punctuation inside %%%...%%%
+   * becomes spaces, whitespace collapses. "warmer now, settling in" ->
+   * "warmer now settling in". Every consumer downstream (TTS steering, the
+   * tag-echo channels, display strippers) sees only the canonical form.
+   * Kill: KADE_TAG_DEPUNCT=0. */
+  if (process.env.KADE_TAG_DEPUNCT !== '0') {
+    out = out.replace(/%%%([^%\n]{1,160})%%%/g, (whole, inner) => {
+      const cleaned = inner.replace(/[,;.:!?]+/g, ' ').replace(/\s+/g, ' ').trim();
+      return cleaned ? `%%%${cleaned}%%%` : '';
+    });
+  }
+  return out;
 }
 
 // -- cadence lock-in detection (Part 70.5, Aug 15 2026) -----------------------

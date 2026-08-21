@@ -619,6 +619,47 @@ function detectPufferyDensity(text) {
     }));
 }
 
+// -- 12) Nominalization + the "that part." meme + meme-combat (Aug 21 2026,
+//    Kade verbatim: "I'm tired of nominalism, that's the knowing, that's the
+//    blah blah blah... All that I-will-fight-you-on-this just seems kinda
+//    meme fake. Real people just don't talk like that.")
+//
+//    CALIBRATION NOTES (measured on 358 real replies before shipping):
+//    - "that's the frustrating part" is NORMAL English — the tic is the NAKED
+//      abstract gerund with no noun after it ("that's the knowing.", "the
+//      being seen"). So the gerund must be followed by punctuation, or come
+//      from the curated abstract list, to trip.
+//    - "that part's yours" / "that part is solid" are referential and human —
+//      only the STANDALONE agreement sentence "That part." trips.
+//    - meme-combat trips on the internet-fight formulas, not on real talk
+//      about actual fights.
+function detectNominalization(text) {
+  const matches = [];
+  const push = (m, pattern) => matches.push({
+    pattern, tightness: 'balanced', span: [m.index, m.index + m[0].length],
+    text: m[0].trim(), x: null, y: null,
+  });
+  const NOM_STOP = new Set(['thing', 'king', 'ring', 'wing', 'sing', 'spring', 'string',
+    'morning', 'evening', 'ceiling', 'building', 'wedding', 'sibling', 'everything',
+    'something', 'nothing', 'anything', 'during', 'darling', 'ending', 'beginning']);
+  // naked gerund: "that's the knowing." / "it's the wanting,"
+  const re1 = /\b(?:that|it|this)['’]?s the ([a-z]+ing)\s*(?=[.,!?;—-])/gi;
+  let m;
+  while ((m = re1.exec(text)) !== null) {
+    if (!NOM_STOP.has(m[1].toLowerCase())) push(m, 'nominalization');
+  }
+  // "the being seen" family: article + being + participle/adjective
+  const re2 = /\bthe being ([a-z]+ed|[a-z]+n|seen|known|held|heard|wanted|chosen)\b/gi;
+  while ((m = re2.exec(text)) !== null) push(m, 'nominalization');
+  // standalone agreement "That part." as its own sentence
+  const re3 = /(?:^|[.!?]\s+)(That part[.!])(?:\s|$)/gm;
+  while ((m = re3.exec(text)) !== null) push(m, 'that_part_meme');
+  // meme-combat formulas
+  const re4 = /\bi (?:will|['’]ll|would|['’]d) fight (?:you|anyone|somebody|him|her)\b|\bdie on th(?:is|at) hill\b|\bhill i(?:['’]ll| will| would|['’]d) die on\b|\bfight me on this\b|\bthrow hands\b|\bthem['’]?s fighting words\b/gi;
+  while ((m = re4.exec(text)) !== null) push(m, 'meme_combat');
+  return matches;
+}
+
 function detectSlop(text) {
   const matches = [
     ...detectBlocklist(text),
@@ -632,6 +673,7 @@ function detectSlop(text) {
     ...detectPosterPlace(text),
     ...detectSycophantOpener(text),
     ...detectPufferyDensity(text),
+    ...detectNominalization(text),
   ].sort((a, b) => a.span[0] - b.span[0]);
 
   return { tripped: matches.length > 0, matches };
