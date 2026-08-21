@@ -735,6 +735,7 @@ const PATTERN_GUIDANCE = {
   dichotomy_middle: 'the fortune-cookie spectrum map ("one side is X, the other is Y, you are somewhere in the middle" / "the truth is somewhere in the middle") -- drop the map entirely and say the one concrete thing you actually think about their situation',
   'blocklist:poster_wisdom': 'motivational-poster wisdom ("that is a great place to be", "trust the process", "growth is not linear", a closing "...and that is okay.") -- replace it with a specific observation, a real opinion, or a concrete suggestion',
   sycophant_opener: 'opening the reply by agreeing with or praising the person ("You are absolutely right", "Great question") -- cut the agreement line and start with the substance',
+  'blocklist:everything_gush': 'the "tell me everything" demand-gush ("I wanna know everything", "every single detail", "I want all of it") -- replace it with the ONE specific question the writer actually wonders about, or a plain reaction; a friend does not take inventory',
 };
 
 function guidanceFor(patternName) {
@@ -785,6 +786,25 @@ function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
 const SLOP_REWRITE_MAX_CHARS = parseInt(process.env.SLOP_REWRITE_MAX_CHARS || '8000', 10);
 const SLOP_REWRITE_TIMEOUT_MS = parseInt(process.env.SLOP_REWRITE_TIMEOUT_MS || '25000', 10);
 
+/* ⭐ Aug 21 2026 — THE REWRITE LANE WAS DYING ON THE CLOCK SINCE THE 5.3 SWITCH.
+ * The rewrite inherited the character's model, and GLM-5.3 CANNOT disable
+ * thinking (the documented 1210 dialect; adaptForZai maps effort none -> low,
+ * which still thinks). A phrase-swap job was paying a thinking tax on every
+ * fire: the afternoon's logs show 13 of ~29 rewrite attempts ending in
+ * "This operation was aborted" (25s budget blown) — every one of those shipped
+ * the tic-ridden ORIGINAL 20-30s late — plus one hard 400 receipt when the
+ * Z.ai fallback hit OpenRouter's 5.3 with reasoning disabled: "Reasoning is
+ * mandatory for this endpoint and cannot be disabled." That is why Kade kept
+ * seeing "that's not X, that's Y" in stored replies while every detector was
+ * firing correctly.
+ *
+ * Fix: the rewrite rides its own pinned NON-THINKING utility model.
+ * glm-4.5-air is in ZAI_NEVER_THINK (thinking force-disabled on the Z.ai
+ * lane), earned its seat in the Part-75 audition (2.4s memory write that kept
+ * the feeling), costs $0.2/$1.1, and falls back to OpenRouter's z-ai/glm-4.5-air
+ * cleanly. Set SLOP_REWRITE_MODEL=inherit to restore the old behavior. */
+const SLOP_REWRITE_MODEL = (process.env.SLOP_REWRITE_MODEL || 'z-ai/glm-4.5-air').trim();
+
 const SLOP_VERIFY = process.env.KADE_SLOP_VERIFY !== '0';
 const RETRY_TRUNCATED = process.env.KADE_RETRY_TRUNCATED !== '0';
 
@@ -829,7 +849,10 @@ function collectMatches(content, upstreamBody) {
 
 async function rewritePass(originalBody, offendingText, matches, hasProtectedTags = false) {
   const rewriteBody = {
-    model: originalBody.model,
+    // Pinned utility model since Aug 21 2026 (see SLOP_REWRITE_MODEL above) —
+    // inheriting the character's model meant inheriting GLM-5.3's mandatory
+    // thinking, which blew the 25s budget on half the fires all afternoon.
+    model: SLOP_REWRITE_MODEL === 'inherit' ? originalBody.model : SLOP_REWRITE_MODEL,
     temperature: 0.3,
     // Part 63: the rewrite NEVER thinks. It exists to swap phrases, not to
     // deliberate; reasoning here was pure latency and Moonshot spend in the
@@ -1533,6 +1556,57 @@ function detectCadenceLockins(content, upstreamBody) {
   return out;
 }
 
+/* ── COHERENCE GUARD (Part 75 §3.2, built Aug 21 2026) ──────────────────────
+ * The Sail Research salad (Aug 21 ~03:09Z, preserved as preRepairText on the
+ * repaired row in Amber L's conversation) shipped with the log line "rewrite
+ * CLEAN on verify" — because verify only re-runs the NAMED detectors, and a
+ * detector list cannot see incoherence. A reply can be free of every banned
+ * phrase and still be three collapsed drafts stitched with dashes.
+ *
+ * This is the cheap sanity gate: pure string checks for degeneration tells,
+ * no model call. It runs in two places:
+ *   (a) on every REWRITE before it replaces the original — a degenerate
+ *       rewrite must never beat a coherent original;
+ *   (b) on the RAW buffered reply before delivery — the Sail case. A raw trip
+ *       logs loudly, and when TWO OR MORE tells stack it spends ONE
+ *       regeneration attempt; if the retry is clean it ships, otherwise the
+ *       original ships with the flag on record.
+ *
+ * Calibrated on 521 real assistant replies (Aug 10-21): 5 single-tell trips,
+ * every one legitimate content (Forge writing documents with --- dividers, a
+ *       creative batch, an apology turn quoting the disease) — which is why
+ * the retry gate requires 2+ tells. The real Sail message carries exactly 2
+ * (divider_run:8 + meta_collapse) and is the only retry-worthy row in the
+ * corpus. Length explosion is only checked against a real baseline (the
+ * rewrite path, where the original's length is in hand) — never on the raw
+ * path, where her 17K worldbuilding replies are legitimate (the Aug-10
+ * lesson). Kill: KADE_COHERENCE=0. */
+const COHERENCE_ON = process.env.KADE_COHERENCE !== '0';
+const COHERENCE_META_RE = /\b(?:attempt collapsed mid-thought|let me land it|i keep tangling|i'?m tangling myself|let me just say it straight|ok(?:ay)? i'?m tangling)\b/i;
+const ADJ_REPEAT_SKIP = new Set(['that', 'had', 'very', 'really', 'blah']);
+function coherenceTells(text, baselineChars = 0) {
+  const t = String(text || '');
+  const tells = [];
+  const dividers = (t.match(/^\s*[-—]{3,}\s*$/gm) || []).length;
+  if (dividers >= 3) tells.push(`divider_run:${dividers}`);
+  if (COHERENCE_META_RE.test(t)) tells.push('meta_collapse');
+  const words = t.toLowerCase().match(/[a-z']+/g) || [];
+  let adj = 0;
+  for (let i = 1; i < words.length; i++) {
+    if (words[i] === words[i - 1] && words[i].length > 3 && !ADJ_REPEAT_SKIP.has(words[i])) adj++;
+  }
+  if (adj >= 3) tells.push(`adjacent_repeat:${adj}`);
+  if (baselineChars > 400 && t.length > baselineChars * 1.8 + 400) {
+    tells.push(`length_explosion:${t.length}vs${baselineChars}`);
+  }
+  return tells;
+}
+function coherenceRetryWorthy(tells) {
+  // 2+ stacked tells only — calibrated: every single-tell trip in the real
+  // corpus was legitimate content (docs with dividers, creative batches).
+  return tells.length >= 2;
+}
+
 async function detectAndRewrite(result, upstreamBody) {
   const choice = result.choices?.[0];
   let content = choice?.message?.content;
@@ -1572,6 +1646,33 @@ async function detectAndRewrite(result, upstreamBody) {
     }
   }
 
+  /* Coherence guard, raw side (see the block above detectAndRewrite). */
+  if (COHERENCE_ON) {
+    const rawTells = coherenceTells(content, 0);
+    if (rawTells.length > 0) {
+      console.error(`[coherence] RAW reply looks degenerate (${rawTells.join(', ')})`);
+      if (coherenceRetryWorthy(rawTells)) {
+        try {
+          console.error('[coherence] evidence is strong — spending one regeneration attempt');
+          const retryBody = { ...upstreamBody, stream: false };
+          delete retryBody.stream_options;
+          const retry = await callOpenRouterOnce(retryBody, SLOP_REWRITE_TIMEOUT_MS);
+          const retryText = retry?.choices?.[0]?.message?.content;
+          if (typeof retryText === 'string' && retryText.length > 0 && coherenceTells(retryText, 0).length === 0) {
+            console.error('[coherence] regeneration CLEAN — using it in place of the degenerate original');
+            content = retryText;
+            choice.message.content = retryText;
+            result.usage = sumUsage(result.usage, retry?.usage || null);
+          } else {
+            console.error('[coherence] regeneration also unusable — shipping the original, flagged');
+          }
+        } catch (err) {
+          console.error(`[coherence] regeneration failed (${err.message}) — shipping the original`);
+        }
+      }
+    }
+  }
+
   const matches = collectMatches(content, upstreamBody);
 
   if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
@@ -1587,6 +1688,16 @@ async function detectAndRewrite(result, upstreamBody) {
     const { text: protectedContent, tags } = protectSentinelTags(content);
     try {
       const rewritten = await rewritePass(upstreamBody, protectedContent, matches, tags.length > 0);
+      /* Coherence guard, rewrite side: a degenerate rewrite never beats a
+       * coherent original (the exact failure the Sail postmortem named —
+       * "CLEAN on verify" blessing a mess the detectors can't see). */
+      if (rewritten.text && COHERENCE_ON) {
+        const rtells = coherenceTells(rewritten.text, content.length);
+        if (rtells.length > 0) {
+          console.warn(`[coherence] rewrite looks degenerate (${rtells.join(', ')}) — keeping the original reply`);
+          rewritten.text = null;
+        }
+      }
       if (rewritten.text) {
         let finalText = rewritten.text;
         let usage = rewritten.usage;
@@ -1620,6 +1731,10 @@ async function detectAndRewrite(result, upstreamBody) {
             );
             try {
               const second = await rewritePass(upstreamBody, finalText, residual, tags.length > 0);
+              if (second.text && COHERENCE_ON && coherenceTells(second.text, content.length).length > 0) {
+                console.warn('[coherence] second pass degenerate — keeping the first rewrite');
+                second.text = null;
+              }
               if (second.text) {
                 const after = collectMatches(second.text, upstreamBody);
                 finalText = second.text;

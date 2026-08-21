@@ -46,6 +46,21 @@ const BLOCKLIST = [
   { phrase: 'sending you love', category: 'validation_slop' },
   { phrase: 'sending you good vibes', category: 'validation_slop' },
 
+  // The "tell me everything" demand-gush (Aug 21 2026 — Kade's verbatim peeve
+  // after v144: "I wanna know everything. I wanna know this, this, and that.
+  // She's just not talking like a person yet." A friend asks the one question
+  // they actually wonder about; an intake form takes inventory.)
+  { phrase: 'i wanna know everything', category: 'everything_gush' },
+  { phrase: 'i want to know everything', category: 'everything_gush' },
+  { phrase: 'i need to know everything', category: 'everything_gush' },
+  { phrase: 'tell me everything', category: 'everything_gush' },
+  { phrase: 'i want every detail', category: 'everything_gush' },
+  { phrase: 'every single detail', category: 'everything_gush' },
+  { phrase: 'spare no detail', category: 'everything_gush' },
+  { phrase: 'i want all of it', category: 'everything_gush' },
+  { phrase: 'give me all of it', category: 'everything_gush' },
+  { phrase: 'i want the whole story', category: 'everything_gush' },
+
   // Anticipation hype (Aug 15 2026 — Kade's verbatim peeve from Amber's logs:
   // "oh, you're only 5 chapters in, just you wait")
   { phrase: 'just you wait', category: 'hype_wait' },

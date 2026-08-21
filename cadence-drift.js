@@ -34,6 +34,8 @@
 
 'use strict';
 
+const { detect: detectReframe } = require('./reframe-filter');
+
 const TAG_RE = /%%%(.+?)%%%/gs;
 const WORD_RE = /[a-z']+/g;
 
@@ -399,6 +401,51 @@ function driftSteerNote(body) {
         `"${echo}" -- the delivery is stuck in one groove. Write this turn's ` +
         `direction from scratch in genuinely different words and a different ` +
         `mood, or drop the tag if the moment is plain.`
+      );
+    }
+  }
+
+  /* REFRAME HABIT (Aug 21 2026 — Kade, after v144's in-persona ban did not
+   * hold: "I'm still seeing that's not blah, blah blah." Measured that
+   * afternoon: 9 reframe constructions in 64 post-v144 replies, live
+   * specimens hours old, while the response-side rewrite was timing out on
+   * the thinking model (fixed the same session). The persona teaches;
+   * this enforces. Same reasoning as the question-cadence note above: a
+   * standing ban goes wallpaper, but a live count of THIS conversation's
+   * habit — with the model's own latest specimen quoted back — does not.
+   * Costs one detector pass over at most six strings, no model call. */
+  let reframeTurns = 0;
+  let reframeSpecimen = null;
+  for (const h of history.slice(-W_CLOSER)) {
+    try {
+      const r = detectReframe(stripTags(h), { level: 'balanced' });
+      if (r.tripped) {
+        reframeTurns++;
+        reframeSpecimen = r.matches[r.matches.length - 1].text;
+      }
+    } catch { /* a style check must never kill a turn */ }
+  }
+  if (reframeTurns >= 2) {
+    notes.push(
+      `Style note: ${reframeTurns} of your last ${Math.min(history.length, W_CLOSER)} replies leaned on the ` +
+      `"that's not X, that's Y" relabel (latest: "${String(reframeSpecimen).slice(0, 70)}"). ` +
+      `None of that this turn -- react to what they actually said and make your point straight, ` +
+      `without telling them what their thing really is.`
+    );
+  }
+
+  /* PHRASE HABIT — verbal crutches the single-message tier can't see, because
+   * any ONE of them is perfectly good speech. "here's the thing" measured in
+   * 34 of 268 replies pre-v144 and still landing after. Extendable list. */
+  const PHRASE_HABITS = [
+    { name: '"here\'s the thing"', re: /\bhere'?s the thing\b/i, min: 2 },
+  ];
+  for (const ph of PHRASE_HABITS) {
+    const n = history.slice(-W_CLOSER).filter((h) => ph.re.test(stripTags(h))).length;
+    if (n >= ph.min) {
+      notes.push(
+        `Style note: ${ph.name} has shown up in ${n} of your last ${Math.min(history.length, W_CLOSER)} replies. ` +
+        `Retire the phrase this turn -- just say the thing.`
       );
     }
   }
