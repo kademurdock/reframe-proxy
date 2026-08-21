@@ -311,6 +311,7 @@ function adaptForGlm(body) {
 const ZAI_KEY = process.env.ZAI_KEY || '';
 const ZAI_BASE = (process.env.ZAI_BASE || 'https://api.z.ai/api/paas/v4').replace(/\/$/, '');
 const ZAI_BARE_RE = /^glm[-.]/i;
+const ZAI_EFFORT_DIALECT_RE = /^glm-5\.[3-9]/i; // 5.3+ = always-thinking, effort low/high/max
 function isZaiDirectModel(model) {
   // Only ever true for names adaptForZai itself produced (bare glm-*): with
   // no ZAI_KEY the prefix is never stripped and routing stays OpenRouter.
@@ -318,25 +319,42 @@ function isZaiDirectModel(model) {
 }
 // Utility tier: thinking always off (titles and memory cards must never
 // carry think-blocks). The 5.x fleet keeps whatever the turn asked for.
-const ZAI_NEVER_THINK = new Set(['glm-4.7-flashx', 'glm-4.7-flash', 'glm-4.7', 'glm-4.6']);
+const ZAI_NEVER_THINK = new Set(['glm-4.7-flashx', 'glm-4.7-flash', 'glm-4.7', 'glm-4.6', 'glm-4.5-air']);
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
   const bare = String(body.model).replace(/^z-ai\//i, '').toLowerCase();
   const next = { ...body, model: bare };
   const r = next.reasoning || {};
   const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
-  if (ZAI_NEVER_THINK.has(bare)) {
+  if (ZAI_EFFORT_DIALECT_RE.test(bare)) {
+    /* GLM-5.3+ (probed live Aug 21 2026, error 1210 + docs.z.ai/guides/llm/
+     * glm-5.3): reasoning CANNOT be disabled, and the default effort is MAX
+     * -- left unset, every casual "hey" would run a max-depth thinking
+     * marathon on the clock and the bill. So effort is ALWAYS set here:
+     * none/exclude/absent -> low (Z.ai's own documented migration for the
+     * old disabled), low -> low, medium/high/enabled -> high, xhigh -> max.
+     * Probe receipts: low thought 0 tokens on trivial turns at ~1.9s median
+     * (vs 1.0s on 5.2-disabled), tools and prefix cache (98% hit) verified. */
+    next.thinking = { type: 'enabled' };
+    next.reasoning_effort =
+      effort === 'xhigh' ? 'max'
+      : (effort === 'high' || effort === 'medium' || (r.enabled === true && !effort)) ? 'high'
+      : 'low';
+  } else if (ZAI_NEVER_THINK.has(bare)) {
     next.thinking = { type: 'disabled' };
   } else if (effort === 'none' || r.exclude === true || r.enabled === false) {
     next.thinking = { type: 'disabled' };
   } else if (r.enabled === true || ['low', 'medium', 'high', 'xhigh'].includes(effort)) {
     next.thinking = { type: 'enabled' };
   }
-  // Absent stays absent for the fleet: today's no-reasoning-field turns ride
-  // the provider default on OR, and they keep riding the model default here.
+  // For the enable/disable dialect (5.2 and below — verified live it still
+  // holds there), absent stays absent: those turns ride the model default,
+  // exactly as they rode the provider default on OpenRouter.
   delete next.reasoning;
   if (typeof next.temperature === 'number') {
-    next.temperature = Math.min(0.99, Math.max(0.01, next.temperature));
+    // Z.ai's own 5.3 sample sends temperature 1.0 — clamp only the bottom
+    // (temperature 0 is rejected on the OpenAI-compat surface).
+    next.temperature = Math.min(1, Math.max(0.01, next.temperature));
   }
   return next;
 }
@@ -348,6 +366,7 @@ function zaiFallbackBody(body) {
   // threading shadow state through every request.
   const next = { ...body, model: 'z-ai/' + String(body.model || '') };
   delete next.thinking;
+  delete next.reasoning_effort;
   return next;
 }
 const ZAI_FALLBACK_STATUSES = new Set([401, 402, 403, 429]);
