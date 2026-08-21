@@ -284,12 +284,114 @@ function adaptForGlm(body) {
   if (Number.isFinite(mt) && mt >= floor) return body;
   return { ...body, max_tokens: floor };
 }
+// -- Z.AI DIRECT (Aug 21 2026, Part 75 §3.1 -- her word: "make this switch
+// fully and publicly as soon as we can") --------------------------------------
+// The roulette cure at the ROOT: one host by construction. Every z-ai/glm-*
+// model routes to Z.ai's own API when ZAI_KEY is set. ENV-GATED KILL SWITCH:
+// unset ZAI_KEY and the adapter never strips the z-ai/ prefix, so every
+// request falls through to OpenRouter exactly as before -- no code revert.
+// Same sticker as the pinned Baidu path ($1.40 in / $0.26 cached / $4.40 out
+// per M, checked against docs.z.ai 2026-08-21), so this trades $0/token for
+// zero roulette plus GLM-5.3.
+// Dialect differences handled in adaptForZai (docs.z.ai/guides/develop/openai):
+//   - model names are bare (glm-5.3, not z-ai/glm-5.3)
+//   - reasoning control is thinking:{type:enabled|disabled}, not
+//     reasoning:{effort} -- translated, then the OR field is dropped
+//   - temperature range documented (0,1) EXCLUSIVE -- clamped [0.01, 0.99]
+//   - UTILITY MODELS (glm-4.7-flashx class) get thinking FORCED OFF: the
+//     titler moved off GLM July 16 precisely because think-blocks leaked
+//     into titles; forcing it off here makes that regression impossible
+//     while letting the titler/memory-writer ride the same pot.
+// Fallback net (the Aug-4 Moonshot pattern): 401/402/403 (auth/balance) and
+// 429 (rate) retry ONCE via OpenRouter's own glm hosting -- the fleet
+// degrades instead of dying, the log line is LOUD, and the FIRST fallback of
+// a day phones Kade through the bridge's guardrailed notify lane
+// (alertZaiFallback below) so an empty pot reaches her phone instead of
+// hiding in logs. The Moonshot lesson, wired in from day one.
+const ZAI_KEY = process.env.ZAI_KEY || '';
+const ZAI_BASE = (process.env.ZAI_BASE || 'https://api.z.ai/api/paas/v4').replace(/\/$/, '');
+const ZAI_BARE_RE = /^glm[-.]/i;
+function isZaiDirectModel(model) {
+  // Only ever true for names adaptForZai itself produced (bare glm-*): with
+  // no ZAI_KEY the prefix is never stripped and routing stays OpenRouter.
+  return ZAI_BARE_RE.test(String(model || ''));
+}
+// Utility tier: thinking always off (titles and memory cards must never
+// carry think-blocks). The 5.x fleet keeps whatever the turn asked for.
+const ZAI_NEVER_THINK = new Set(['glm-4.7-flashx', 'glm-4.7-flash', 'glm-4.7', 'glm-4.6']);
+function adaptForZai(body) {
+  if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
+  const bare = String(body.model).replace(/^z-ai\//i, '').toLowerCase();
+  const next = { ...body, model: bare };
+  const r = next.reasoning || {};
+  const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
+  if (ZAI_NEVER_THINK.has(bare)) {
+    next.thinking = { type: 'disabled' };
+  } else if (effort === 'none' || r.exclude === true || r.enabled === false) {
+    next.thinking = { type: 'disabled' };
+  } else if (r.enabled === true || ['low', 'medium', 'high', 'xhigh'].includes(effort)) {
+    next.thinking = { type: 'enabled' };
+  }
+  // Absent stays absent for the fleet: today's no-reasoning-field turns ride
+  // the provider default on OR, and they keep riding the model default here.
+  delete next.reasoning;
+  if (typeof next.temperature === 'number') {
+    next.temperature = Math.min(0.99, Math.max(0.01, next.temperature));
+  }
+  return next;
+}
+function zaiFallbackBody(body) {
+  // Back to the OpenRouter namespace. The translated thinking field is
+  // dropped; the original reasoning object is NOT reconstructed (adaptForZai
+  // consumed it), so a fallback turn runs on OR's provider default -- a
+  // quality wobble on a rare, loudly-logged emergency path, accepted over
+  // threading shadow state through every request.
+  const next = { ...body, model: 'z-ai/' + String(body.model || '') };
+  delete next.thinking;
+  return next;
+}
+const ZAI_FALLBACK_STATUSES = new Set([401, 402, 403, 429]);
+function shouldFallbackZaiToOpenRouter(model, status) {
+  return isZaiDirectModel(model) && ZAI_FALLBACK_STATUSES.has(status);
+}
+// First Z.ai fallback of a day -> one phone-home through the bridge's
+// guardrailed agent-notify lane (subject to its quiet hours/caps, and the
+// bridge logs every refusal loudly since Aug 13). Fire-and-forget; without
+// BRIDGE_NOTIFY_SECRET on this service the console.error is the whole alarm.
+let _zaiAlertDay = '';
+function alertZaiFallback(status) {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    if (_zaiAlertDay === day) return;
+    _zaiAlertDay = day;
+    const secret = process.env.BRIDGE_NOTIFY_SECRET || '';
+    if (!secret) return;
+    const url = (process.env.BRIDGE_URL || 'https://kade-ai-bridge-production.up.railway.app') + '/notify';
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret,
+        agentId: 'zai-fallback-alert',
+        agentName: 'Reframe',
+        title: 'Z.ai pot needs eyes',
+        body: `The fleet just fell back to OpenRouter (Z.ai answered ${status}). Check the Z.ai balance at z.ai -- chronic fallback means the pot is empty or the key broke.`,
+      }),
+    }).catch(() => {});
+  } catch {}
+}
+
 function chatCompletionsUrl(model) {
-  return isKimiModel(model) ? `${MOONSHOT_BASE}/chat/completions` : `${OPENROUTER_BASE}/chat/completions`;
+  if (isKimiModel(model)) return `${MOONSHOT_BASE}/chat/completions`;
+  if (isZaiDirectModel(model)) return `${ZAI_BASE}/chat/completions`;
+  return `${OPENROUTER_BASE}/chat/completions`;
 }
 function chatHeaders(model) {
   if (isKimiModel(model)) {
     return { Authorization: `Bearer ${MOONSHOT_KEY}`, 'Content-Type': 'application/json' };
+  }
+  if (isZaiDirectModel(model)) {
+    return { Authorization: `Bearer ${ZAI_KEY}`, 'Content-Type': 'application/json' };
   }
   return openRouterHeaders();
 }
@@ -467,7 +569,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
   // 25s rewrite timeout. Routing now happens ONLY at the two person-facing
   // entry points (handleStreaming + the non-stream main route), each with a
   // real reqId, so internal helpers can never re-enter the router.
-  body = adaptForGlm(adaptForKimi(body));
+  body = adaptForZai(adaptForGlm(adaptForKimi(body)));
   let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
     { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body) },
@@ -486,6 +588,19 @@ async function callOpenRouterOnce(body, timeoutMs) {
         timeoutMs
       );
     }
+  }
+  // Z.ai balance/rate fallback (Aug 21 2026): same net, glm lane. See the
+  // Z.AI DIRECT block above.
+  if (!upstream.ok && shouldFallbackZaiToOpenRouter(body.model, upstream.status)) {
+    const fbBody = zaiFallbackBody(body);
+    try { await upstream.text(); } catch {}
+    console.error(`ZAI FALLBACK ACTIVE (non-stream, status ${upstream.status}) -- retrying ${fbBody.model} via OpenRouter. CHECK THE Z.AI BALANCE.`);
+    alertZaiFallback(upstream.status);
+    upstream = await fetchWithTimeout(
+      `${OPENROUTER_BASE}/chat/completions`,
+      { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+      timeoutMs
+    );
   }
   const text = await upstream.text();
   if (!upstream.ok) {
@@ -2299,7 +2414,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
   upstreamBody = await maybeAutoThink(upstreamBody, reqId);
-  upstreamBody = adaptForGlm(adaptForKimi(upstreamBody));
+  upstreamBody = adaptForZai(adaptForGlm(adaptForKimi(upstreamBody)));
   // Session 22 (Kade: "Check caching, because that saves money in multiple
   // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
   // repeated ~9K-token prefix -> cached_tokens 8192, hit rate $0.16/M vs
@@ -2384,6 +2499,24 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       } catch (fbErr) {
         console.error(`[req ${reqId}] fallback fetch failed: ${fbErr.message}`);
       }
+    }
+  }
+  if (!upstream.ok && shouldFallbackZaiToOpenRouter(upstreamBody.model, upstream.status)) {
+    // Z.ai balance/rate fallback (Aug 21 2026): same net, glm lane, stream
+    // side. Nothing has been written to `res` yet, so this retry is
+    // invisible to the client.
+    const fbBody = zaiFallbackBody(upstreamBody);
+    try { await upstream.text(); } catch {}
+    console.error(`[req ${reqId}] ZAI FALLBACK ACTIVE (stream, status ${upstream.status}) -- retrying ${fbBody.model} via OpenRouter. CHECK THE Z.AI BALANCE.`);
+    alertZaiFallback(upstream.status);
+    try {
+      upstream = await fetchWithTimeout(
+        `${OPENROUTER_BASE}/chat/completions`,
+        { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+        STREAM_IDLE_TIMEOUT_MS
+      );
+    } catch (fbErr) {
+      console.error(`[req ${reqId}] zai fallback fetch failed: ${fbErr.message}`);
     }
   }
   if (!upstream.ok) {
