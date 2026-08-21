@@ -802,7 +802,14 @@ function currentTimeNote() {
     });
     return ` Current date and time where the user is: ${fmt.format(now)}` +
       ' (US Central). Trust this clock -- never guess the time of day or' +
-      ' assume it is late at night unless this says so.';
+      ' assume it is late at night unless this says so.' +
+      // Aug 21 2026, the frozen-tomorrow bug (dry-socket receipt): memory
+      // notes and old turns can carry relative words frozen at write time.
+      ' And trust this clock over remembered phrasing: a "tomorrow" or' +
+      ' "tonight" inside a memory note or an earlier message was relative to' +
+      ' the day it was WRITTEN, not to now -- when a memory carries a real' +
+      ' date use that, and when the timing of an event is unclear, ask' +
+      ' instead of guessing.';
   } catch (e) {
     return '';
   }
