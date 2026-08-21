@@ -361,6 +361,48 @@ function driftSteerNote(body) {
     );
   }
 
+  /* TAG PHRASE ECHO (Aug 21 2026 — Kade, reading a raw transcript: "she
+   * repeated herself." The prose was clean; the TAGS were the chorus —
+   * "thinking it through steady and slow / steady / plain / steady thinking
+   * it through" across four turns, "with a little shrug in it" twice. The
+   * register-lock channel above missed it because mixed multi-family tags
+   * fragment into composite keys that never equal each other. This channel
+   * ignores families and catches the actual tell: the same content PHRASE
+   * recycled across the window's tags. A stuck phrase is a stuck mood the
+   * listener hears, and the author writes it BEFORE the paragraph it governs. */
+  const windowTags = [];
+  for (const h of history.slice(-W_CLOSER)) {
+    TAG_RE.lastIndex = 0;
+    let m; while ((m = TAG_RE.exec(String(h))) !== null) windowTags.push(m[1].toLowerCase());
+  }
+  if (windowTags.length >= 3) {
+    const gramCount = {};
+    for (const tag of windowTags) {
+      const ws = tag.split(/\s+/).filter((w) => w.length > 1);
+      const seen = new Set();
+      for (let i = 0; i + 1 < ws.length; i++) {
+        for (const n of [2, 3]) {
+          if (i + n > ws.length) continue;
+          const g = ws.slice(i, i + n).join(' ');
+          if (g.split(' ').every((w) => STOP.has(w))) continue;
+          if (!seen.has(g)) { seen.add(g); gramCount[g] = (gramCount[g] || 0) + 1; }
+        }
+      }
+    }
+    let echo = null;
+    for (const g of Object.keys(gramCount)) {
+      if (gramCount[g] >= 3 && (!echo || g.length > echo.length)) echo = g;
+    }
+    if (echo) {
+      notes.push(
+        `Delivery note: your recent voice directions keep reusing the phrase ` +
+        `"${echo}" -- the delivery is stuck in one groove. Write this turn's ` +
+        `direction from scratch in genuinely different words and a different ` +
+        `mood, or drop the tag if the moment is plain.`
+      );
+    }
+  }
+
   return notes.length ? ' ' + notes.join(' ') : '';
 }
 

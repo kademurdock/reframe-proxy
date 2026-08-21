@@ -1141,7 +1141,15 @@ function parseShimToolCalls(result) {
 // scoped to this one known-broken provider; remove it from EXCLUDED_PROVIDERS
 // if OpenRouter ever fixes Novita's function-calling and this stops being
 // needed.
-const EXCLUDED_PROVIDERS = ['novita'];
+/* Aug 21 2026, 03:09Z, receipt in Amber L's real conversation: Sail Research
+ * (pin slot #2 since Aug 19) served a 52.5-second, 777-token DEGENERATE turn —
+ * word salad, the model narrating its own collapse ("Last paragraph attempt
+ * collapsed mid-thought. Let me land it."), three stitched drafts — into a 2am
+ * conversation about nightmares. Baidu served every clean turn that hour. One
+ * catastrophic quality failure on a companion platform outweighs the pennies:
+ * Sail is out of the order (env, same hour) AND hard-ignored here so
+ * allow_fallbacks can never route back to it. Revert: delete it from this list. */
+const EXCLUDED_PROVIDERS = ['novita', 'Sail Research'];
 
 /* ⭐⭐⭐ PROVIDER PINNING (Aug 19 2026, her word: "pin to fp8, cheapest first").
  *
