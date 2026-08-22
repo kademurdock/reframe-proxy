@@ -2792,10 +2792,20 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * One synthetic opener before any upstream bytes cures every consumer at
    * once. Harmless when the upstream sends its own role too (bisect variant
    * E). Kill: KADE_ZAI_ROLE_SHIM=0. */
+  /* ⭐ Part 85 (Aug 22 2026) — THE SHIM ID MUST BE UNIQUE PER CALL.
+   * The original shim stamped a CONSTANT id ('kade-role-shim'). LangChain's
+   * chunk concat keeps the FIRST id, so EVERY Z.ai streamed turn's final
+   * AIMessageChunk carried the same id — and LangGraph's messagesStateReducer
+   * merges by id, so ROUND 2 REPLACED ROUND 1 IN PLACE. The ToolMessage then
+   * sat LAST in state; toolsCondition saw no tool_calls and routed END.
+   * That was the entire round-2 dead-air bug (Parts 78-84): round-2 TEXT
+   * still streamed to the client (looked fine, state silently corrupted),
+   * round-2 TOOL CALLS were saved but never executed. Reproduced both ways
+   * in a bottle (constant id -> __end__; unique id -> tools_node). */
   if (ZAI_ROLE_SHIM && isZaiDirectModel(upstreamBody.model)) {
     try {
       res.write(`data: ${JSON.stringify({
-        id: 'kade-role-shim', object: 'chat.completion.chunk',
+        id: `kade-role-shim-${reqId}-${Date.now()}`, object: 'chat.completion.chunk',
         created: Math.floor(Date.now() / 1000), model: String(upstreamBody.model),
         choices: [{ index: 0, delta: { role: 'assistant' } }],
       })}\n\n`);
