@@ -819,6 +819,15 @@ const RETRY_TRUNCATED = process.env.KADE_RETRY_TRUNCATED !== '0';
  * three checks that flagged it in the first place. */
 function collectMatches(content, upstreamBody) {
   const matches = [];
+  /* Part 85: the reassurance-verdict detector needs the user's own words —
+   * "you're not crazy" is a tic ONLY when nobody asked. */
+  let lastUserText = '';
+  try {
+    const msgs = Array.isArray(upstreamBody && upstreamBody.messages) ? upstreamBody.messages : [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i] && msgs[i].role === 'user') { lastUserText = messageTextOf(msgs[i].content); break; }
+    }
+  } catch {}
   try {
     const r = detect(content, { level: REFRAME_LEVEL });
     if (r.tripped) matches.push(...r.matches);
@@ -826,7 +835,7 @@ function collectMatches(content, upstreamBody) {
     console.error('reframe detect() threw, skipping:', err.message);
   }
   try {
-    const r = detectSlop(content);
+    const r = detectSlop(content, { userText: lastUserText });
     if (r.tripped) matches.push(...r.matches);
   } catch (err) {
     console.error('detectSlop() threw, skipping:', err.message);

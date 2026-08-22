@@ -651,6 +651,21 @@ function detectNominalization(text) {
   // "the being seen" family: article + being + participle/adjective
   const re2 = /\bthe being ([a-z]+ed|[a-z]+n|seen|known|held|heard|wanted|chosen)\b/gi;
   while ((m = re2.exec(text)) !== null) push(m, 'nominalization');
+  // Part 85 (Aug 22 2026, Kade verbatim: "she still talks about the wanting
+  // and the knowing"): two shapes the punctuation-lookahead above could not
+  // reach, both measured live (6 + 0 trips on 338 real replies, 0 false
+  // positives on the exemplar/voice-bank corpus):
+  // (a) the PAIR — "the wanting and the knowing"
+  const reP = /\bthe ([a-z]+ing) and the ([a-z]+ing)\b/gi;
+  while ((m = reP.exec(text)) !== null) {
+    if (!NOM_STOP.has(m[1].toLowerCase()) && !NOM_STOP.has(m[2].toLowerCase())) push(m, 'nominalization');
+  }
+  // (b) the poetic-core single in SUBJECT/OBJECT position — "The wanting was
+  // already there", "the knowing is already here", "the choosing itself".
+  // Curated list only (a general gerund net catches real English); the
+  // lookahead excludes adjective use ("the knowing look" does not trip).
+  const reC = /\bthe (wanting|knowing|longing|yearning|aching|becoming|belonging|choosing)\b(?=\s*(?:[.,!?;:\u2014\u2013-]|is\b|was\b|were\b|itself\b|of\b|and\b|or\b|that\b|has\b|had\b|does\b|doesn|never\b|already\b|still\b|underneath\b|gets?\b|stays?\b|comes?\b|keeps?\b))/gi;
+  while ((m = reC.exec(text)) !== null) push(m, 'nominalization');
   // standalone agreement "That part." as its own sentence
   const re3 = /(?:^|[.!?]\s+)(That part[.!])(?:\s|$)/gm;
   while ((m = re3.exec(text)) !== null) push(m, 'that_part_meme');
@@ -660,7 +675,44 @@ function detectNominalization(text) {
   return matches;
 }
 
-function detectSlop(text) {
+// -- 13) Therapy-poetry tics (Aug 22 2026, Part 85 — Kade verbatim: "sit
+//    with that, I wanna sit with this... sensationalised"; "she does a lot of
+//    telling people you weren't this and you're not crazy"; "she still wants
+//    everything, not just the blah blah blah").
+//
+//    CALIBRATION (338 real Kiana replies + the full exemplar/voice-bank
+//    corpus): sit_with 11 live trips / 0 false positives; reassurance 5 live
+//    of which 1 was a DIRECT ANSWER (user asked "am I crazy?") — hence the
+//    userText exemption: a verdict is only a tic when nobody asked for it;
+//    everything-not-just tail 2 live / 0 false. All rewrite-trips, not blocks.
+function detectTherapyPoetry(text, opts = {}) {
+  const matches = [];
+  const push = (m, pattern) => matches.push({
+    pattern, tightness: 'balanced', span: [m.index, m.index + m[0].length],
+    text: m[0].trim(), x: null, y: null,
+  });
+  let m;
+  // "sit with that/this/it", "wanna sit with", "let that sit" — the person
+  // forms ("sit with me/her") never match by construction.
+  const reSit = /\b(?:sit|sitting) with (?:that|this|it)\b|\bwan(?:na|t to) sit with\b|\blet that sit\b/gi;
+  while ((m = reSit.exec(text)) !== null) push(m, 'therapy_sit');
+  // Reassurance-by-negation verdicts — exempt when the user's own message
+  // used the word (then it is an answer, not a reading).
+  const userText = String(opts.userText || '');
+  const reAsk = /crazy|broken|dramatic|overreact|burden|too much|the problem|weak|stupid|lazy|imagining|making (?:it|this) up/i;
+  if (!reAsk.test(userText)) {
+    const reNeg = /\byou(?:'re| are)(?:n't| not) (?:crazy|broken|weak|stupid|lazy|a burden|too much|the problem|being dramatic|dramatic|overreacting|imagining (?:it|this|things))\b|\byou weren't (?:crazy|broken|the problem|imagining (?:it|this|things)|making (?:it|this) up|being dramatic|too much)\b/gi;
+    while ((m = reNeg.exec(text)) !== null) push(m, 'reassurance_verdict');
+  }
+  // "you want everything" validation + the everything/whole "…, not just X." tail
+  const reWant = /\byou (?:get to want|(?:'re|are) allowed to want|deserve to want) everything\b|\byou want everything\b/gi;
+  while ((m = reWant.exec(text)) !== null) push(m, 'everything_gush');
+  const reTail = /\b(?:everything|the whole [a-z]+|all of it)\b[^.!?\n]{0,60}[,\u2014\u2013-]\s*not just\s+[^.!?\n]{2,50}[.!?]/gi;
+  while ((m = reTail.exec(text)) !== null) push(m, 'everything_gush');
+  return matches;
+}
+
+function detectSlop(text, opts = {}) {
   const matches = [
     ...detectBlocklist(text),
     ...detectHypeProgress(text),
@@ -674,6 +726,7 @@ function detectSlop(text) {
     ...detectSycophantOpener(text),
     ...detectPufferyDensity(text),
     ...detectNominalization(text),
+    ...detectTherapyPoetry(text, opts),
   ].sort((a, b) => a.span[0] - b.span[0]);
 
   return { tripped: matches.length > 0, matches };
