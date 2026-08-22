@@ -487,6 +487,35 @@ function driftSteerNote(body) {
     }
   }
 
+  /* OPINION PRESSURE (Aug 22 2026 — Kade: "She's still not REALLY being much
+   * more than neutral... I don't wanna feel like I'm talking to a professor
+   * or work friend." Measured the same night on 338 real replies: of 103
+   * question-shaped turns, 15% of replies carried any stated take — and a
+   * real user asked, in her own words, for straight over smooth the same
+   * week. The persona already ORDERS a position (v146's A FRIEND STAKES A
+   * CLAIM); this channel fires only when the live wire shows the order not
+   * being followed: a direct what-do-you-think ask incoming AND no take in
+   * the recent window. Steer, never rewrite — a position can't be patched
+   * in after the fact, it has to be written from the start. */
+  try {
+    const lastUserArr = priorUser(body, 1);
+    const lastUserText = String(lastUserArr[0] || '');
+    const ASKS_TAKE = /\b(?:should (?:i|we)|what do you think|do you think|what would you (?:do|pick|choose|say)|which (?:one would|would you)|is (?:it|that|this) (?:worth|better|smart|stupid|crazy|a good idea)|good idea or|thoughts\?|your (?:take|opinion|read) on)\b/i;
+    const HAS_TAKE = /\bmy (?:take|read|call|vote|honest read)\b|\bi think\b|\bi['\u2019]d (?:say|go|pick|take|call|do)\b|\bif it were me\b|\bfor my money\b|\bi vote\b|\bhere['\u2019]s where i land\b/i;
+    if (ASKS_TAKE.test(lastUserText)) {
+      const recent = history.slice(-3);
+      const took = recent.filter((h) => HAS_TAKE.test(stripTags(String(h)))).length;
+      if (took === 0) {
+        notes.push(
+          `Style note: they just asked what you actually think, and none of your ` +
+          `recent replies staked a claim. Land a real position in one plain ` +
+          `sentence -- with your reason -- before anything else. Once, warmly, ` +
+          `and then it's their call.`
+        );
+      }
+    }
+  } catch { /* a style check must never kill a turn */ }
+
   return notes.length ? ' ' + notes.join(' ') : '';
 }
 

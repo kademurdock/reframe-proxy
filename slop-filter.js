@@ -694,7 +694,11 @@ function detectTherapyPoetry(text, opts = {}) {
   let m;
   // "sit with that/this/it", "wanna sit with", "let that sit" — the person
   // forms ("sit with me/her") never match by construction.
-  const reSit = /\b(?:sit|sitting) with (?:that|this|it)\b|\bwan(?:na|t to) sit with\b|\blet that sit\b/gi;
+  // that/this/it bare forms trip on sight (calibrated v1). The widened
+  // article forms require an ABSTRACT object — "sit with the fact/feeling/
+  // possibility" is the therapy register; "sit with the family," "sit with
+  // your mom at the surgery" is a chair, and chairs are legal.
+  const reSit = /\b(?:sit|sitting) with (?:that|this|it)\b|\bwan(?:na|t to) sit with\b|\blet that sit\b|\b(?:sit|sitting) with (?:the|your|his|her|this|that) (?:fact|possibilit(?:y|ies)|idea|feeling|feelings|discomfort|reality|truth|weight|uncertainty|unknown|notion|thought|thoughts|grief|anger|fear|sadness|question|image|images|decision|ambiguity|tension|silence)\b|\bsit(?:ting)? with what\b/gi;
   while ((m = reSit.exec(text)) !== null) push(m, 'therapy_sit');
   // Reassurance-by-negation verdicts — exempt when the user's own message
   // used the word (then it is an answer, not a reading).
@@ -709,6 +713,22 @@ function detectTherapyPoetry(text, opts = {}) {
   while ((m = reWant.exec(text)) !== null) push(m, 'everything_gush');
   const reTail = /\b(?:everything|the whole [a-z]+|all of it)\b[^.!?\n]{0,60}[,\u2014\u2013-]\s*not just\s+[^.!?\n]{2,50}[.!?]/gi;
   while ((m = reTail.exec(text)) !== null) push(m, 'everything_gush');
+  // Part 85.5 round two (Aug 22 2026, same night — her ear again, plus Amber
+  // A's own words in chat: "You give me more credit than due and you
+  // sometimes come off like you're trying to gas me up... I'd rather you be
+  // straight." All four measured on the 338-reply corpus first: honestly
+  // 6 / part-grading 18 / gas-up 4 / zero false positives on the target
+  // voice. The "most people" gas-up requires the second-person pivot on
+  // purpose — "most people don't know this song" is a fact, "most people
+  // couldn't have done that. You did." is flattery math.)
+  const reHon = /(?:^|[.!?]\s+|%{3}\s*)(?:and |but )?honestly[,?]|\bif i['\u2019]?m being honest\b|\blet['\u2019]?s be honest\b|\breal talk[,:.]/gim;
+  while ((m = reHon.exec(text)) !== null) push(m, 'honestly_marker');
+  const rePart = /\b(?:that|this|it)['\u2019]?s the part (?:that|where|when)\b|\bthe part that (?:gets|kills|breaks|hurts|scares|worries|matters|sticks|stays|lands)\b|\bthe part where you\b/gi;
+  while ((m = rePart.exec(text)) !== null) push(m, 'part_grading');
+  const reGas1 = /\bmost people (?:would(?:n['\u2019]t| not)?|could(?:n['\u2019]t| not)?|do(?:n['\u2019]t| not)|never|can['\u2019]t)[^.!?\n]{0,70}[.!?]\s*(?:and |but )?you\b/gi;
+  while ((m = reGas1.exec(text)) !== null) push(m, 'gasup');
+  const reGas2 = /\bthat tells me you\b|\bthat['\u2019]?s (?:real |genuine |rare )?self-awareness\b|\bgive yourself (?:some |more |a little )?credit\b/gi;
+  while ((m = reGas2.exec(text)) !== null) push(m, 'gasup');
   return matches;
 }
 
