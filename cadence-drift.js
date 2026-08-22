@@ -50,6 +50,36 @@ const MIN_CLOSER_CHARS = 12;
 const MIN_CLOSER_CONTENT = 3;   // "Bye for now." / "It has a cubby" are not tells
 const MIN_OPENER_CONTENT = 3;   // guards "hey what's up" style false trips
 
+/* ── LENGTH LOCK (Aug 22 2026) ─────────────────────────────────────────────
+ * Kade: "she's still like a textbook until you look at the measurements."
+ * That sentence is the whole diagnosis. The vocabulary tics came out and the
+ * SHAPE never did.
+ *
+ * Measured on 63 real replies to her, Aug 22: median reply 1,391 characters
+ * and SIXTEEN sentences. Zero replies under 120 characters in the whole set.
+ * A question she typed in three words got 1,261 characters back; a long
+ * careful one got 1,685 -- so the size of the answer barely moved no matter
+ * what she said. And the persona, all 49,460 characters of it, did not
+ * contain the word "length" even once. Nothing ever told her how big a reply
+ * should be, so the model used its own default: the essay, every time.
+ *
+ * Priced as a STEER for the same reason the question habit is: you cannot
+ * shorten a reply after it exists without amputating it. The instruction has
+ * to land before the words do.
+ *
+ * Calibrated on that corpus: fires on 37% of turns, ZERO of them turns where
+ * she actually asked for depth. 37% is high and it is supposed to be -- the
+ * median is currently wrong. This channel is self-extinguishing: as the
+ * replies come down, it stops firing on its own. */
+const W_LENGTH = 4;
+const LONG_REPLY = 900;     // chars -- roughly ten spoken sentences
+const LENGTH_RUN = 3;       // three long ones running is when it reads as a lecture
+const SHORT_ASK = 45;       // a user turn this small rarely wants an essay back
+
+/* The exemption that keeps this honest: if she ASKED for the long version,
+ * the long version is the right answer and steering against it is the bug. */
+const ASKS_DEPTH = /\b(?:explain|in detail|tell me everything|walk me through|break (?:it|this) down|write me|draft|give me a list|how does .{0,30}work|deep dive|everything (?:you know|about)|summar|research|look .{0,10}up|find out)\b/i;
+
 /* Coarse on purpose. The complaint is "an hour of one identical mood", which
  * is a FAMILY, not an adjective. Vocabulary taken from tags actually present
  * in the corpus rather than invented. */
@@ -267,6 +297,29 @@ function detectDrift(content, upstreamBody) {
     }
   }
 
+  /* ---- 3b. length lock, counted on the produced reply ------------------
+   * The steer lives on the request side (driftSteerNote). This half exists so
+   * the daily voice report can COUNT the shape and she can hear whether it is
+   * actually coming down, the same way sitWith and gasUp are counted. */
+  {
+    const lens = history.slice(-(W_LENGTH - 1)).map((t) => String(t).length);
+    lens.push(content.length);
+    let run = 0;
+    for (let i = lens.length - 1; i >= 0; i--) {
+      if (lens[i] >= LONG_REPLY) run++; else break;
+    }
+    debug.replyChars = content.length;
+    debug.longRun = run;
+    if (run >= LENGTH_RUN) {
+      matches.push({
+        pattern: 'length_lock', kind: 'steer', tightness: 'strict',
+        span: [0, 0], x: null, y: null,
+        text: String(content).slice(0, 60),
+        detail: `${run} replies running at ${lens.slice(-run).join(', ')} characters`,
+      });
+    }
+  }
+
   // ---- 4. register lock -> STEER, do not rewrite -------------------------
   const nowTag = firstTag(content);
   const nowReg = nowTag ? registerOf(nowTag) : null;
@@ -361,6 +414,36 @@ function driftSteerNote(body) {
       `register. Direct this one somewhere else -- a different mood, a ` +
       `different pace -- or drop the tag entirely if the moment is plain.`
     );
+  }
+
+  /* LENGTH LOCK — the shape, not the words. See the constants block. The
+   * steer carries the ACTUAL character counts from THIS conversation, so it is
+   * never the same sentence twice and cannot turn into wallpaper the way a
+   * constant "be concise" does. */
+  const lenWindow = history.slice(-W_LENGTH).map((t) => String(t).length);
+  const lastUserTurn = (priorUser(body, 1)[0] || '').trim();
+  const askedDepth = ASKS_DEPTH.test(lastUserTurn);
+  if (!askedDepth && lenWindow.length) {
+    let longRun = 0;
+    for (let i = lenWindow.length - 1; i >= 0; i--) {
+      if (lenWindow[i] >= LONG_REPLY) longRun++; else break;
+    }
+    const lastLong = lenWindow[lenWindow.length - 1] >= LONG_REPLY;
+    if (longRun >= LENGTH_RUN) {
+      notes.push(
+        `Length note: your last ${longRun} replies ran ` +
+        `${lenWindow.slice(-longRun).join(', ')} characters. That is a lecture, ` +
+        `whatever the words are. Make this one short -- a line, or a few words. ` +
+        `Say the one thing that answers her and stop.`
+      );
+    } else if (lastLong && lastUserTurn && lastUserTurn.length < SHORT_ASK) {
+      const words = lastUserTurn.split(/\s+/u).filter(Boolean).length;
+      notes.push(
+        `Length note: she wrote ${words} word${words === 1 ? '' : 's'} and your ` +
+        `last reply was ${lenWindow[lenWindow.length - 1]} characters. Match her. ` +
+        `A short question gets a short answer unless it genuinely needs more.`
+      );
+    }
   }
 
   /* TAG PHRASE ECHO (Aug 21 2026 — Kade, reading a raw transcript: "she
