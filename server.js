@@ -1163,44 +1163,28 @@ function driftNoteFor(body) {
  * wording in the FINAL message, so a title call whose conversation text
  * merely mentions checkpoints can never match. Kill: KADE_COMPACTION_DATE=0. */
 const COMPACTION_DATE_ON = process.env.KADE_COMPACTION_DATE !== '0';
-// Anchored to the checkpoint prompts' own OPENING words (kade-config.yaml
-// summarization: prompt/updatePrompt), tested within the first 120 chars of
-// the final message — a title call carries the whole conversation in ONE user
-// message, so an unanchored match on quoted checkpoint talk would false-trip
-// (caught by the spec's title-call control before shipping).
-const COMPACTION_MARKER_RE = /^\s*Hold on(?: again)? — (?:before you continue, write me a checkpoint|update your checkpoint)/;
-function isCompactionShapedBody(body) {
-  const msgs = Array.isArray(body && body.messages) ? body.messages : [];
-  if (!msgs.length) return false;
-  const last = msgs[msgs.length - 1];
-  const t = typeof last.content === 'string' ? last.content
-    : Array.isArray(last.content) ? last.content.map((p) => (p && (p.text?.value || p.text)) || '').join(' ')
-    : '';
-  return COMPACTION_MARKER_RE.test(t.slice(0, 120));
-}
-function compactionDateNote() {
-  const now = new Date();
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  });
-  return `For the checkpoint: today is ${fmt.format(now)} (US Central). THE DATE LAW: never write a ` +
-    `bare relative time word into the checkpoint. Convert every "today", "tomorrow", "tonight", ` +
-    `"this weekend", "next week" into the absolute day it refers to (keep the relative word in ` +
-    `parentheses only if it adds feeling), and remember any relative word in the transcript was ` +
-    `relative to when it was SAID, which may be days before today. A checkpoint is read on later ` +
-    `days — a frozen "tomorrow" becomes a lie. Open the checkpoint with "Checkpoint as of ` +
-    `<today's actual date>".`;
-}
+/* PART 91 — this logic moved to compaction.js so it could be TESTED against the
+ * live body shape that broke Amber's seat. Same regex, same anchor, same
+ * reasoning as the comment above; the module carries the full postmortem. */
+const {
+  isCompactionShapedBody, disarmCompaction, compactionDateNote,
+} = require('./compaction.js');
 
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
-  if (isTitleShapedBody(body)) {
-    if (COMPACTION_DATE_ON && isCompactionShapedBody(body)) {
-      console.log('[compaction] title-shaped body carries the checkpoint prompt — appending the date law note');
-      return { ...body, messages: [...body.messages, { role: 'system', content: compactionDateNote() }] };
-    }
-    return body;
+  /* ⚠️ PART 91 — THIS TEST MOVED OUT OF THE TITLE-SHAPED BRANCH, AND THAT WAS
+   * THE BUG. A body stops being title-shaped the moment it carries a system
+   * message or tools, so a checkpoint call arriving through the ordinary agent
+   * path never reached here — it got the FULL STYLE REMINDER instead: voice
+   * steering, drift steer, money note, the lot. The branch below already says
+   * why that is wrong for a machine lane ("extra prose in a machine lane ends
+   * up IN the output"). A checkpoint is machinery. It gets the clock, and
+   * nothing else, however it arrives. */
+  if (COMPACTION_DATE_ON && isCompactionShapedBody(body)) {
+    console.log('[compaction] checkpoint prompt detected — the clock, and nothing else');
+    return { ...body, messages: [...body.messages, { role: 'system', content: compactionDateNote() }] };
   }
+  if (isTitleShapedBody(body)) return body;
   const toolNotes = toolNotesFor(body);
   return {
     ...body,
@@ -3496,6 +3480,14 @@ app.post('/chat/completions', async (req, res) => {
   const _toolNames = Array.isArray(req.body.tools) ? req.body.tools.map(t => (t.function && t.function.name) || t.name).filter(Boolean) : [];
   if (_toolNames.length) console.log(`[req ${reqId}] tools=[${_toolNames.join(',')}]`);
   req._reqId = reqId;
+
+  /* THE CHECKPOINT WRITER ARRIVES UNARMED (Part 91). Amber's seat spent 95
+   * seconds emitting tool activity and no words: 41 turns of glm-4.5-air with
+   * 23 tools attached and contentAccum.length=1 every time. Ask a small model
+   * for a summary with a toolbelt on and it picks a tool; the loop runs it and
+   * asks again. Stripped HERE, before the tool shim, so the shim cannot turn
+   * around and paste the same schemas into the prompt instead. */
+  req.body = disarmCompaction(req.body, (m) => console.log(`[req ${reqId}] ${m}`));
 
   // TOOL SHIM: translate tools -> prompt for models whose OR hosts reject the
   // tools param. No-op ({active:false}, same object path) for everything else.
