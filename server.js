@@ -140,6 +140,8 @@ app.get('/models', async (req, res) => {
 
 // -- timeout-guarded OpenRouter calls (non-streaming) ------------------------
 const REQUEST_TIMEOUT_MS = 90_000;
+/* The deep lane's own, longer clock. See the note at its use site. */
+const DEEP_TIMEOUT_MS = Number(process.env.KADE_DEEP_TIMEOUT_MS || 420_000);
 
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -684,7 +686,18 @@ async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
   const isDeepBody = !!reasoningCfg
     && reasoningCfg.enabled !== false
     && !['none', 'minimal'].includes(String(reasoningCfg.effort || '').toLowerCase());
-  if (isDeepBody && timeoutMs === REQUEST_TIMEOUT_MS) timeoutMs = 280_000;
+  /* ⚠️ Aug 24 2026 — THE NEXT CAP IN LINE, CAUGHT BEFORE IT BIT. This was a
+   * hardcoded 280_000. Forge's worst turn on Aug 23 ran 259 SECONDS — 92% of
+   * the way to that wall, with 21 seconds to spare, and nobody knew because a
+   * timeout that has not fired yet looks exactly like a timeout that never
+   * will. Raising the token floors (4000/8000 -> 16000/64000) makes long turns
+   * LONGER in wall-clock, so shipping that without touching this would have
+   * moved the failure from "silent turn" to "timeout" and called it a fix.
+   * Tune: KADE_DEEP_TIMEOUT_MS.
+   * ⚠️ NOT VERIFIED END TO END: LibreChat and the fork's own client have their
+   * own timeouts upstream of this one. Raising this raises OUR ceiling only —
+   * if a caller gives up at 300s, that is a separate wall to find. */
+  if (isDeepBody && timeoutMs === REQUEST_TIMEOUT_MS) timeoutMs = DEEP_TIMEOUT_MS;
   for (let attempt = 0; ; attempt++) {
     try {
       return await callOpenRouterTimeoutGuarded(body, timeoutMs);
