@@ -1,0 +1,169 @@
+'use strict';
+/**
+ * modelbudget.js — WHO CAN THINK, AND HOW MUCH ROOM THEY GET TO SPEAK.
+ *
+ * Extracted from server.js on Aug 24 2026 (Part 92.2) after the third
+ * wordless-turn outage in one evening. It lives in its own file for the same
+ * reason compaction.js does: the logic that decides whether a person gets
+ * WORDS is worth a test that imports the real thing, not a copy of it.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * THE BUG THAT MADE THIS FILE, AND IT IS THE SAME BUG TWICE
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * A MODEL-NAME PREDICATE IS A SAFETY SWITCH. When the fleet changes models,
+ * every predicate keyed on the old name silently turns something OFF, and
+ * nothing goes red — the feature just stops existing.
+ *
+ *   Aug 17 2026 — the fleet moved Moonshot → GLM. Auto-think was gated on
+ *   isKimiModel(), so EVERY agent logged `skip: non-kimi model` and the whole
+ *   router went dark. Fixed by adding isGlmModel.
+ *
+ *   Aug 21 2026 — Z.AI direct shipped. adaptForZai strips the `z-ai/` prefix
+ *   because Z.AI's API wants a bare `glm-5.3`. GLM_MODEL_RE was anchored
+ *   `/^z-ai\/glm/i`. So from the moment that switch went live,
+ *   isReasoningModel(upstreamBody.model) answered FALSE for the entire fleet,
+ *   and THE WORDLESS-TURN GUARD — written July 30 for Amber, generalized to
+ *   GLM on Aug 17 — HAD BEEN DEAD FOR THREE DAYS. Nobody could have noticed:
+ *   a disarmed guard logs nothing at all.
+ *
+ * Receipts, both from Aug 23 2026, both a real person getting silence:
+ *   req 9vipwj (Forge)   finish=length completion=8000 reasoning=34073ch content=0
+ *   req v6w0g2 (Amber A) finish=length completion=4000 reasoning=17523ch content=0
+ *
+ * ⚠️ THE RULE: a predicate that names models must accept EVERY spelling the
+ * platform can produce for that model. If you add a lane that rewrites a model
+ * string, grep for every `is<Something>Model` before you ship it.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * THE SECOND BUG: TWO FUNCTIONS DISAGREED ABOUT WHETHER A TURN THINKS
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * They ran in the same expression — adaptForZai(adaptForGlm(body)) — and
+ * contradicted each other:
+ *
+ *   adaptForGlm saw `effort:'none'` and said "not thinking, needs no headroom"
+ *                                    → returned the body untouched, no floor
+ *   adaptForZai saw the same 'none' and said "glm-5.3 CANNOT stop thinking"
+ *                                    → set thinking:enabled, effort:'low'
+ *
+ * So Amber A's turn was given no extra room precisely because it had been
+ * declared not-thinking, and then made to think. It reasoned 17,523 characters
+ * into a 4,000-token budget and said nothing.
+ *
+ * ⚠️ THE RULE: `effort:'none'` IS A REQUEST, NOT A GUARANTEE. GLM-5.3+ always
+ * thinks — Z.AI's own docs say so and adaptForZai already encoded it. Ask the
+ * MODEL what it does, never the caller what it wanted.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ON THE SIZE OF THE FLOORS
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * `max_tokens` IS A CEILING, NOT A SPEND. Measured live against Z.AI on
+ * Aug 24 2026, `glm-5.3`, prompt "say ok":
+ *
+ *     max_tokens  16000 → completion  37
+ *     max_tokens  32000 → completion 258
+ *     max_tokens  65536 → completion 134
+ *     max_tokens  98304 → completion 266
+ *     max_tokens 131072 → completion 160
+ *
+ * Headroom is free. You are billed for tokens GENERATED. That is why these
+ * numbers are large and why raising them is not a spending decision.
+ *
+ * The floors were 4000/8000 and both were hit dead-on in one evening. They
+ * were sized in July against a measurement — "GLM reasons 110-230 tokens" —
+ * that GLM-5.3 invalidated: it reasoned 7,998. ⚠️ A FLOOR SIZED AGAINST A
+ * MEASUREMENT IS ONLY AS GOOD AS THAT MEASUREMENT'S AGE. Re-measure, or the
+ * floor quietly becomes a cap.
+ */
+
+/* ── WHO IS WHO ─────────────────────────────────────────────────────────────
+ * Both spellings, always. The optional `z-ai/` prefix is the whole fix. */
+const GLM_MODEL_RE = /^(?:z-ai\/)?glm[-.]/i;
+/* GLM-5.3+ cannot have thinking disabled (docs.z.ai/guides/llm/glm-5.3, and
+ * probed live Aug 21 with error 1210). adaptForZai already knows this; the
+ * budget path has to know it too, or it hands an always-thinking model a
+ * not-thinking budget. */
+const GLM_ALWAYS_THINK_RE = /^(?:z-ai\/)?glm-5\.[3-9]/i;
+
+const KIMI_MODEL_MAP = {
+  'moonshotai/kimi-k2.6': 'kimi-k2.6',
+  'moonshotai/kimi-k3': 'kimi-k3',
+  'kimi-k2.6': 'kimi-k2.6',
+  'kimi-k3': 'kimi-k3',
+};
+
+function isKimiModel(model) {
+  return Object.prototype.hasOwnProperty.call(KIMI_MODEL_MAP, String(model || '').toLowerCase());
+}
+function isGlmModel(model) {
+  return GLM_MODEL_RE.test(String(model || ''));
+}
+function isReasoningModel(model) {
+  return isKimiModel(model) || isGlmModel(model);
+}
+/** True when the model thinks whatever the caller asked for. */
+function alwaysThinks(model) {
+  return GLM_ALWAYS_THINK_RE.test(String(model || ''));
+}
+
+/* ── THE FLOORS ─────────────────────────────────────────────────────────── */
+const GLM_THINK_MIN_TOKENS = Number(process.env.KADE_GLM_THINK_MIN_TOKENS || 16000);
+const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 64000);
+
+/**
+ * Does this turn think? Asks the model first, the caller second.
+ * @returns {'deep'|'think'|false}
+ */
+function thinkTierFor(body) {
+  if (!body || !isGlmModel(body.model)) return false;
+  const r = body.reasoning || {};
+  const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
+  const asked = r.enabled === true || ['low', 'medium', 'high', 'xhigh'].includes(effort);
+  // The model's nature outranks the caller's request.
+  if (!asked && !alwaysThinks(body.model)) return false;
+  const deep = ['high', 'xhigh'].includes(effort) || (r.enabled === true && !effort);
+  return deep ? 'deep' : 'think';
+}
+
+/**
+ * Give a thinking turn enough room to think AND still speak.
+ * Idempotent: the floor only ever raises, never lowers a budget someone set.
+ */
+function adaptForGlm(body) {
+  const tier = thinkTierFor(body);
+  if (!tier) return body;
+  const floor = tier === 'deep' ? GLM_DEEP_MIN_TOKENS : GLM_THINK_MIN_TOKENS;
+  const mt = Number(body.max_tokens);
+  if (Number.isFinite(mt) && mt >= floor) return body;
+  return { ...body, max_tokens: floor };
+}
+
+/**
+ * THE LAST LINE OF DEFENCE. A turn that produced no words is a failed turn,
+ * whatever the provider called it and whatever it spent getting there.
+ *
+ * ⚠️ Deliberately does NOT require reasoning text to be present. The old guard
+ * did (`reasoningAccum.length > 0`), which meant a turn that burned its budget
+ * with reasoning EXCLUDED from the stream sailed straight through and served
+ * silence. The person cannot see reasoning. They can only see words.
+ */
+function isWordlessTurn({ model, finishReason, contentLength }) {
+  return isReasoningModel(model) && finishReason === 'length' && Number(contentLength) === 0;
+}
+
+module.exports = {
+  GLM_MODEL_RE,
+  GLM_ALWAYS_THINK_RE,
+  KIMI_MODEL_MAP,
+  GLM_THINK_MIN_TOKENS,
+  GLM_DEEP_MIN_TOKENS,
+  isKimiModel,
+  isGlmModel,
+  isReasoningModel,
+  alwaysThinks,
+  thinkTierFor,
+  adaptForGlm,
+  isWordlessTurn,
+};

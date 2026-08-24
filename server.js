@@ -197,15 +197,21 @@ function openRouterHeaders() {
 // Picker string (left side, OpenRouter-style, what agents are configured with)
 // -> Moonshot's own model name. Bare names included so the map is idempotent
 // (adaptForKimi may see an already-rewritten body on retry paths).
-const KIMI_MODEL_MAP = {
-  'moonshotai/kimi-k2.6': 'kimi-k2.6',
-  'moonshotai/kimi-k3': 'kimi-k3',
-  'kimi-k2.6': 'kimi-k2.6',
-  'kimi-k3': 'kimi-k3',
-};
-function isKimiModel(model) {
-  return Object.prototype.hasOwnProperty.call(KIMI_MODEL_MAP, String(model || '').toLowerCase());
-}
+/* Aug 24 2026 (Part 92.2): these moved to modelbudget.js so a test can import
+ * the REAL predicate. They are safety switches — see that file's header for
+ * the two outages caused by keying one on a model name. */
+const {
+  KIMI_MODEL_MAP,
+  isKimiModel,
+  isGlmModel,
+  isReasoningModel,
+  alwaysThinks,
+  thinkTierFor,
+  adaptForGlm,
+  isWordlessTurn,
+  GLM_THINK_MIN_TOKENS,
+  GLM_DEEP_MIN_TOKENS,
+} = require('./modelbudget.js');
 /* -- WHICH MODELS CAN THINK (Aug 17 2026, Part 72) ---------------------------
  * The fleet moved off Moonshot: 221 of 223 agents now run z-ai/glm-5.2 (only
  * Describe-It and Whittney stay on kimi, for vision). Auto-think had been
@@ -228,62 +234,34 @@ function isKimiModel(model) {
  * reasoning field at all, the "Morph" provider burned 1,037 reasoning tokens,
  * returned ZERO content, finish=length, 97 SECONDS, $0.0127 -- the exact
  * wordless-turn signature the kimi lane already had a net for. */
-const GLM_MODEL_RE = /^z-ai\/glm/i;
-function isGlmModel(model) {
-  return GLM_MODEL_RE.test(String(model || ''));
-}
-function isReasoningModel(model) {
-  return isKimiModel(model) || isGlmModel(model);
-}
-/* adaptForGlm: the kimi lane gets its max_tokens floored when reasoning is on
- * (adaptForKimi, 8000/16000) precisely so deliberation can't eat the whole
- * budget and hand the person a wordless turn. GLM had no such floor because
- * nothing but kimi ever thought here. GLM's reasoning is far cheaper than
- * K3's (110-230 tokens vs thousands), so the floor is correspondingly small --
- * but a 900-token cap against a 1,037-token think is exactly how you get zero
- * content, so the floor is real. Only binds turns that are ALREADY thinking;
- * instant turns are untouched, so the fast lane's cost is unchanged.
- * Kill/tune: KADE_GLM_THINK_MIN_TOKENS. */
-const GLM_THINK_MIN_TOKENS = Number(process.env.KADE_GLM_THINK_MIN_TOKENS || 4000);
-/* ⚠️⚠️ THE FLOOR MUST SCALE WITH THE EFFORT — a regression I shipped MYSELF
- * this afternoon and caught the same evening, written down so nobody has to
- * re-derive it.
+/* GLM_MODEL_RE / isGlmModel / isReasoningModel now live in modelbudget.js.
+ * ⚠️ THE REGEX USED TO BE ANCHORED `/^z-ai\/glm/i` AND adaptForZai STRIPS THAT
+ * PREFIX — which silently disarmed the wordless-turn guard fleet-wide for
+ * three days. Receipts in modelbudget.js. */
+/* ⚠️⚠️ THE FLOORS AND adaptForGlm MOVED TO modelbudget.js (Aug 24 2026).
+ * The history is worth keeping, because the same mistake has now been made
+ * three times and each time it cost a real person a wordless turn:
  *
- * Reasoning tokens are COMPLETION tokens. They come out of the same
- * `max_tokens` budget as the answer. This floor was a flat 4000 regardless of
- * effort, which was fine while the deep path was accidentally sending
- * `effort:'none'` and reasoning nothing — the whole 4000 went to the reply.
- * The moment deep started genuinely thinking (`effort:'high'`, ~918 reasoning
- * tokens typical, ~1500 observed), that same 4000 had to cover BOTH, and long
- * deep answers began truncating mid-sentence.
+ *   Aug 19 — req 2vl5kp, Forge writing a session prompt: reasoning 4,830 chars,
+ *            content 11,315, finish=length, completion=4001. He stopped
+ *            mid-word on "This". Kade: "he just stopped generating in the
+ *            middle of a sentence." Fix: scale the floor with effort, 4000
+ *            for quick / 8000 for deep.
+ *   Aug 23 — req 9vipwj, Forge again: reasoning 34,073 chars, content 0,
+ *            finish=length, completion=8000. TWO TOKENS of headroom left.
+ *            The Aug-19 fix had become the ceiling.
+ *   Aug 23 — req v6w0g2, AMBER A, a family seat: reasoning 17,523 chars,
+ *            content 0, finish=length, completion=4000. This one was NOT
+ *            about the size of the floor — she never got one. adaptForGlm
+ *            read `effort:'none'` and returned her body untouched, and then
+ *            adaptForZai, one call further out in the SAME expression, set
+ *            thinking:enabled because glm-5.3 cannot stop thinking.
  *
- * THE RECEIPT (req 2vl5kp, Aug 19 19:21Z, Forge writing a session prompt):
- * `classifier -> deep`, reasoning streamed 4,830 chars, content 11,315 chars,
- * `finishReason=length`, `completion=4001`. He stopped mid-word on "This".
- * Kade saw it as "he just stopped generating in the middle of a sentence."
- *
- * So the floor now scales the way `adaptForKimi`'s already did (8000 for low,
- * 16000 otherwise) — same idea, smaller numbers, because GLM's reasoning is an
- * order of magnitude cheaper than K3's. FREE: `max_tokens` is a CEILING, not a
- * spend. You are billed for tokens generated, never for headroom.
+ * The old comment here claimed "GLM's reasoning is far cheaper than K3's
+ * (110-230 tokens vs thousands)" and sized the floors against it. GLM-5.3
+ * reasons 4,000-8,000. ⚠️ A FLOOR SIZED AGAINST A MEASUREMENT IS ONLY AS GOOD
+ * AS THAT MEASUREMENT'S AGE.
  * Tune: KADE_GLM_THINK_MIN_TOKENS (quick) / KADE_GLM_DEEP_MIN_TOKENS (deep). */
-const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 8000);
-function adaptForGlm(body) {
-  if (!body || !isGlmModel(body.model)) return body;
-  const r = body.reasoning || {};
-  const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
-  const thinking = r.enabled === true || ['low', 'medium', 'high'].includes(effort);
-  if (!thinking) return body;
-  // 'high' is what auto-think's DEEP tier sends, and what an explicit
-  // [DEEP THINK] marker sends. Those are the turns that reason hardest and
-  // therefore need the most room left over for the actual answer.
-  const floor = ['high', 'xhigh'].includes(effort) || (r.enabled === true && !effort)
-    ? GLM_DEEP_MIN_TOKENS
-    : GLM_THINK_MIN_TOKENS;
-  const mt = Number(body.max_tokens);
-  if (Number.isFinite(mt) && mt >= floor) return body;
-  return { ...body, max_tokens: floor };
-}
 // -- Z.AI DIRECT (Aug 21 2026, Part 75 §3.1 -- her word: "make this switch
 // fully and publicly as soon as we can") --------------------------------------
 // The roulette cure at the ROOT: one host by construction. Every z-ai/glm-*
@@ -325,6 +303,13 @@ const TOOLWIRE_DEBUG = process.env.KADE_TOOLWIRE_DEBUG !== '0';
 const ZAI_NEVER_THINK = new Set(['glm-4.7-flashx', 'glm-4.7-flash', 'glm-4.7', 'glm-4.6', 'glm-4.5-air']);
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
+  /* ⚠️ Aug 24 2026: isGlmModel now matches BARE `glm-*` too (it has to — see
+   * modelbudget.js), which means an already-adapted body can reach here. A
+   * second pass would be destructive, not idempotent: this function DELETES
+   * `next.reasoning` at the end, so a re-run reads no effort at all and would
+   * quietly downgrade a `high` turn to `low`. `thinking` is the tell that the
+   * conversion already happened. */
+  if (body.thinking) return body;
   const bare = String(body.model).replace(/^z-ai\//i, '').toLowerCase();
   const next = { ...body, model: bare };
   const r = next.reasoning || {};
@@ -3228,13 +3213,27 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * returned finish=length with 4,079 reasoning chars and no content at all --
    * and until now the net only caught it on the kimi lane, so a GLM turn that
    * hit it just handed the person silence. Same cure, same fail-soft. */
-  if (
-    isReasoningModel(upstreamBody.model) &&
-    finishReason === 'length' &&
-    contentAccum.length === 0 &&
-    reasoningAccum.length > 0
-  ) {
-    console.warn(`[req ${reqId}] reasoning ate the whole budget (finish=length, 0 content, ${reasoningAccum.length} reasoning chars) -- re-asking once with reasoning off`);
+  /* ⚠️⚠️ Aug 24 2026 (Part 92.2) — THIS GUARD WAS DEAD FOR THREE DAYS AND
+   * LOGGED NOTHING WHILE IT WAS. It tests `upstreamBody.model`, which by this
+   * point has been through adaptForZai and carries the BARE `glm-5.3`; the old
+   * isReasoningModel was anchored on the `z-ai/` prefix adaptForZai strips. It
+   * answered false for the entire fleet from the moment Z.AI direct shipped on
+   * Aug 21, and both of Aug 23's wordless turns — Forge's and Amber A's — walked
+   * straight past it into silence. Predicate now lives in modelbudget.js and
+   * accepts both spellings.
+   *
+   * ⚠️ AND THE `reasoningAccum.length > 0` CONDITION IS GONE ON PURPOSE. It
+   * assumed a turn that spent its budget must have visible reasoning to show
+   * for it — but reasoning can be excluded from the stream, and then a wordless
+   * turn sailed through with the guard standing right there. THE PERSON CANNOT
+   * SEE REASONING. THEY CAN ONLY SEE WORDS. Zero words is a failed turn, full
+   * stop, whatever the provider called it and whatever it spent getting there. */
+  if (isWordlessTurn({
+    model: upstreamBody.model,
+    finishReason,
+    contentLength: contentAccum.length,
+  })) {
+    console.warn(`[req ${reqId}] WORDLESS TURN CAUGHT (finish=length, 0 content, ${reasoningAccum.length} reasoning chars, model=${upstreamBody.model}) -- re-asking once with reasoning off`);
     try {
       const fallbackBody = { ...upstreamBody, stream: false };
       delete fallbackBody.stream_options;
