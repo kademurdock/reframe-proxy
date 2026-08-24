@@ -1,3 +1,6 @@
+const { createGistFilter } = require('./gist');
+const GIST_ON = process.env.KADE_GIST !== '0';
+const GIST_BLOCK_NAMES = String(process.env.KADE_GIST_BLOCK_NAMES || '').split(',').map(x=>x.trim()).filter(Boolean);
 /**
  * server.js — reframe-proxy
  *
@@ -2858,6 +2861,15 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * Kill: KADE_TOOLWIRE_DEBUG=0. */
   let wireLog = '';
   let contentAccum = '';
+  /* Part 92.19 — the thinking bubble shows a GIST now, not the raw chain.
+ * Her ask: "we need some kind of gist if the model is thinking, so people at
+ * least feel like they know what's going on… but without divulging prompting."
+ * gist.js drops any reasoning sentence that is about the instructions rather
+ * than about the person's question, and never lets the bubble go silent.
+ * Kill: KADE_GIST=0 restores the raw stream exactly. */
+  const gistFilter = GIST_ON && !phoneLive && !shimActive
+    ? createGistFilter({ blockNames: GIST_BLOCK_NAMES })
+    : null;
   let reasoningAccum = '';
   let reasoningLive = false; // Aug 4 2026: reasoning deltas forwarded live this turn (see the reasoning branch)
   let template = null; // first parsed chunk, reused to shape the fake SSE on content turns
@@ -3081,6 +3093,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
             // END, the turn saved with text:"" and args:"". This one missing
             // property was the whole "streaming agents are tool-broken" bug.
             const forwardReasoningLive = !phoneLive && !shimActive;
+            /* reasoningAccum keeps the FULL text — the logs and every
+             * diagnosis built on reasoning length still see everything. Only
+             * what goes downstream to the bubble is filtered. */
+            const shownReasoning = gistFilter ? gistFilter.push(reasoningText) : reasoningText;
             const heartbeat = {
               id: chunk.id,
               object: chunk.object || 'chat.completion.chunk',
@@ -3098,13 +3114,26 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
                   // reasoning-only live test stored no think part). Keeping
                   // `reasoning` too is free future-proofing; even if both map
                   // someday, dispatch happens once per chunk, no doubling.
-                  ? { role: 'assistant', content: '', reasoning: reasoningText, reasoning_content: reasoningText }
+                  ? { role: 'assistant', content: '', reasoning: shownReasoning, reasoning_content: shownReasoning }
                   : { role: 'assistant', content: '' },
                 finish_reason: null,
               }],
             };
-            res.write(`data: ${JSON.stringify(heartbeat)}\n\n`);
-            if (forwardReasoningLive && !reasoningLive) {
+            /* Part 92.19 — when the gist filter has nothing safe finished
+             * yet, send NOTHING this chunk and wait for the sentence to
+             * complete. handledLive still gets set below, so the RAW event is
+             * never forwarded by the fallback path — that would defeat the
+             * whole filter. And this cannot go quiet for long: gist.js emits a
+             * keep-alive after two dropped sentences.
+             * ⚠️ An earlier draft of this cleared sseBuffer and broke out of
+             * the line loop. sseBuffer holds events NOT YET PROCESSED — that
+             * would have silently discarded stream data on every filtered
+             * chunk. Skip the write, never the loop. */
+            const holdChunk = forwardReasoningLive && gistFilter && !shownReasoning;
+            if (!holdChunk) {
+              res.write(`data: ${JSON.stringify(heartbeat)}\n\n`);
+            }
+            if (!holdChunk && forwardReasoningLive && !reasoningLive) {
               reasoningLive = true;
               console.log(`[req ${reqId}] reasoning streaming LIVE (first delta at ${Date.now() - t0}ms)`);
             }
@@ -3133,7 +3162,21 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
            * proxy's own net). Only offending events get re-serialized. */
           let phoneOut = rawEvent;
           try {
-            const pl = chunk.choices?.[0]?.delta;
+            /* Aug 24 2026 (Part 92.19) — THIS SCRUB HAD NEVER ONCE RUN.
+             * It read `chunk`, which is declared inside the `for (const line
+             * of lines)` loop ABOVE and is out of scope here. Every phone
+             * event threw a ReferenceError, the catch below swallowed it
+             * ("forward raw over breaking a phone turn"), and the raw event
+             * went out unscrubbed — silently, for as long as this has existed.
+             * Found by `eslint no-undef`, which is also how the TTS proxy's
+             * 502 was found the same night. A fail-soft catch around a broken
+             * reference is indistinguishable from a feature that works.
+             * Re-parse the event here instead of reaching for a variable that
+             * belongs to another scope. */
+            const pdata = rawEvent.split('\n').find((l) => l.startsWith('data:'));
+            const pjson = pdata ? pdata.slice(5).trim() : '';
+            const chunk = pjson && pjson !== '[DONE]' ? JSON.parse(pjson) : null;
+            const pl = chunk && chunk.choices?.[0]?.delta;
             if (pl && typeof pl.content === 'string' && pl.content.length > 0) {
               const scrubbedDelta = scrubSearchArtifacts(pl.content);
               if (scrubbedDelta !== pl.content) {
