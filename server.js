@@ -121,7 +121,15 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'reframe-proxy', reframeLevel: REFRAME_LEVEL });
+  const out = { status: 'ok', service: 'reframe-proxy', reframeLevel: REFRAME_LEVEL };
+  /* The Z.AI pulse is operational detail, so it rides behind the same bearer
+   * everything else here does — /health itself stays open because the platform
+   * checker and Railway both poll it unauthenticated. Same call 88.1 made when
+   * it moved the harness's /health detail behind its secret. */
+  if ((req.headers['authorization'] || '') === `Bearer ${PROXY_SHARED_SECRET}`) {
+    out.zai = zaiPulse.snapshot();
+  }
+  res.json(out);
 });
 
 // -- model list passthrough --------------------------------------------------
@@ -298,6 +306,17 @@ function isZaiDirectModel(model) {
   return ZAI_BARE_RE.test(String(model || ''));
 }
 // See THE ROLE SHIM block in handleStreaming.
+/* THE Z.AI PULSE (Part 92.6). Z.AI is the first door every character's turn
+ * walks through and it was not one of the five pots the snapshot watches —
+ * flagged four times across 92.1, 92.2 and both of Forge's Aug-24 notes, and
+ * never fixed, because Z.AI publishes no balance API. So this counts what we
+ * DO have: whether Z.AI is answering real family traffic, splitting 402/401/403
+ * (the pot or the key) from 429 (a throttle), because sending somebody to top
+ * up an account that was never empty is worse than saying nothing. In memory,
+ * resets on deploy, and every snapshot says so. See zaipulse.js. */
+const { makeZaiPulse } = require('./zaipulse');
+const zaiPulse = makeZaiPulse();
+
 const ZAI_ROLE_SHIM = process.env.KADE_ZAI_ROLE_SHIM !== '0';
 const TOOLWIRE_DEBUG = process.env.KADE_TOOLWIRE_DEBUG !== '0';
 // Utility tier: thinking always off (titles and memory cards must never
@@ -584,6 +603,10 @@ async function callOpenRouterOnce(body, timeoutMs) {
     { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body) },
     timeoutMs
   );
+  /* Same predicate chatCompletionsUrl just routed on — deliberately not a
+   * second copy of it. One model-name predicate, one home; two copies is how
+   * the wordless-turn guard was dead for three days (modelbudget.js). */
+  if (isZaiDirectModel(body.model)) zaiPulse.note(upstream.status);
   // Moonshot balance fallback (see the helper block above): auth/payment
   // failure on a kimi call -> one retry via OpenRouter's kimi hosting.
   if (!upstream.ok && shouldFallbackToOpenRouter(body.model, upstream.status)) {
@@ -2675,6 +2698,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
         JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
       );
     }
+    /* Note EVERY attempt, not just the one that sticks: each attempt really
+     * was a call Z.AI answered, and a retry that succeeds after two 429s is a
+     * throttled pot wearing a green result. */
+    if (isZaiDirectModel(upstreamBody.model)) zaiPulse.note(upstream.status);
     if (upstream.ok || attempt >= 2 || !TRANSIENT_UPSTREAM_STATUSES.has(upstream.status)) break;
     const wait = transientRetryDelayMs(attempt, upstream.headers.get('retry-after'));
     console.warn(`[req ${reqId}] upstream ${upstream.status} (attempt ${attempt + 1} of 3) -- retrying in ${wait}ms`);
