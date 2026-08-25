@@ -1,5 +1,9 @@
 const { createGistFilter } = require('./gist');
+const { findDrift } = require('./drift');
 const GIST_ON = process.env.KADE_GIST !== '0';
+/* Part 92.27 — the Casio watch. Detect-and-log only; there is no cut to
+ * disable, which is the point. KADE_DRIFT=0 silences it entirely. */
+const DRIFT_WATCH = process.env.KADE_DRIFT !== '0';
 const GIST_BLOCK_NAMES = String(process.env.KADE_GIST_BLOCK_NAMES || '').split(',').map(x=>x.trim()).filter(Boolean);
 /**
  * server.js — reframe-proxy
@@ -2861,6 +2865,24 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * Kill: KADE_TOOLWIRE_DEBUG=0. */
   let wireLog = '';
   let contentAccum = '';
+  /* Part 92.27 — the Casio watch. One report per turn; the marker that fires
+   * first is the seam, and re-logging every later delta would bury it. */
+  let driftSeen = false;
+  const lastUserText = (() => {
+    try {
+      const msgs = Array.isArray(upstreamBody?.messages) ? upstreamBody.messages : [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i] && msgs[i].role === 'user') {
+          const c = msgs[i].content;
+          if (typeof c === 'string') return c;
+          if (Array.isArray(c)) return c.map((p) => (p && typeof p.text === 'string' ? p.text : '')).join(' ');
+          return '';
+        }
+      }
+    } catch (e) { /* the escape hatch defaults to "no draft asked for"; a
+                   * malformed body must never break a turn over a guard */ }
+    return '';
+  })();
   /* Part 92.19 — the thinking bubble shows a GIST now, not the raw chain.
  * Her ask: "we need some kind of gist if the model is thinking, so people at
  * least feel like they know what's going on… but without divulging prompting."
@@ -3141,6 +3163,38 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
           if (typeof delta.content === 'string') {
             contentAccum += delta.content;
+            /* Part 92.27 — THE CASIO WATCH. DETECT ONLY, ON PURPOSE.
+             *
+             * Aug 25 2026: a reply answered Kade's question, ended cleanly,
+             * then emitted ~2,100 chars of a stranger's support-forum post
+             * about a Casio PX-S1100. Training-data regurgitation. The post
+             * was written by a blind person about accessibility, which read
+             * aloud in her voice does not sound like a glitch — it sounds
+             * like Kiana talking about herself.
+             *
+             * ⚠️ THIS DOES NOT CUT ANYTHING YET AND THAT IS DELIBERATE.
+             * drift.js is measured (1 hit / 0 false positives across 83 real
+             * replies) and unit-tested, but the CUT would have to act across
+             * three streaming lanes with different semantics — phone-live
+             * forwards raw, shimLive drains, web buffers into rawPending —
+             * and no session can test that wiring from a sandbox. A guard
+             * that eats a real reply is worse than the bug it was built for.
+             *
+             * So this logs and nothing else. It costs one regex sweep per
+             * turn and it buys the number nobody has: how often this happens
+             * across ALL seats, not just the one whose transcripts a session
+             * is allowed to read. Turn the cut on only when that number and
+             * Kade both say so. Kill: KADE_DRIFT=0. */
+            if (DRIFT_WATCH && !driftSeen && contentAccum.length > 400) {
+              const d = findDrift(contentAccum, { userText: lastUserText });
+              if (d) {
+                driftSeen = true;
+                console.warn(
+                  `⚠️ [req ${reqId}] DRIFT: reply left its own voice at char ${d.cut} ` +
+                  `(kept ${d.kept}, would drop ${d.dropped}) marker=${d.marker} — DETECT ONLY, nothing cut`,
+                );
+              }
+            }
             if (shimLive && delta.content.length > 0) {
               drainShim(false);
               handledLive = true;
