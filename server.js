@@ -229,6 +229,7 @@ const {
   rescueWordlessTurn,
   isSensitiveBlockedTurn,
   sensitiveBlockedNotice,
+  stripPriorImages,
   GLM_THINK_MIN_TOKENS,
   GLM_DEEP_MIN_TOKENS,
 } = require('./modelbudget.js');
@@ -3377,11 +3378,34 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
      * different cure: no re-ask (same wall), just the honest local notice.
      * Same byte-counter precondition, so it can never double-speak. */
     if (shimFirstWrite === 0 && isSensitiveBlockedTurn({ finishReason, contentLength: contentAccum.length })) {
-      console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn on shim-live (finish=${finishReason}) -- serving the notice instead of silence`);
-      const notice = sensitiveBlockedNotice(upstreamBody);
-      emitShimContent(notice.text);
-      contentAccum = notice.text;
-      finishReason = notice.finishReason;
+      let shimServed = false;
+      if (process.env.KADE_SENSITIVE_RETRY !== '0') {
+        try {
+          const strippedRes = stripPriorImages(upstreamBody.messages);
+          if (strippedRes.stripped > 0) {
+            console.warn(`[req ${reqId}] SENSITIVE-BLOCKED on shim-live with ${strippedRes.stripped} prior image(s) -- retrying once without them`);
+            const retryBody = { ...upstreamBody, messages: strippedRes.messages, stream: false };
+            delete retryBody.stream_options;
+            const rt = await callOpenRouter(retryBody);
+            const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
+            if (typeof rtText === 'string' && rtText.trim().length > 0) {
+              emitShimContent(rtText);
+              contentAccum = rtText;
+              finishReason = (rt.choices[0].finish_reason) || 'stop';
+              shimServed = true;
+            }
+          }
+        } catch (e) {
+          console.warn(`[req ${reqId}] shim-live sensitive retry failed: ${e.message}`);
+        }
+      }
+      if (!shimServed) {
+        console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn on shim-live (finish=${finishReason}) -- serving the notice instead of silence`);
+        const notice = sensitiveBlockedNotice(upstreamBody);
+        emitShimContent(notice.text);
+        contentAccum = notice.text;
+        finishReason = notice.finishReason;
+      }
     }
     const fin = { ...shimChunkBase(), choices: [{ index: 0, delta: {}, finish_reason: finishReason || 'stop' }] };
     try {
@@ -3526,10 +3550,42 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * never be indistinguishable. No re-ask (same wall), no provider hop
    * (deliberately not built) — the honest local notice, instantly. */
   if (isSensitiveBlockedTurn({ finishReason, contentLength: contentAccum.length })) {
-    console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn (finish=${finishReason}, 0 content) -- serving the honest notice instead of silence`);
-    const notice = sensitiveBlockedNotice(upstreamBody);
-    contentAccum = notice.text;
-    finishReason = notice.finishReason;
+    /* First move: was the poison an EARLIER image replaying in the history?
+     * Retry once with prior-turn images removed (newest message keeps its
+     * own). Her selfie case exactly: innocent photo refused because the
+     * already-filtered lighter photo rode along underneath it. Fail-soft —
+     * a retry that blocks or dies falls through to the notice. Kill:
+     * KADE_SENSITIVE_RETRY=0. */
+    let served = false;
+    if (process.env.KADE_SENSITIVE_RETRY !== '0') {
+      try {
+        const strippedRes = stripPriorImages(upstreamBody.messages);
+        if (strippedRes.stripped > 0) {
+          console.warn(`[req ${reqId}] SENSITIVE-BLOCKED with ${strippedRes.stripped} prior-turn image(s) in the replayed history -- retrying once without them`);
+          const retryBody = { ...upstreamBody, messages: strippedRes.messages, stream: false };
+          delete retryBody.stream_options;
+          const rt = await callOpenRouter(retryBody);
+          const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
+          if (typeof rtText === 'string' && rtText.trim().length > 0) {
+            console.log(`[req ${reqId}] sensitive retry landed ${rtText.length} chars -- an earlier image was the poison, the newest one is innocent`);
+            contentAccum = rtText;
+            finishReason = (rt.choices[0].finish_reason) || 'stop';
+            if (rt.usage) { usage = sumUsage(usage, rt.usage); }
+            served = true;
+          } else {
+            console.warn(`[req ${reqId}] sensitive retry still blocked -- the newest image is the flagged one`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[req ${reqId}] sensitive retry failed (${e.message}) -- falling through to the notice`);
+      }
+    }
+    if (!served) {
+      console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn (finish=${finishReason}, 0 content) -- serving the honest notice instead of silence`);
+      const notice = sensitiveBlockedNotice(upstreamBody);
+      contentAccum = notice.text;
+      finishReason = notice.finishReason;
+    }
   }
 
   /* ⭐⭐⭐ A STREAM THAT DIES MID-SENTENCE MUST NOT BE SERVED AS AN ANSWER

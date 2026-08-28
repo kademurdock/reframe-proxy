@@ -240,6 +240,52 @@ function sensitiveBlockedNotice(upstreamBody) {
   return { text, finishReason: 'stop' };
 }
 
+/* ⭐ AUG 28 2026, LATER THE SAME EVENING — ONE FILTERED PHOTO MUST NOT
+ * POISON THE WHOLE THREAD. Her follow-up report: a picture of HERSELF also
+ * refused. Probed alone against the pot it described perfectly ("a close-up
+ * selfie of a person with light hair and freckles...") — the selfie was
+ * innocent. What actually happened: the conversation REPLAYS its history,
+ * old image parts included, so the lighter photo the filter refused at
+ * 20:04 rode along under her selfie at 20:29 (both fingerprints in the same
+ * request, receipts in the log) and Z.AI refused the whole turn again. One
+ * bad image = a permanently dead conversation, with no way for anyone to
+ * know why.
+ *
+ * THE CURE, and why it is not filter evasion: on a sensitive block, retry
+ * ONCE with every image from EARLIER turns removed — replaced by a plain
+ * text placeholder — while the newest user message keeps its images intact.
+ * The already-refused content is DROPPED, not smuggled: the provider's
+ * verdict on the old image is respected by removing it. If the newest image
+ * is itself the flagged one, the retry blocks too and the honest notice
+ * stands exactly as before. Both outcomes are correct. */
+function stripPriorImages(messages) {
+  if (!Array.isArray(messages)) return { messages, stripped: 0 };
+  let lastImageUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user' && Array.isArray(m.content) &&
+        m.content.some((p) => p && p.type === 'image_url')) {
+      lastImageUserIdx = i;
+      break;
+    }
+  }
+  if (lastImageUserIdx === -1) return { messages, stripped: 0 };
+  let stripped = 0;
+  const out = messages.map((m, i) => {
+    if (i === lastImageUserIdx || !m || !Array.isArray(m.content)) return m;
+    if (!m.content.some((p) => p && p.type === 'image_url')) return m;
+    const parts = m.content.map((p) => {
+      if (p && p.type === 'image_url') {
+        stripped += 1;
+        return { type: 'text', text: '[an earlier photo from this conversation was removed]' };
+      }
+      return p;
+    });
+    return { ...m, content: parts };
+  });
+  return { messages: stripped > 0 ? out : messages, stripped };
+}
+
 module.exports = {
   GLM_MODEL_RE,
   GLM_ALWAYS_THINK_RE,
@@ -256,4 +302,5 @@ module.exports = {
   rescueWordlessTurn,
   isSensitiveBlockedTurn,
   sensitiveBlockedNotice,
+  stripPriorImages,
 };

@@ -60,3 +60,59 @@ test('all three lanes call the notice', () => {
   const notices = (src.match(/sensitiveBlockedNotice\(upstreamBody\)/g) || []).length;
   assert.strictEqual(notices, 3, `expected the notice at 3 lane sites, found ${notices}`);
 });
+
+/* ── THE POISONED THREAD (Aug 28 2026, evening) ─────────────────────────────
+ * Her selfie was innocent; the already-refused lighter photo replaying in
+ * the history killed the turn anyway. stripPriorImages removes EARLIER
+ * images, keeps the newest message's images, and drops nothing else. */
+const { stripPriorImages } = require('./modelbudget');
+
+const lighter = { type: 'image_url', image_url: { url: 'data:image/png;base64,LIGHTER' } };
+const selfie = { type: 'image_url', image_url: { url: 'data:image/png;base64,SELFIE' } };
+
+test('HER THREAD: the old lighter is stripped, the new selfie survives', () => {
+  const { messages, stripped } = stripPriorImages([
+    { role: 'system', content: 'persona' },
+    { role: 'user', content: [{ type: 'text', text: '' }, lighter] },
+    { role: 'assistant', content: 'that got filtered' },
+    { role: 'user', content: [{ type: 'text', text: 'what about this one?' }, selfie] },
+  ]);
+  assert.strictEqual(stripped, 1);
+  const old = messages[1].content;
+  assert.ok(old.every((p) => p.type === 'text'), 'the lighter must be gone');
+  assert.match(old.map((p) => p.text).join(' '), /removed/, 'a placeholder marks where it was');
+  assert.ok(messages[3].content.some((p) => p.type === 'image_url'), 'the selfie must survive untouched');
+});
+
+test('a single-image turn strips nothing — there is no earlier poison to remove', () => {
+  const { stripped } = stripPriorImages([
+    { role: 'user', content: [{ type: 'text', text: 'look' }, lighter] },
+  ]);
+  assert.strictEqual(stripped, 0);
+});
+
+test('no images anywhere: untouched by reference', () => {
+  const msgs = [{ role: 'user', content: 'plain words' }];
+  const out = stripPriorImages(msgs);
+  assert.strictEqual(out.messages, msgs);
+  assert.strictEqual(out.stripped, 0);
+});
+
+test('three photo turns: the two older strip, the newest stays', () => {
+  const { messages, stripped } = stripPriorImages([
+    { role: 'user', content: [lighter] },
+    { role: 'user', content: [lighter] },
+    { role: 'user', content: [{ type: 'text', text: 'and this' }, selfie] },
+  ]);
+  assert.strictEqual(stripped, 2);
+  assert.ok(messages[2].content.some((p) => p.type === 'image_url'));
+});
+
+test('the retry is wired ahead of the notice on both image-bearing lanes', () => {
+  const src = fs.readFileSync(require.resolve('./server.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const wired = (src.match(/stripPriorImages\(upstreamBody\.messages\)/g) || []).length;
+  assert.strictEqual(wired, 2, `expected the strip-retry on 2 lanes (buffered, shim-live), found ${wired}`);
+  assert.ok(src.indexOf('stripPriorImages(upstreamBody.messages)') < src.indexOf('sensitiveBlockedNotice(upstreamBody)'),
+    'the retry must be attempted before the notice is served');
+});
