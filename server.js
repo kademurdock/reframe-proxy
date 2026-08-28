@@ -227,6 +227,8 @@ const {
   adaptForGlm,
   isWordlessTurn,
   rescueWordlessTurn,
+  isSensitiveBlockedTurn,
+  sensitiveBlockedNotice,
   GLM_THINK_MIN_TOKENS,
   GLM_DEEP_MIN_TOKENS,
 } = require('./modelbudget.js');
@@ -3371,6 +3373,16 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
         finishReason = rescued.finishReason;
       }
     }
+    /* A provider content-filter verdict is a DIFFERENT silence and gets a
+     * different cure: no re-ask (same wall), just the honest local notice.
+     * Same byte-counter precondition, so it can never double-speak. */
+    if (shimFirstWrite === 0 && isSensitiveBlockedTurn({ finishReason, contentLength: contentAccum.length })) {
+      console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn on shim-live (finish=${finishReason}) -- serving the notice instead of silence`);
+      const notice = sensitiveBlockedNotice(upstreamBody);
+      emitShimContent(notice.text);
+      contentAccum = notice.text;
+      finishReason = notice.finishReason;
+    }
     const fin = { ...shimChunkBase(), choices: [{ index: 0, delta: {}, finish_reason: finishReason || 'stop' }] };
     try {
       if (!res.writableEnded) {
@@ -3422,6 +3434,29 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           contentAccum = rescued.text;
         } catch (e) {}
       }
+    }
+    /* Content-filter silence on an open phone line: the caller hears the
+     * honest notice instead of dead air. Local text, no re-ask, instant. */
+    if (
+      phoneFirstWrite === 0 &&
+      !sawDone &&
+      !res.writableEnded &&
+      isSensitiveBlockedTurn({ finishReason, contentLength: contentAccum.length })
+    ) {
+      console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn on phone-live (finish=${finishReason}) -- speaking the notice`);
+      const notice = sensitiveBlockedNotice(upstreamBody);
+      const base = {
+        id: `sensitive-${reqId}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: upstreamBody.model,
+      };
+      try {
+        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: notice.text }, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: notice.finishReason }] })}\n\n`);
+        contentAccum = notice.text;
+        finishReason = notice.finishReason;
+      } catch (e) {}
     }
     console.log(`[req ${reqId}] phone live-stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
     try {
@@ -3479,6 +3514,22 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       contentAccum = rescued.text;
       finishReason = rescued.finishReason;
     }
+  }
+
+  /* ⭐ AUG 28 2026 — HER SECOND PHOTO ATTEMPT, THE ONE THE EMPTY-TEXT FIX
+   * UNBLOCKED, ENDED EXACTLY HERE: upstream 200, finishReason=sensitive,
+   * contentAccum empty — Z.AI's content filter refused the image (probed
+   * direct: 400 code 1301, contentFilter level 2 on the input). The turn was
+   * then served with finalLength=0 and the app turned that silence into an
+   * error tone, which reads as "the platform is broken" when the truth is
+   * "the provider declined." A filtered turn and a broken platform must
+   * never be indistinguishable. No re-ask (same wall), no provider hop
+   * (deliberately not built) — the honest local notice, instantly. */
+  if (isSensitiveBlockedTurn({ finishReason, contentLength: contentAccum.length })) {
+    console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn (finish=${finishReason}, 0 content) -- serving the honest notice instead of silence`);
+    const notice = sensitiveBlockedNotice(upstreamBody);
+    contentAccum = notice.text;
+    finishReason = notice.finishReason;
   }
 
   /* ⭐⭐⭐ A STREAM THAT DIES MID-SENTENCE MUST NOT BE SERVED AS AN ANSWER

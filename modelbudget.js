@@ -201,6 +201,45 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
   }
 }
 
+/* ⭐ AUG 28 2026 — THE SENSITIVE BLOCK GETS A VOICE. Her first two native-
+ * vision turns ever: one died on an empty text part (fixed the same hour),
+ * and the retry came back `finishReason=sensitive` with ZERO content — Z.AI's
+ * content filter refused the image (probed direct: 400 code 1301,
+ * contentFilter level 2 on the input; the photo was a hand-engraved pin-up on
+ * a brass lighter). The app turned the silence into an error tone, and she
+ * reported it as "still didn't work" — because from her side a filtered turn
+ * and a broken platform are INDISTINGUISHABLE when both sound like silence.
+ *
+ * This is NOT the wordless guard's case and must not ride its rescue:
+ * isWordlessTurn is finish=length (a budget problem — re-asking helps), and
+ * a re-ask here would hit the same wall, while re-asking a REFUSED image
+ * through a different provider is filter-evasion and is deliberately not
+ * built. The honest cure is local and instant: say what happened, plainly,
+ * and point at the Describe lane that already exists in the app (different
+ * provider, her explicit tool, her explicit choice — a person retrying a
+ * tool is not a proxy silently rerouting refused content).
+ *
+ * 'content_filter' is OpenAI/OpenRouter's spelling of the same verdict, so
+ * the fallback lane speaks too instead of going quiet a different way. */
+const SENSITIVE_FINISHES = new Set(['sensitive', 'content_filter']);
+function isSensitiveBlockedTurn({ finishReason, contentLength }) {
+  return SENSITIVE_FINISHES.has(String(finishReason || '')) && Number(contentLength) === 0;
+}
+function sensitiveBlockedNotice(upstreamBody) {
+  let hasImage = false;
+  const msgs = (upstreamBody && upstreamBody.messages) || [];
+  for (const m of msgs) {
+    if (m && Array.isArray(m.content) && m.content.some((p) => p && p.type === 'image_url')) {
+      hasImage = true;
+      break;
+    }
+  }
+  const text = hasImage
+    ? 'That picture got stopped at the door — the company that runs my language model puts its own content filter on images, and it refused this one before I saw a single pixel. Not my call, and no judgment from me. If you want eyes on it anyway, the Describe tool in the app uses a different service and will usually look. Or just tell me about it and we go from there.'
+    : "That message tripped the model provider's content filter before it ever reached me, so I've got nothing to work with on my end. Say it another way and I'm right here.";
+  return { text, finishReason: 'stop' };
+}
+
 module.exports = {
   GLM_MODEL_RE,
   GLM_ALWAYS_THINK_RE,
@@ -215,4 +254,6 @@ module.exports = {
   adaptForGlm,
   isWordlessTurn,
   rescueWordlessTurn,
+  isSensitiveBlockedTurn,
+  sensitiveBlockedNotice,
 };
