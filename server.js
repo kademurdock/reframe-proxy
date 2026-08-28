@@ -330,6 +330,48 @@ const TOOLWIRE_DEBUG = process.env.KADE_TOOLWIRE_DEBUG !== '0';
 // Utility tier: thinking always off (titles and memory cards must never
 // carry think-blocks). The 5.x fleet keeps whatever the turn asked for.
 const ZAI_NEVER_THINK = new Set(['glm-4.7-flashx', 'glm-4.7-flash', 'glm-4.7', 'glm-4.6', 'glm-4.5-air']);
+/* ⭐ AUG 28 2026 — AN EMPTY TEXT PART IS NOT A MESSAGE, AND Z.AI SAYS SO
+ * WITH ERROR 1210. Her first real native-vision turn: a photo sent with no
+ * words — the ATTACHMENT-ONLY SEND that shipped the night before. LibreChat
+ * builds content = [{type:'text', text:''}, {type:'image_url', …}] for that,
+ * the fork accepts it, and Z.AI 400s the whole turn: "Invalid API parameter,
+ * please check the documentation."
+ *
+ * Convicted by shape, all four probed live against the real pot, bare
+ * glm-5.3-flash, Aug 28 2026:
+ *     text + image (detail auto)   200
+ *     text + image (no detail)     200
+ *     EMPTY text + image           400 code 1210   <- her turn, verbatim
+ *     image with NO text part      200
+ *
+ * So the pot is fine with wordless pictures — it is the empty STRING it
+ * refuses. The 93.1 vision proof probed text+image and called the pot
+ * verified; the attachment-only lane shipped the same night and nobody
+ * probed ITS shape. A probe proves the shape it sends, nothing more.
+ *
+ * Stripped here, at the one door every GLM turn already walks through,
+ * rather than taught to each client: filter text parts that are empty after
+ * trim, keep everything else exactly as sent. Idempotent by construction
+ * (filtering a stripped array is a no-op), so the double-adapt guard below
+ * needs no special case. */
+function stripEmptyTextParts(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let changed = false;
+  const out = messages.map((m) => {
+    if (!m || !Array.isArray(m.content)) return m;
+    const parts = m.content.filter(
+      (p) => !(p && p.type === 'text' && !String(p.text == null ? '' : p.text).trim()),
+    );
+    if (parts.length === m.content.length) return m;
+    changed = true;
+    /* A content array that was ONLY empty text collapses to an empty string
+     * rather than []: an empty array is a second novel shape to gamble on,
+     * and '' is what a plain no-attachment message already looks like. */
+    return { ...m, content: parts.length > 0 ? parts : '' };
+  });
+  return changed ? out : messages;
+}
+
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
   /* ⚠️ Aug 24 2026: isGlmModel now matches BARE `glm-*` too (it has to — see
@@ -340,7 +382,7 @@ function adaptForZai(body) {
    * conversion already happened. */
   if (body.thinking) return body;
   const bare = String(body.model).replace(/^z-ai\//i, '').toLowerCase();
-  const next = { ...body, model: bare };
+  const next = { ...body, model: bare, messages: stripEmptyTextParts(body.messages) };
   const r = next.reasoning || {};
   const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
   if (ZAI_EFFORT_DIALECT_RE.test(bare)) {
