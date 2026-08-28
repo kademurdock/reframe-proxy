@@ -153,6 +153,54 @@ function isWordlessTurn({ model, finishReason, contentLength }) {
   return isReasoningModel(model) && finishReason === 'length' && Number(contentLength) === 0;
 }
 
+
+/**
+ * THE RESCUE, EXTRACTED (Aug 28 2026, per WORDLESS_GUARD_LAST_TWO_PATHS_SPEC).
+ * One home for the re-ask every lane shares — the buffered guard, shim-live,
+ * and phone-live all call THIS instead of keeping a copy. A second copy of
+ * this logic is the same shape as the model-name predicate that sat in two
+ * places and disarmed the guard for three days.
+ *
+ * `callOpenRouter` is passed in (server.js owns it) so this module keeps no
+ * network of its own. `timeoutMs` > 0 puts a hard window on the re-ask — the
+ * phone lane uses it because every second is dead air on an open line; the
+ * screen lanes pass 0 and ride the deep timeout like always.
+ *
+ * Fail-soft in every direction: a rescue that dies, times out, or returns
+ * empty yields null, and the caller proceeds exactly as it did before the
+ * rescue existed. It can make a silent turn speak; it must never make a
+ * working turn worse.
+ */
+async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeoutMs = 0, lane = 'buffered' }) {
+  try {
+    const fallbackBody = { ...upstreamBody, stream: false };
+    delete fallbackBody.stream_options;
+    delete fallbackBody.reasoning;
+    delete fallbackBody.include_reasoning;
+    delete fallbackBody.reasoning_effort;
+    let call = callOpenRouter(fallbackBody);
+    if (timeoutMs > 0) {
+      call = Promise.race([
+        call,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`rescue window (${timeoutMs}ms) closed`)), timeoutMs),
+        ),
+      ]);
+    }
+    const fb = await call;
+    const fbText = fb && fb.choices && fb.choices[0] && fb.choices[0].message && fb.choices[0].message.content;
+    if (typeof fbText === 'string' && fbText.trim().length > 0) {
+      console.log(`[req ${reqId}] wordless rescue (${lane}) landed ${fbText.length} chars`);
+      return { text: fbText, finishReason: fb.choices[0].finish_reason || 'stop' };
+    }
+    console.warn(`[req ${reqId}] wordless rescue (${lane}) returned no content -- leaving the turn as it was`);
+    return null;
+  } catch (e) {
+    console.warn(`[req ${reqId}] wordless rescue (${lane}) failed: ${e.message} -- leaving the turn as it was`);
+    return null;
+  }
+}
+
 module.exports = {
   GLM_MODEL_RE,
   GLM_ALWAYS_THINK_RE,
@@ -166,4 +214,5 @@ module.exports = {
   thinkTierFor,
   adaptForGlm,
   isWordlessTurn,
+  rescueWordlessTurn,
 };

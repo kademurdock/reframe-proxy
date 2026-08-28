@@ -226,6 +226,7 @@ const {
   thinkTierFor,
   adaptForGlm,
   isWordlessTurn,
+  rescueWordlessTurn,
   GLM_THINK_MIN_TOKENS,
   GLM_DEEP_MIN_TOKENS,
 } = require('./modelbudget.js');
@@ -3308,6 +3309,26 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       // policy as the buffered path).
       emitShimContent(captured);
     }
+    /* Aug 28 2026 — THE WORDLESS GUARD REACHES THE SHIM LANE (spec
+     * WORDLESS_GUARD_LAST_TWO_PATHS, her green light "any half baked plans").
+     * This path used to `return` before the guard at the bottom of
+     * handleStreaming ever ran, so a wordless tool-shim turn was delivered
+     * as silence. Precondition ASSERTED off the byte counter, never inferred:
+     * `shimFirstWrite === 0` is the variable that counts bytes out the door,
+     * and 0 means the client has seen nothing — so a rescue emits into a
+     * still-empty turn and can never double-speak. */
+    if (shimFirstWrite === 0 && isWordlessTurn({
+      model: upstreamBody.model,
+      finishReason,
+      contentLength: contentAccum.length,
+    })) {
+      console.warn(`[req ${reqId}] WORDLESS TURN on shim-live (finish=${finishReason}, 0 bytes out, ${reasoningAccum.length} reasoning chars) -- rescuing`);
+      const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'shim-live' });
+      if (rescued) {
+        emitShimContent(rescued.text);
+        finishReason = rescued.finishReason;
+      }
+    }
     const fin = { ...shimChunkBase(), choices: [{ index: 0, delta: {}, finish_reason: finishReason || 'stop' }] };
     try {
       if (!res.writableEnded) {
@@ -3321,9 +3342,45 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   }
 
   if (phoneLive) {
-    // PHONE turn: every content/finish event already went out live. If the
-    // upstream ended without a [DONE] (error/idle mid-stream), close the SSE
-    // shape ourselves so the fork's parser terminates cleanly.
+    /* Aug 28 2026 — THE WORDLESS GUARD REACHES THE PHONE (spec
+     * WORDLESS_GUARD_LAST_TWO_PATHS §3). A wordless turn here used to be
+     * delivered as dead air — a blind caller holding a handset listening to
+     * nothing, no bubble, no spinner. Every condition is load-bearing:
+     *  - `phoneFirstWrite === 0`: the byte counter says the caller has heard
+     *    NOTHING, so a rescue cannot double-speak. Asserted, not inferred.
+     *  - `!sawDone`: if upstream's [DONE] already went downstream, the
+     *    caller's side has finished the turn; text after that is worse than
+     *    silence.
+     *  - a tighter clock than the buffered path (KADE_PHONE_RESCUE_MS,
+     *    default 8000): on a call every second is dead air on an open line.
+     * Fail-soft top to bottom — a rescue that dies leaves the turn exactly
+     * as it was. This can make a silent call speak; it must never make a
+     * working call worse. */
+    if (
+      phoneFirstWrite === 0 &&
+      !sawDone &&
+      !res.writableEnded &&
+      isWordlessTurn({ model: upstreamBody.model, finishReason, contentLength: contentAccum.length })
+    ) {
+      console.warn(`[req ${reqId}] WORDLESS TURN on phone-live (finish=${finishReason}, 0 bytes out, ${reasoningAccum.length} reasoning chars) -- rescuing inside the phone window`);
+      const phoneRescueMs = parseInt(process.env.KADE_PHONE_RESCUE_MS, 10) || 8000;
+      const rescued = await rescueWordlessTurn({
+        upstreamBody, reqId, callOpenRouter, timeoutMs: phoneRescueMs, lane: 'phone-live',
+      });
+      if (rescued && !res.writableEnded) {
+        const base = {
+          id: `rescue-${reqId}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: upstreamBody.model,
+        };
+        try {
+          res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: rescued.text }, finish_reason: null }] })}\n\n`);
+          res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: rescued.finishReason }] })}\n\n`);
+          contentAccum = rescued.text;
+        } catch (e) {}
+      }
+    }
     console.log(`[req ${reqId}] phone live-stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
     try {
       if (!sawDone && !res.writableEnded) res.write('data: [DONE]\n\n');
@@ -3371,23 +3428,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     contentLength: contentAccum.length,
   })) {
     console.warn(`[req ${reqId}] WORDLESS TURN CAUGHT (finish=length, 0 content, ${reasoningAccum.length} reasoning chars, model=${upstreamBody.model}) -- re-asking once with reasoning off`);
-    try {
-      const fallbackBody = { ...upstreamBody, stream: false };
-      delete fallbackBody.stream_options;
-      delete fallbackBody.reasoning;
-      delete fallbackBody.include_reasoning;
-      delete fallbackBody.reasoning_effort;
-      const fb = await callOpenRouter(fallbackBody);
-      const fbText = fb && fb.choices && fb.choices[0] && fb.choices[0].message && fb.choices[0].message.content;
-      if (typeof fbText === 'string' && fbText.trim().length > 0) {
-        contentAccum = fbText;
-        finishReason = (fb.choices[0].finish_reason) || 'stop';
-        console.log(`[req ${reqId}] reasoning-off fallback landed ${fbText.length} chars at ${Date.now() - t0}ms`);
-      } else {
-        console.warn(`[req ${reqId}] reasoning-off fallback returned no content -- leaving the turn as it was`);
-      }
-    } catch (fbErr) {
-      console.warn(`[req ${reqId}] reasoning-off fallback failed: ${fbErr.message} -- leaving the turn as it was`);
+    /* Aug 28 2026: the re-ask itself moved to modelbudget.rescueWordlessTurn
+     * so the shim and phone lanes share ONE rescue instead of copies (the
+     * spec's extract-never-duplicate rule — a second copy is the same shape
+     * as the predicate that sat in two places and disarmed the guard). */
+    const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered' });
+    if (rescued) {
+      contentAccum = rescued.text;
+      finishReason = rescued.finishReason;
     }
   }
 

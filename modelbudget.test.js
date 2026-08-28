@@ -133,3 +133,108 @@ test('a tool-call round with no prose is NOT a wordless turn', () => {
   // Only finish=length means the budget ran out.
   assert.strictEqual(M.isWordlessTurn({ model: 'glm-5.3', finishReason: 'stop', contentLength: 0 }), false);
 });
+
+/* ════════════════════════════════════════════════════════════════════════
+ * THE RESCUE, EXTRACTED (Aug 28 2026) — one re-ask, three lanes
+ * ════════════════════════════════════════════════════════════════════════ */
+
+const wordlessBody = {
+  model: 'glm-5.3',
+  stream: true,
+  stream_options: { include_usage: true },
+  reasoning: { effort: 'high' },
+  include_reasoning: true,
+  reasoning_effort: 'high',
+  messages: [{ role: 'user', content: 'hi' }],
+};
+
+test('rescue lands: content comes back with its finish reason', async () => {
+  const seen = [];
+  const out = await M.rescueWordlessTurn({
+    upstreamBody: wordlessBody,
+    reqId: 't1',
+    callOpenRouter: async (b) => {
+      seen.push(b);
+      return { choices: [{ message: { content: 'the plain answer' }, finish_reason: 'stop' }] };
+    },
+  });
+  assert.deepStrictEqual(out, { text: 'the plain answer', finishReason: 'stop' });
+  // The fallback body must be buffered and reasoning-free — the failure being
+  // cured is the reasoning spend itself.
+  assert.strictEqual(seen[0].stream, false);
+  assert.strictEqual('stream_options' in seen[0], false);
+  assert.strictEqual('reasoning' in seen[0], false);
+  assert.strictEqual('include_reasoning' in seen[0], false);
+  assert.strictEqual('reasoning_effort' in seen[0], false);
+});
+
+test('rescue fail-soft: empty content yields null, never an empty string served as an answer', async () => {
+  const out = await M.rescueWordlessTurn({
+    upstreamBody: wordlessBody,
+    reqId: 't2',
+    callOpenRouter: async () => ({ choices: [{ message: { content: '   ' }, finish_reason: 'stop' }] }),
+  });
+  assert.strictEqual(out, null);
+});
+
+test('rescue fail-soft: a throwing re-ask yields null and no throw escapes', async () => {
+  const out = await M.rescueWordlessTurn({
+    upstreamBody: wordlessBody,
+    reqId: 't3',
+    callOpenRouter: async () => { throw new Error('provider died'); },
+  });
+  assert.strictEqual(out, null);
+});
+
+test("the phone window is real: a rescue that outlives timeoutMs yields null (dead air capped, caller's turn proceeds)", async () => {
+  const t0 = Date.now();
+  const out = await M.rescueWordlessTurn({
+    upstreamBody: wordlessBody,
+    reqId: 't4',
+    timeoutMs: 60,
+    callOpenRouter: () => new Promise(() => {}), // never resolves — the exact hang the window exists for
+  });
+  assert.strictEqual(out, null);
+  assert.ok(Date.now() - t0 < 2000, 'the window must actually cut the wait');
+});
+
+/* ── Source-level guard (spec test 7): the two return sites must keep their
+ * checks. A refactor that moves the returns cannot silently drop the guard —
+ * this is the same trick the Amber Lacey fix used against an upstream merge. */
+const fs = require('node:fs');
+const serverSrcRaw = fs.readFileSync(require.resolve('./server.js'), 'utf8');
+/* ⚠️ COMMENTS STRIPPED BEFORE ANY ASSERTION. The first version of these
+ * guards matched the phrase `shimFirstWrite === 0` — which also appears in
+ * the COMMENT documenting the guard, so removing the actual check left the
+ * test green. Caught by the red-proof (mutate, verify the mutation applied,
+ * expect red — it stayed green). A source guard must read code, never prose
+ * about code. */
+const serverSrc = serverSrcRaw
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+
+test('SOURCE GUARD: shim-live return site still asserts the byte counter and the predicate', () => {
+  const shimReturn = serverSrc.indexOf("shim-live: content turn done");
+  assert.ok(shimReturn > 0, 'shim finish log line must exist');
+  const before = serverSrc.slice(Math.max(0, shimReturn - 3000), shimReturn);
+  assert.ok(before.includes('shimFirstWrite === 0'), 'shim rescue must gate on the byte counter, asserted not inferred');
+  assert.ok(before.includes('isWordlessTurn'), 'shim rescue must use the shared predicate');
+  assert.ok(before.includes('rescueWordlessTurn'), 'shim rescue must call the ONE extracted rescue');
+});
+
+test('SOURCE GUARD: phone-live return site still asserts byte counter, sawDone, and the predicate', () => {
+  const phoneReturn = serverSrc.indexOf('phone live-stream ended');
+  assert.ok(phoneReturn > 0, 'phone finish log line must exist');
+  const before = serverSrc.slice(Math.max(0, phoneReturn - 3500), phoneReturn);
+  assert.ok(before.includes('phoneFirstWrite === 0'), 'phone rescue must gate on the byte counter');
+  assert.ok(before.includes('!sawDone'), 'phone rescue must refuse to speak after the [DONE] went downstream');
+  assert.ok(before.includes('isWordlessTurn'), 'phone rescue must use the shared predicate');
+  assert.ok(before.includes('KADE_PHONE_RESCUE_MS'), 'phone rescue must carry its own tighter clock');
+});
+
+test('SOURCE GUARD: the buffered lane calls the extracted rescue and keeps NO inline copy', () => {
+  assert.ok(serverSrc.includes("lane: 'buffered'"), 'buffered lane must ride the shared rescue');
+  // The old inline body-building must be gone from server.js — a second copy
+  // is how the last predicate got disarmed for three days.
+  assert.ok(!serverSrc.includes('delete fallbackBody.reasoning'), 'no duplicated rescue body-building in server.js');
+});
