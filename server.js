@@ -2454,6 +2454,34 @@ async function maybeAutoThink(body, reqId = '??????') {
       console.log(`[auto-think][req ${reqId}] fresh [INSTANT] -> effort none, router skipped`);
       return { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } };
     }
+    /* ⭐ AUG 28 2026 — CALLS START INSTANT, HER CALL: "calls should be on
+     * instant by default at the beginning of the call unless someone changes
+     * it. Just the voice chats and phone lanes."
+     *
+     * Aug 14 put calls on the auto router with deep capped to quick. That was
+     * the right move for a TYPED lane borrowed onto a spoken one, and living
+     * with it showed the cost: on a call the router can still pay a ~1.2s
+     * classifier call and then a ~2s quick budget before the first syllable,
+     * on top of synthesis — and a person holding a phone reads any of that as
+     * a dropped call. The dead-air rule the cap was written for argues one
+     * step further than the cap went.
+     *
+     * So a call turn is INSTANT by default, and every existing escape hatch
+     * still beats it, unchanged and checked ABOVE this line: a fresh
+     * [DEEP THINK] marker (saying "think hard" out loud) arrives as
+     * effort:'high' and returns at the explicit-choice guard; an agent or
+     * per-user setting carrying a real effort does the same; a fresh
+     * [INSTANT] marker forces none. "Unless someone changes it" is exactly
+     * those doors, and none of them are touched here.
+     *
+     * NOT the typed lane: text chat keeps the full auto router, where a
+     * two-second pause is invisible and a better answer is worth it.
+     * KADE_CALL_INSTANT_DEFAULT=0 restores the Aug-14 capped-auto behaviour. */
+    const CALL_INSTANT = process.env.KADE_CALL_INSTANT_DEFAULT !== '0';
+    if (isCall && CALL_INSTANT) {
+      console.log(`[auto-think][req ${reqId}] call turn -> instant by default (no classifier, no wait); say "think hard" for deep`);
+      return { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } };
+    }
     const heur = autoThinkHeuristic(excerpt);
     let tier = heur === 'classify' ? await classifyThinkTier(excerpt, reqId) : 'instant';
     if (isCall && tier === 'deep') {
