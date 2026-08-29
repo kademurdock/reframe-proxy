@@ -3833,6 +3833,60 @@ function scrubSpecialTokensFromTitleReply(result, originalBody) {
   } catch (e) { /* fail-soft: an ugly title beats a dead title call */ }
 }
 
+/* ── Part 97 (Aug 29 2026): THE TOOL-FUMBLE ESCALATOR ─────────────────────
+ * The receipt that bought this: Kiana (flash, same morning she moved to it)
+ * called set_reminder FIVE straight times with the sibling action's parameter,
+ * got the identical rejection five times, and told Amber the tool was broken.
+ * A flash model that has seen the same tool answer twice and is about to try
+ * again is not going to think its way out at flash depth — but the full model
+ * reads the error and fixes the call in one go.
+ *
+ * The signal is deliberately narrow: SAME function name + IDENTICAL result
+ * content, twice or more, inside the CURRENT turn (everything after the last
+ * plain user message). Legit repeated calls (two searches, two different
+ * answers) never match; an agent re-reading a status tool that answers the
+ * same words twice is itself not making progress. When it trips, THIS model
+ * call (and every later call in the stuck turn — the signature stays in the
+ * history) runs on the full model instead. Next user message resets it all.
+ * Cost: full-model pricing on fumble turns only — pennies, exactly where
+ * they buy something. KADE_TOOL_ESCALATE=0 kills; FROM/TO/REPEATS env-set. */
+const TOOL_ESCALATE_ENABLED = process.env.KADE_TOOL_ESCALATE !== '0';
+const TOOL_ESCALATE_REPEATS = Math.max(2, parseInt(process.env.KADE_TOOL_ESCALATE_REPEATS || '2', 10));
+const TOOL_ESCALATE_FROM = (process.env.KADE_TOOL_ESCALATE_FROM || 'z-ai/glm-5.3-flash').trim();
+const TOOL_ESCALATE_TO = (process.env.KADE_TOOL_ESCALATE_TO || 'z-ai/glm-5.3').trim();
+
+function stuckToolSignature(messages) {
+  if (!Array.isArray(messages) || !messages.length) return null;
+  let start = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && messages[i].role === 'user') { start = i; break; }
+  }
+  const seg = messages.slice(start + 1);
+  if (!seg.length) return null;
+  const nameById = {};
+  for (const m of seg) {
+    if (m && m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const c of m.tool_calls) {
+        if (c && c.id && c.function && c.function.name) nameById[c.id] = c.function.name;
+      }
+    }
+  }
+  const counts = new Map();
+  for (const m of seg) {
+    if (!m || m.role !== 'tool') continue;
+    const name = nameById[m.tool_call_id] || '(unknown tool)';
+    let content = m.content;
+    if (Array.isArray(content)) content = content.map((p) => (p && (p.text || p.content)) || '').join(' ');
+    content = String(content == null ? '' : content).trim().slice(0, 500);
+    if (!content) continue;
+    const key = `${name}\u0000${content}`;
+    const n = (counts.get(key) || 0) + 1;
+    counts.set(key, n);
+    if (n >= TOOL_ESCALATE_REPEATS) return { name, repeats: n };
+  }
+  return null;
+}
+
 app.post('/chat/completions', async (req, res) => {
   const wantsStream = !!req.body.stream;
   const reqId = Math.random().toString(36).slice(2, 8);
@@ -3841,6 +3895,16 @@ app.post('/chat/completions', async (req, res) => {
   const _toolNames = Array.isArray(req.body.tools) ? req.body.tools.map(t => (t.function && t.function.name) || t.name).filter(Boolean) : [];
   if (_toolNames.length) console.log(`[req ${reqId}] tools=[${_toolNames.join(',')}]`);
   req._reqId = reqId;
+
+  /* Part 97: the tool-fumble escalator — must sit BEFORE the tool shim so the
+   * shim's model-specific decision sees the model this call will actually run. */
+  if (TOOL_ESCALATE_ENABLED && req.body.model === TOOL_ESCALATE_FROM) {
+    const stuck = stuckToolSignature(req.body.messages);
+    if (stuck) {
+      req.body = { ...req.body, model: TOOL_ESCALATE_TO };
+      console.log(`[req ${reqId}] TOOL ESCALATE: ${stuck.name} answered identically ${stuck.repeats}x this turn — handing this call to ${TOOL_ESCALATE_TO}`);
+    }
+  }
 
   /* THE CHECKPOINT WRITER ARRIVES UNARMED (Part 91). Amber's seat spent 95
    * seconds emitting tool activity and no words: 41 turns of glm-4.5-air with
