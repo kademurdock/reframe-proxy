@@ -1243,6 +1243,13 @@ const COMPACTION_DATE_ON = process.env.KADE_COMPACTION_DATE !== '0';
 const {
   isCompactionShapedBody, disarmCompaction, compactionDateNote,
 } = require('./compaction.js');
+/* PART 107 — the memory keeper is the FOURTH machine lane the style reminder
+ * ate, and the one that hid for a week because the card half kept working.
+ * Detection lives in its own tested module for the same reason compaction's
+ * does: a hot-path carve-out has to be provable. keeper.js carries the
+ * 8/8 -> 0/8 receipt. */
+const { isMemoryKeeperShapedBody } = require('./keeper.js');
+const KEEPER_CARVEOUT_ON = process.env.KADE_KEEPER_CARVEOUT !== '0';
 
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
@@ -1257,6 +1264,18 @@ function appendReminder(body) {
   if (COMPACTION_DATE_ON && isCompactionShapedBody(body)) {
     console.log('[compaction] checkpoint prompt detected — the clock, and nothing else');
     return { ...body, messages: [...body.messages, { role: 'system', content: compactionDateNote() }] };
+  }
+  /* ⚠️ PART 107 — THE KEEPER GETS NOTHING. Measured Aug 31 2026, single
+   * variable, glm-4.5-air on Z.AI direct with thinking disabled: the keeper's
+   * own call fired log_diary 8/8 clean and 0/8 with the block below appended.
+   * Through the live proxy it was 0/12. The logbook had been dead since Aug 24
+   * and the model got the blame. A keeper decides whether to CALL A TOOL;
+   * three kilobytes on how to talk to a person, sitting in the last message,
+   * talks it into writing a reply instead. It needs no clock either — the fork
+   * builds its own centralNowLine() into the memory status block. */
+  if (KEEPER_CARVEOUT_ON && isMemoryKeeperShapedBody(body)) {
+    console.log('[keeper] memory-keeper call detected — no style reminder. A keeper files; it does not talk.');
+    return body;
   }
   if (isTitleShapedBody(body)) return body;
   const toolNotes = toolNotesFor(body);
