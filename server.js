@@ -882,7 +882,38 @@ const SLOP_REWRITE_TIMEOUT_MS = parseInt(process.env.SLOP_REWRITE_TIMEOUT_MS || 
  * glm-4.5-air is in ZAI_NEVER_THINK (thinking force-disabled on the Z.ai
  * lane), earned its seat in the Part-75 audition (2.4s memory write that kept
  * the feeling), costs $0.2/$1.1, and falls back to OpenRouter's z-ai/glm-4.5-air
- * cleanly. Set SLOP_REWRITE_MODEL=inherit to restore the old behavior. */
+ * cleanly. Set SLOP_REWRITE_MODEL=inherit to restore the old behavior.
+ *
+ * ⭐ AUG 31 2026 (PART 109) — RE-MEASURED AND THE PIN HOLDS. THIS CLOSES THE
+ * "slop-rewrite lane wants its own test-first pass" ITEM THAT HAS SAT ON THE
+ * OPEN QUEUE SINCE PART 105.
+ *
+ * Kade asked for every background lane to be looked at for glm-5.3-flash, with
+ * the standing condition "if it has no reason not to do it, ship it." This lane
+ * has a reason, and it is not an opinion. Measured through THIS lane's own door
+ * — a rewrite-shaped call straight to OpenRouter, the same one callOpenRouterOnce
+ * makes — three runs per arm:
+ *
+ *   z-ai/glm-4.5-air   reasoning disabled (what this lane sends)  2.7s median
+ *   z-ai/glm-4.5-air   reasoning left on                          6.0s median
+ *   z-ai/glm-5.3-flash reasoning disabled                         HTTP 400, 3/3
+ *                      "Reasoning is mandatory for this endpoint and cannot be
+ *                       disabled." — the exact receipt quoted above, still true
+ *   z-ai/glm-5.3-flash reasoning left on                         24.2s median,
+ *                                                                one run 33.0s
+ *
+ * SLOP_REWRITE_TIMEOUT_MS is 25s and this fires INSIDE the reply delivery path,
+ * with the person waiting. So 5.3-flash on this lane either refuses the request
+ * outright or misses the budget about half the time. Nine times slower than the
+ * incumbent on a job whose entire purpose is to swap phrases without being
+ * noticed.
+ *
+ * The rule this lane is evidence for, worth carrying to the next lane audit:
+ * ALWAYS-THINKING MODELS DO NOT BELONG IN THE DELIVERY PATH. The keeper and the
+ * dreaming layer took 5.3-flash happily because they run AFTER the reply and
+ * block nobody. The auto-think classifier (max_tokens:4) and this rewrite are
+ * the opposite case, and the difference is not model quality — it is whether
+ * anybody is waiting. */
 const SLOP_REWRITE_MODEL = (process.env.SLOP_REWRITE_MODEL || 'z-ai/glm-4.5-air').trim();
 
 const SLOP_VERIFY = process.env.KADE_SLOP_VERIFY !== '0';
