@@ -1281,6 +1281,13 @@ const {
  * 8/8 -> 0/8 receipt. */
 const { isMemoryKeeperShapedBody } = require('./keeper.js');
 const KEEPER_CARVEOUT_ON = process.env.KADE_KEEPER_CARVEOUT !== '0';
+/* PART 112 — the PROACTIVE sweep, finally: every proxy-riding machine lane
+ * was enumerated (the list lives in machines.js) and two were still exposed —
+ * the relationship-summary writer and the diary voice repair, both
+ * system-message + tools:[] shapes that neither the title skip nor the
+ * keeper toolbelt could see. Both build their own date lines; they get
+ * NOTHING. Kill: KADE_MACHINE_CARVEOUTS=0. */
+const { isSweptMachineBody } = require('./machines.js');
 
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
@@ -1306,6 +1313,10 @@ function appendReminder(body) {
    * builds its own centralNowLine() into the memory status block. */
   if (KEEPER_CARVEOUT_ON && isMemoryKeeperShapedBody(body)) {
     console.log('[keeper] memory-keeper call detected — no style reminder. A keeper files; it does not talk.');
+    return body;
+  }
+  if (isSweptMachineBody(body)) {
+    console.log('[machines] summary/repair machine lane detected — no style reminder (Part 112 proactive sweep).');
     return body;
   }
   if (isTitleShapedBody(body)) return body;
