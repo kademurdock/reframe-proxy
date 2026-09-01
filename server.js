@@ -1292,7 +1292,11 @@ const KEEPER_CARVEOUT_ON = process.env.KADE_KEEPER_CARVEOUT !== '0';
  * system-message + tools:[] shapes that neither the title skip nor the
  * keeper toolbelt could see. Both build their own date lines; they get
  * NOTHING. Kill: KADE_MACHINE_CARVEOUTS=0. */
-const { isSweptMachineBody } = require('./machines.js');
+const {
+  isSweptMachineBody,
+  isMemorySummaryShapedBody,
+  isDiaryRepairShapedBody,
+} = require('./machines.js');
 
 function appendReminder(body) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
@@ -1321,7 +1325,17 @@ function appendReminder(body) {
     return body;
   }
   if (isSweptMachineBody(body)) {
-    console.log('[machines] summary/repair machine lane detected — no style reminder (Part 112 proactive sweep).');
+    /* Say WHICH lane. A log that cannot tell three carved-out lanes apart is
+     * law 2 waiting to happen: the first time one of them stops matching, this
+     * line keeps printing for the other two and the silence looks like health.
+     * (Part 113 — found while verifying the persona writer's carve-out fired
+     * and reading a line that claimed to be about the summary lane.) */
+    const lane = isMemorySummaryShapedBody(body)
+      ? 'relationship-summary'
+      : isDiaryRepairShapedBody(body)
+        ? 'diary-voice-repair'
+        : 'persona-writer';
+    console.log(`[machines] ${lane} machine lane detected — no style reminder (proactive sweep).`);
     return body;
   }
   if (isTitleShapedBody(body)) return body;
