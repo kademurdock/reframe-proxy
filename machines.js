@@ -45,6 +45,21 @@ const { finalMessageText } = require('./compaction.js');
 const SUMMARY_TAIL_RE = /Write the updated running summary now\.\s*$/;
 const SUMMARY_BLOCK_RE = /PREVIOUS SUMMARY \(may be empty\):/;
 
+/* PART 113 (Sep 1 2026) — THE PERSONA WRITER, carved out ON THE DAY IT SHIPS
+ * (law 19, for the first time proactively rather than after a post-mortem).
+ * kadeCreateCharacter.js's `write-persona` route asks a model to WRITE a
+ * character's system prompt. If it received STYLE_REMINDER, the reminder is
+ * the last thing in the context and the model would dutifully write the
+ * platform's own anti-slop text INTO the persona -- every character created
+ * on this platform would arrive carrying a copy of it as its personality,
+ * fighting the real copy that arrives globally on every turn. The anti-slop
+ * rules already reach that character from this proxy at runtime; they must
+ * not also be baked into the artifact.
+ * The route's user message opens with a block no person types and ends with
+ * exactly this sentence. */
+const PERSONA_TAIL_RE = /Write the character's system prompt now\.\s*$/;
+const PERSONA_BLOCK_RE = /CHARACTER BRIEF \(from the person building them\):/;
+
 /* diaryVoiceRepair.js's batches end with exactly this sentence, after a
  * numbered "Entries:" block. */
 const REPAIR_TAIL_RE = /Review them per your instructions\.\s*$/;
@@ -60,13 +75,23 @@ function isDiaryRepairShapedBody(body) {
   return REPAIR_TAIL_RE.test(text) && REPAIR_BLOCK_RE.test(text);
 }
 
+function isPersonaWriterShapedBody(body) {
+  const text = finalMessageText(body);
+  return PERSONA_TAIL_RE.test(text) && PERSONA_BLOCK_RE.test(text);
+}
+
 function isSweptMachineBody(body) {
   if (process.env.KADE_MACHINE_CARVEOUTS === '0') return false;
-  return isMemorySummaryShapedBody(body) || isDiaryRepairShapedBody(body);
+  return (
+    isMemorySummaryShapedBody(body) ||
+    isDiaryRepairShapedBody(body) ||
+    isPersonaWriterShapedBody(body)
+  );
 }
 
 module.exports = {
   isMemorySummaryShapedBody,
   isDiaryRepairShapedBody,
+  isPersonaWriterShapedBody,
   isSweptMachineBody,
 };

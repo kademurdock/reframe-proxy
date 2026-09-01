@@ -1,7 +1,12 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { isMemorySummaryShapedBody, isDiaryRepairShapedBody, isSweptMachineBody } = require('./machines.js');
+const {
+  isMemorySummaryShapedBody,
+  isDiaryRepairShapedBody,
+  isPersonaWriterShapedBody,
+  isSweptMachineBody,
+} = require('./machines.js');
 
 /* Transcribed from kadeMemorySummary.js's userContent, Part 112. */
 const SUMMARY_BODY = {
@@ -55,4 +60,44 @@ test('kill switch restores old behaviour', () => {
   process.env.KADE_MACHINE_CARVEOUTS = '0';
   assert.equal(isSweptMachineBody(SUMMARY_BODY), false);
   delete process.env.KADE_MACHINE_CARVEOUTS;
+});
+
+/* Transcribed from kadeCreateCharacter.js's write-persona userContent, Part 113. */
+const PERSONA_BODY = {
+  model: 'z-ai/glm-5.3-flash',
+  messages: [
+    { role: 'system', content: 'You write system prompts for characters on a blind-first chat platform...' },
+    {
+      role: 'user',
+      content:
+        "CHARACTER BRIEF (from the person building them):\nan ACT-based therapist that also borrows from other modalities when appropriate\n\nROUND: 1\n\nWrite the character's system prompt now.",
+    },
+  ],
+};
+
+test('persona writer lane is detected', () => {
+  assert.equal(isPersonaWriterShapedBody(PERSONA_BODY), true);
+  assert.equal(isSweptMachineBody(PERSONA_BODY), true);
+});
+
+test('a person QUOTING the persona-writer prompt does not trip it', () => {
+  const body = {
+    messages: [
+      { role: 'system', content: 'persona' },
+      {
+        role: 'user',
+        content:
+          'i saw a prompt that said "Write the character\'s system prompt now." and CHARACTER BRIEF (from the person building them): lol. anyway, what is for dinner',
+      },
+    ],
+  };
+  assert.equal(isSweptMachineBody(body), false);
+});
+
+test('the persona writer is not carved out when the kill switch is off', () => {
+  const prev = process.env.KADE_MACHINE_CARVEOUTS;
+  process.env.KADE_MACHINE_CARVEOUTS = '0';
+  assert.equal(isSweptMachineBody(PERSONA_BODY), false);
+  if (prev === undefined) delete process.env.KADE_MACHINE_CARVEOUTS;
+  else process.env.KADE_MACHINE_CARVEOUTS = prev;
 });
