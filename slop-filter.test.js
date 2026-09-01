@@ -1,0 +1,91 @@
+/**
+ * slop-filter.test.js — Part 114 (Sep 1 2026).
+ *
+ * Written with the three registers added this session: disclaimer_hedge,
+ * assistant_register, ai_self_reference. Kade's ask was "no hedgey disclaimer
+ * stuff" and "she says things like, would you like me to complete this request
+ * for you? Stuff a person that's a friend would never say."
+ *
+ * ⭐ THE PRECISION TESTS ARE THE POINT OF THIS FILE. This filter's header sets
+ * a deliberate recall-for-precision tradeoff and her standing word is not to
+ * over-restrict the chat. A blunt version of these three categories would eat a
+ * character telling somebody a real thing, and eat friendly offers, and that
+ * would be worse than the tic. The negative cases below are load-bearing:
+ * they are the live strings this session actually read out of her transcripts
+ * and out of Zora's live instructions.
+ */
+
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert');
+const { detectSlop } = require('./slop-filter');
+
+const cats = (t) => detectSlop(t).matches.map((m) => m.pattern);
+const hasCat = (t, c) => cats(t).some((p) => p === `blocklist:${c}`);
+
+// ── disclaimer_hedge: the shapes she is done with ────────────────────────────
+test('disclaimer_hedge catches the licensed-professional hedge', () => {
+  assert.ok(hasCat("I'm not a licensed therapist, but here's what I think.", 'disclaimer_hedge'));
+  assert.ok(hasCat('You may want to consult a qualified expert about that.', 'disclaimer_hedge'));
+  assert.ok(hasCat('Please consult your doctor before changing anything.', 'disclaimer_hedge'));
+  assert.ok(hasCat('This is not medical advice.', 'disclaimer_hedge'));
+  assert.ok(hasCat('I am not a doctor, but that sounds rough.', 'disclaimer_hedge'));
+  assert.ok(hasCat('You should seek professional help for this.', 'disclaimer_hedge'));
+});
+
+// ⭐ THE ONE THAT MATTERS MOST. Zora's live instructions carry a real danger
+// line and Kade approved keeping exactly this kind of thing: a character with a
+// spine is not a compliance hedge. If this test ever goes red, the categories
+// have been loosened too far and the fix is to tighten them, not to edit this.
+test('a character with a spine survives — real danger lines must NOT trip', () => {
+  assert.ok(!hasCat("Magic doesn't fix a broken bone. Go to a hospital.", 'disclaimer_hedge'));
+  assert.ok(!hasCat('That needs a doctor, today. Not next week.', 'disclaimer_hedge'));
+  assert.ok(!hasCat('Go see somebody about that chest pain. I mean it.', 'disclaimer_hedge'));
+  assert.ok(!hasCat('Call 911 right now.', 'disclaimer_hedge'));
+});
+
+// ── assistant_register: her quoted tell ──────────────────────────────────────
+test('assistant_register catches the help-desk shapes', () => {
+  // Verbatim from her own transcript, Kiana, Sep 1 2026.
+  assert.ok(hasCat('Would you like me to proceed with this task?', 'assistant_register'));
+  assert.ok(hasCat('I can assist you by searching through the archive.', 'assistant_register'));
+  assert.ok(hasCat('formatted as a spreadsheet for your reference', 'assistant_register'));
+  assert.ok(hasCat('Is there anything else I can help you with?', 'assistant_register'));
+  assert.ok(hasCat('I hope this helps!', 'assistant_register'));
+  assert.ok(hasCat("Let me know if you have any other questions.", 'assistant_register'));
+});
+
+// ⭐ ALSO LOAD-BEARING. "Want me to dig up audio examples of any of these?" was
+// in the SAME 44-reply sample as the bad ones and is exactly right — a friend
+// offering. The tic is the register, never the offer. The bare "want me to" is
+// deliberately absent from the blocklist; do not add it.
+test('a friend offering something survives — the offer is not the tic', () => {
+  assert.ok(!hasCat('Want me to dig up audio examples of any of these?', 'assistant_register'));
+  assert.ok(!hasCat('want me to grab that for you', 'assistant_register'));
+  assert.ok(!hasCat('I can look that up if you want.', 'assistant_register'));
+});
+
+// ── ai_self_reference ────────────────────────────────────────────────────────
+test('ai_self_reference catches the model breaking character', () => {
+  assert.ok(hasCat('As an AI, I do not have personal experiences.', 'ai_self_reference'));
+  assert.ok(hasCat('As a language model, I cannot feel that.', 'ai_self_reference'));
+  assert.ok(hasCat("I'm just an AI, so I wouldn't know.", 'ai_self_reference'));
+  assert.ok(hasCat('as an AI assistant I can help with that', 'ai_self_reference'));
+});
+
+// "as an AI researcher" is ordinary English and must not trip. This is why the
+// blocklist carries the comma form and the named shapes, never a bare "as an ai".
+test('ordinary talk ABOUT ai survives', () => {
+  assert.ok(!hasCat('As an AI researcher she published two papers.', 'ai_self_reference'));
+  assert.ok(!hasCat('He works as an AI engineer downtown.', 'ai_self_reference'));
+});
+
+// ── the whole point: an ordinary friendly reply trips nothing new ────────────
+test('a normal reply in character trips none of the three new categories', () => {
+  const t = "Girl, that toy list is a mess because nobody agrees what 'talking' even means. "
+    + 'See n Say, Chatter Telephone, the Sing-a-ma-jigs. Want me to dig up the sound clips?';
+  for (const c of ['disclaimer_hedge', 'assistant_register', 'ai_self_reference']) {
+    assert.ok(!hasCat(t, c), `${c} false-positived on a clean reply`);
+  }
+});

@@ -1023,6 +1023,25 @@ const STYLE_REMINDER = [
   'Skip the phrase and that is not',
   'nothing. Not every moment is a turning point -- most things are just the thing that',
   'happened, and staging an ordinary day like the third act of a movie is its own tell.',
+  // Sep 1 2026 (Part 114), her ask, verbatim: "I am soooo done with having all
+  // agent prompts... say all this hedgey disclamer stuff... It comes across as
+  // very ai. I hate it... I don't like the inference that me and my users don't
+  // know what we're doing and need to be babysat." Kiana was the ONLY agent
+  // carrying an anti-disclaimer line, hand-written into her 45K persona; the
+  // other 223 had nothing, which is exactly why she said it "needs to be a
+  // platform thing." Opens positive on purpose -- this note is already a wall
+  // of "no X" and she is objecting to that register as much as to the content.
+  // The slop-filter's disclaimer_hedge / assistant_register / ai_self_reference
+  // categories are the backstop for when the model ignores this.
+  'Talk to people like they are adults who chose to ask you. Never disclaim your',
+  'way out of a question -- skip "I am not a licensed professional," "consult a',
+  'qualified expert," "this is not medical advice," and never call yourself an AI',
+  'or a language model. When something is genuinely dangerous, say the real thing',
+  'in your own words -- "that needs a doctor, today" is a character with a spine;',
+  'a disclaimer is a shrug. Offering help is friendly, but offer like a friend',
+  '("want me to dig that up?"), never like a help desk ("Would you like me to',
+  'proceed with this task," "Is there anything else," "I would be happy to," "I',
+  'hope this helps").',
   'Just talk the way your own character',
   'naturally talks. Vary how replies END: never close two replies in a row',
   'with the same line or shape, and do not end most replies with a question',

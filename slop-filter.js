@@ -153,6 +153,111 @@ const BLOCKLIST = [
   { phrase: 'thats not nothing', category: 'poster_wisdom' },
   { phrase: 'which is not nothing', category: 'poster_wisdom' },
   { phrase: 'and that is not nothing', category: 'poster_wisdom' },
+
+  /* Sep 1 2026 (Part 114) — THE THREE REGISTERS NOTHING WAS LOOKING FOR.
+   * Kade, verbatim: "I am soooo done with having all agent prompts... say all
+   * this hedgey disclamer stuff about so and so is not a lisenced therapist,
+   * nor do they claim to be... It comes across as very ai. I hate it... I
+   * don't like the inference that me and my users don't know what we're doing
+   * and need to be babysat." And separately: "she says things like, would you
+   * like me to complete this request for you? Stuff a person that's a friend
+   * would never say."
+   *
+   * ⭐ THE FINDING THAT MADE THIS THE RIGHT LAYER: the disclaimer text is NOT
+   * in any prompt. Twelve live agent instructions were sampled and EVERY hit
+   * was an ANTI-disclaimer instruction — Coach Miller bans "You must consult a
+   * doctor," Brody bans "I recommend consulting an adult" ("you speak like a
+   * brother, not a therapist"), Tank bans "make sure to consult a physician,"
+   * Kiana bans the whole "please consult a professional" boilerplate. Neither
+   * generator writes disclaimers; the persona writer is explicitly ordered not
+   * to add "an honesty floor, a disclaimer paragraph, or a safety preamble."
+   * Nothing in the fork injects one. The MODELS emit these off their own
+   * alignment training, AGAINST what the persona says — so there is no text to
+   * delete and an instruction alone is the option most likely to underdeliver.
+   * It gets caught on the way out, and a clause in STYLE_REMINDER steers on the
+   * way in. Both layers, her call.
+   *
+   * ⚠️ PRECISION OVER RECALL, per this file's header and her standing "don't
+   * over-restrict the chat": these catch the FORMAL, self-hedging shapes only.
+   * A character with a spine telling somebody a real thing is NOT this and must
+   * survive — Zora's "Magic doesn't fix a broken bone. Go to a hospital." trips
+   * none of these, and that is the test. "Go see a doctor about that" is a
+   * friend; "you may want to consult a qualified professional" is a hedge. Only
+   * the second shape is listed. */
+  { phrase: "i'm not a licensed", category: 'disclaimer_hedge' },
+  { phrase: 'im not a licensed', category: 'disclaimer_hedge' },
+  { phrase: 'i am not a licensed', category: 'disclaimer_hedge' },
+  { phrase: 'not a licensed therapist', category: 'disclaimer_hedge' },
+  { phrase: 'not a licensed professional', category: 'disclaimer_hedge' },
+  { phrase: 'not a licensed counselor', category: 'disclaimer_hedge' },
+  { phrase: "i'm not a therapist, but", category: 'disclaimer_hedge' },
+  { phrase: 'im not a therapist, but', category: 'disclaimer_hedge' },
+  { phrase: "i'm not a doctor, but", category: 'disclaimer_hedge' },
+  { phrase: 'im not a doctor, but', category: 'disclaimer_hedge' },
+  { phrase: "i'm not a medical professional", category: 'disclaimer_hedge' },
+  { phrase: 'im not a medical professional', category: 'disclaimer_hedge' },
+  { phrase: "i'm not qualified to", category: 'disclaimer_hedge' },
+  { phrase: 'im not qualified to', category: 'disclaimer_hedge' },
+  { phrase: 'i am not a doctor', category: 'disclaimer_hedge' },
+  { phrase: 'i am not a therapist', category: 'disclaimer_hedge' },
+  { phrase: 'i am not a medical professional', category: 'disclaimer_hedge' },
+  { phrase: 'i am not qualified to', category: 'disclaimer_hedge' },
+  { phrase: 'nor do i claim to be', category: 'disclaimer_hedge' },
+  { phrase: 'consult a qualified', category: 'disclaimer_hedge' },
+  { phrase: 'consult a licensed', category: 'disclaimer_hedge' },
+  { phrase: 'consult a medical professional', category: 'disclaimer_hedge' },
+  { phrase: 'consult a healthcare', category: 'disclaimer_hedge' },
+  { phrase: 'consult a professional', category: 'disclaimer_hedge' },
+  { phrase: 'consult your doctor', category: 'disclaimer_hedge' },
+  { phrase: 'please consult', category: 'disclaimer_hedge' },
+  { phrase: 'seek professional help', category: 'disclaimer_hedge' },
+  { phrase: 'seek the help of a professional', category: 'disclaimer_hedge' },
+  { phrase: 'speak to a mental health professional', category: 'disclaimer_hedge' },
+  { phrase: 'this is not medical advice', category: 'disclaimer_hedge' },
+  { phrase: 'this is not legal advice', category: 'disclaimer_hedge' },
+  { phrase: 'not a substitute for professional', category: 'disclaimer_hedge' },
+
+  /* The assistant/service register. Her quoted tell, caught live in her own
+   * transcripts at 4 hits in 44 replies — including, word for word, "Would you
+   * like me to proceed with this task" and "I can assist you by searching
+   * through This Old Toy's sections... formatted as a spreadsheet for your
+   * reference," both from Kiana on research-flavored turns.
+   * ⚠️ "want me to dig up audio examples of any of these?" was in the SAME
+   * sample and is FINE — that is a friend offering. The tic is not offering,
+   * it is the helpdesk register. So the bare "want me to" is deliberately NOT
+   * listed and must never be added; only the formal shapes are here. */
+  { phrase: 'would you like me to', category: 'assistant_register' },
+  { phrase: 'is there anything else', category: 'assistant_register' },
+  { phrase: "i'd be happy to", category: 'assistant_register' },
+  { phrase: 'id be happy to', category: 'assistant_register' },
+  { phrase: 'i would be happy to', category: 'assistant_register' },
+  { phrase: 'i can assist you', category: 'assistant_register' },
+  { phrase: 'how may i assist', category: 'assistant_register' },
+  { phrase: 'how can i assist', category: 'assistant_register' },
+  { phrase: 'let me know if you have any', category: 'assistant_register' },
+  { phrase: "let me know if you'd like", category: 'assistant_register' },
+  { phrase: 'let me know if youd like', category: 'assistant_register' },
+  { phrase: "please don't hesitate", category: 'assistant_register' },
+  { phrase: 'please dont hesitate', category: 'assistant_register' },
+  { phrase: 'for your reference', category: 'assistant_register' },
+  { phrase: 'shall i proceed', category: 'assistant_register' },
+  { phrase: 'proceed with this task', category: 'assistant_register' },
+  { phrase: 'i hope this helps', category: 'assistant_register' },
+  { phrase: 'if you have any questions', category: 'assistant_register' },
+
+  /* The AI self-reference. Coach Miller, Tank and Brody all ban "As an AI" in
+   * their own NEVER SAY lists and the filter had never once looked for it.
+   * ⚠️ Shapes only, never the bare "as an ai" — "as an AI researcher" is an
+   * ordinary phrase and must not trip. The comma form is the hedge form. */
+  { phrase: 'as an ai, ', category: 'ai_self_reference' },
+  { phrase: 'as an ai assistant', category: 'ai_self_reference' },
+  { phrase: 'as an ai language model', category: 'ai_self_reference' },
+  { phrase: 'as a language model', category: 'ai_self_reference' },
+  { phrase: 'as an artificial intelligence', category: 'ai_self_reference' },
+  { phrase: "i'm just an ai", category: 'ai_self_reference' },
+  { phrase: 'im just an ai', category: 'ai_self_reference' },
+  { phrase: "i'm an ai language model", category: 'ai_self_reference' },
+  { phrase: 'i am an ai language model', category: 'ai_self_reference' },
 ];
 
 function detectBlocklist(text) {
