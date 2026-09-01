@@ -101,3 +101,20 @@ test('the persona writer is not carved out when the kill switch is off', () => {
   if (prev === undefined) delete process.env.KADE_MACHINE_CARVEOUTS;
   else process.env.KADE_MACHINE_CARVEOUTS = prev;
 });
+
+/* PART 115 — the return-path half. server.js boots a listener on require, so
+ * this asserts the wiring by reading the source: the swept-machine guard must
+ * sit inside detectAndRewrite and BEFORE the bare-JSON probe, so a prose
+ * persona draft or a relationship summary never reaches collectMatches. */
+test('detectAndRewrite skips swept machine lanes before the JSON probe', () => {
+  const fs = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, 'server.js'), 'utf8');
+  const fn = src.indexOf('async function detectAndRewrite(');
+  assert.ok(fn > 0, 'detectAndRewrite exists');
+  const guard = src.indexOf('if (isSweptMachineBody(upstreamBody))', fn);
+  const probe = src.indexOf('const jsonProbe = content.trim();', fn);
+  const collect = src.indexOf('const matches = collectMatches(content, upstreamBody);', fn);
+  assert.ok(guard > fn, 'guard is inside detectAndRewrite');
+  assert.ok(probe > guard, 'guard runs before the bare-JSON probe');
+  assert.ok(collect > guard, 'guard runs before collectMatches');
+});

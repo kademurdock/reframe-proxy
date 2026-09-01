@@ -1871,6 +1871,22 @@ async function detectAndRewrite(result, upstreamBody) {
     choice.message.content = normalized;
   }
 
+  /* PART 115 (Sep 1 2026) — THE RETURN-PATH HALF OF THE MACHINE CARVE-OUT.
+   * Part 112/113 carved the summary writer, the diary repair and the persona
+   * writer out of appendReminder (the way IN) and left this pass (the way
+   * OUT) untouched — the same one-sibling fix the record keeps naming. The
+   * live log showed it: the persona writer's drafts tripped the slop
+   * detector 18 and 23 times (a persona QUOTES its own bad examples on
+   * purpose — "That sounds really hard. Have you tried journaling?" is
+   * negative space, not slop) and were spared ONLY because they ran over
+   * SLOP_REWRITE_MAX_CHARS. A shorter persona, or a relationship summary,
+   * would have been rewritten by the anti-slop model and STORED that way.
+   * Same detector as the inbound carve-out, so the two halves cannot drift. */
+  if (isSweptMachineBody(upstreamBody)) {
+    console.log('[slop] swept machine lane (summary / repair / persona writer) — reply detection and rewrite skipped');
+    return result;
+  }
+
   // Aug 15 2026 (Part 70.5): MACHINE-LANE EXEMPTION. Internal helpers (memory
   // consolidation, the diary voice repair, anything asking a model for strict
   // JSON) ride this same proxy, and tonight the slop pass was caught
