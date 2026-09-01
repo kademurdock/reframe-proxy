@@ -326,6 +326,18 @@ function isZaiDirectModel(model) {
  * up an account that was never empty is worse than saying nothing. In memory,
  * resets on deploy, and every snapshot says so. See zaipulse.js. */
 const { makeZaiPulse } = require('./zaipulse');
+/* Part 116 (Sep 1 2026): per-category, per-day trip counts for the slop
+ * filter, so "did disclaimer_hedge fire in real traffic" is a GET instead of
+ * a log grep. In-memory, resets on deploy, says so. See slopstats.js. */
+const { makeSlopStats } = require('./slopstats');
+const slopStats = makeSlopStats();
+
+app.get('/slop-stats', (req, res) => {
+  if ((req.headers['authorization'] || '') !== `Bearer ${PROXY_SHARED_SECRET}`) {
+    return res.status(401).json({ error: { message: 'Unauthorized' } });
+  }
+  res.json(slopStats.snapshot());
+});
 const zaiPulse = makeZaiPulse();
 
 const ZAI_ROLE_SHIM = process.env.KADE_ZAI_ROLE_SHIM !== '0';
@@ -1938,9 +1950,11 @@ async function detectAndRewrite(result, upstreamBody) {
     console.log(
       `[slop] tripped (${matches.length} match(es)) but reply is ${content.length} chars > ${SLOP_REWRITE_MAX_CHARS} — long-form reply keeps its original text (see Aug 10 2026 note above rewritePass)`
     );
+    slopStats.record(matches, 'longform_kept');
     return result;
   }
   if (matches.length > 0) {
+    slopStats.record(matches);
     console.log(
       `[slop] tripped (${matches.length} match(es): ${matches.map((m) => m.pattern).join(', ')}) — running rewrite pass`
     );
@@ -2003,23 +2017,31 @@ async function detectAndRewrite(result, upstreamBody) {
                     ? `[slop] second pass still trips (${after.map((m) => m.pattern).join(', ')}) — shipping it anyway, the text is closer than the original`
                     : '[slop] second pass CLEAN'
                 );
+                slopStats.outcome(after.length > 0 ? 'still_tripping' : 'second_pass');
               } else {
                 console.warn('[slop] second pass returned no text — keeping the first rewrite');
+                slopStats.outcome('still_tripping');
               }
             } catch (e2) {
               console.warn(`[slop] second pass failed (${e2.message}) — keeping the first rewrite`);
+              slopStats.outcome('still_tripping');
             }
           } else {
             console.log('[slop] rewrite CLEAN on verify');
+            slopStats.outcome('rewrite_clean');
           }
+        } else {
+          slopStats.outcome('rewrite_clean');
         }
         result.choices[0].message.content = restoreSentinelTags(finalText, tags);
         result.usage = sumUsage(result.usage, usage);
       } else {
         console.warn('[slop] rewrite pass returned no text, keeping original');
+        slopStats.outcome('rewrite_failed');
       }
     } catch (err) {
       console.error('[slop] rewrite pass failed, keeping original reply:', err.message);
+      slopStats.outcome('rewrite_failed');
     }
   }
   return result;
