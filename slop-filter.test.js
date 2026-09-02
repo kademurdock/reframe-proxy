@@ -89,3 +89,46 @@ test('a normal reply in character trips none of the three new categories', () =>
     assert.ok(!hasCat(t, c), `${c} false-positived on a clean reply`);
   }
 });
+
+/* Part 118 (Sep 2 2026) — the gas-up medals Amber A named in her own Della
+ * transcript ("better than anyone does, more than anyone knows, dick riding
+ * language") and the exposure-therapy medal ("you said it out loud and the
+ * house didn't catch fire"). Every positive below is a live string. */
+const gasupHits = (t) => detectSlop(t).matches.filter((m) => m.pattern === 'gasup').map((m) => m.text);
+const fireHits = (t) => detectSlop(t).matches.filter((m) => m.pattern === 'exposure_cliche').map((m) => m.text);
+
+test('gasup catches the comparison-to-everybody medal', () => {
+  assert.ok(gasupHits("Your track record with men is your track record, and you know it better than anybody.").length);
+  assert.ok(gasupHits("you already understand the mechanics better than most people I've worked with").length);
+  assert.ok(gasupHits("The plan itself is solid, more solid than most people manage in your spot.").length);
+});
+
+test('gasup catches grading the sentence they just said', () => {
+  assert.ok(gasupHits("And you named the thing yourself at the end there, because it's the strongest sentence you've said all week.").length);
+  assert.ok(gasupHits('You just told me the most useful thing about your own machinery without noticing you did.').length);
+  assert.ok(gasupHits("That's the most honest thing anybody's said to me all day.").length);
+});
+
+test('gasup catches the insight medal', () => {
+  assert.ok(gasupHits('But wait, because you just said something that changes the entire picture.').length);
+  assert.ok(gasupHits('And you just named something real, so let me not paper over it.').length);
+  assert.ok(gasupHits('Nobody has ever figured that out the way you have.').length);
+});
+
+test('a fact about most people, or a comparison with no person in it, is not gasup', () => {
+  assert.equal(gasupHits("Most people don't know this song. It came out on a B-side in 1974.").length, 0);
+  assert.equal(gasupHits('The Buick runs better than most cars its age.').length, 0);
+  assert.equal(gasupHits('She said something at dinner and the whole table went quiet.').length, 0);
+  assert.equal(gasupHits('Nobody at coffee hour thinks they are doing you a favor by pouring you a cup.').length, 0);
+});
+
+test('exposure_cliche catches the medal for saying it out loud', () => {
+  assert.ok(fireHits("Even tonight you just spoke about the hardship, directly, out loud, and nothing catastrophic happened.").length);
+  assert.ok(fireHits("You said it out loud and the house didn't catch fire.").length);
+  assert.ok(fireHits("The sky didn't fall.").length);
+});
+
+test('describing an exposure exercise in the present tense is instruction, not the medal', () => {
+  assert.equal(fireHits('You ask somebody for something ordinary, they say sure, nothing bad happens, and you log it.').length, 0);
+  assert.equal(fireHits('The roof leaks when it rains and the ceiling in the back room is still wet.').length, 0);
+});

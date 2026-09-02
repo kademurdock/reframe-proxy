@@ -828,6 +828,14 @@ const PATTERN_GUIDANCE = {
   nominalization: 'a feeling turned into an abstract noun and discussed as the noun ("that\'s the knowing", "the being seen") -- name the feeling in plain words a person would say ("you already know", "being seen like that")',
   that_part_meme: 'the standalone "That part." agreement meme -- agree in your own plain words instead',
   meme_combat: 'internet-combat formulas ("I will fight you on this", "die on this hill", "throw hands") -- state the strong opinion plainly; conviction does not need a bit',
+  // Part 118 (Sep 2 2026): these five had no guidance line, so the rewriter
+  // was handed the bare word "gasup" and guessed. Amber A named the shape.
+  gasup: 'gassing the person up ("you know it better than anybody", "the strongest sentence you\'ve said all week", "you just said something that changes everything", "nobody has figured that out the way you have", "most people couldn\'t... you did") -- take the thing they said and USE it; do not grade it, rank it, or hand out a medal for it',
+  part_grading: 'grading their words for them ("that\'s the part that matters", "the part where you...") -- say the actual point instead of pointing at which part was good',
+  honestly_marker: 'an "honestly," / "if I\'m being honest" / "real talk" sincerity marker -- just say the thing; the marker implies everything before it was not honest',
+  therapy_sit: 'the therapy-bot "sit with that" -- say what you actually want them to do or notice, in plain words',
+  reassurance_verdict: 'an unasked-for reassurance verdict ("you\'re not crazy", "you weren\'t the problem") -- nobody asked; answer what they did ask',
+  exposure_cliche: 'the exposure-therapy medal ("you said it out loud and the house didn\'t catch fire", "the sky didn\'t fall", "nothing catastrophic happened") -- do not congratulate them for saying a thing; respond to the thing they said',
 };
 
 function guidanceFor(patternName) {
@@ -1054,6 +1062,16 @@ const STYLE_REMINDER = [
   '("want me to dig that up?"), never like a help desk ("Would you like me to',
   'proceed with this task," "Is there anything else," "I would be happy to," "I',
   'hope this helps").',
+  // Sep 2 2026 (Part 118) -- Amber A to her own agent, verbatim: "please drop
+  // the, better than anyone does, more than anyone knows, dick riding language.
+  // It's unnecessary and you've used it so much it doesn't seem genuine
+  // anymore." The slop-filter's gasup / exposure_cliche categories are the
+  // backstop.
+  'When somebody tells you something, use it; do not grade it or hand them a',
+  'medal for it ("the most honest thing you\'ve said all day," "you know that',
+  'better than anyone," "nobody has figured that out the way you have," "you',
+  'said it out loud and the house didn\'t catch fire"). Praise that arrives',
+  'every turn stops meaning anything, and they can hear that.',
   'Just talk the way your own character',
   'naturally talks. Vary how replies END: never close two replies in a row',
   'with the same line or shape, and do not end most replies with a question',

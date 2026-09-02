@@ -834,6 +834,36 @@ function detectTherapyPoetry(text, opts = {}) {
   while ((m = reGas1.exec(text)) !== null) push(m, 'gasup');
   const reGas2 = /\bthat tells me you\b|\bthat['\u2019]?s (?:real |genuine |rare )?self-awareness\b|\bgive yourself (?:some |more |a little )?credit\b/gi;
   while ((m = reGas2.exec(text)) !== null) push(m, 'gasup');
+  // Part 118 (Sep 2 2026) — Amber A, in her own Della transcript at 06:12Z:
+  // "please drop the, better than anyone does, more than anyone knows, dick
+  // riding language. It's unnecessary and you've used it so much it doesn't
+  // seem genuine anymore." Kade relayed the same three shapes. Measured first
+  // on 149 real replies (56 of them Della's): the comparison-to-everybody
+  // shape 5 trips, the superlative-of-your-own-sentence 2, the you-just-said-
+  // something-real 3, zero on anything that was not praise of the person.
+  //   (a) "you know it better than anybody" / "better than most people I've
+  //       worked with" / "more solid than most people manage in your spot" —
+  //       needs you/your within reach so "most people don't know this song"
+  //       stays a fact.
+  const reGas3 = /\b(?:you|your)\b[^.!?\n]{0,60}?\b(?:better|more|harder|further|deeper|clearer|more (?:solid|honest|clearly|clear)|faster|longer) than (?:anyone|anybody|most people|most folks|most (?:clients|people|folks) I['\u2019]?ve (?:worked with|seen|met|known))\b|\b(?:better|more|harder|deeper|clearer|more solid|more honest) than (?:anyone|anybody|most people|most folks)\b[^.!?\n]{0,30}\b(?:you|your)\b/gi;
+  while ((m = reGas3.exec(text)) !== null) push(m, 'gasup');
+  //   (b) grading the sentence they just said: "the strongest sentence you've
+  //       said all week", "you just told me the most useful thing about..."
+  const reGas4 = /\b(?:the|that['\u2019]?s the|that is the|probably the|maybe the|single) (?:most|best|sharpest|smartest|truest|clearest|bravest|realest|strongest|hardest|biggest|most (?:useful|important|honest|telling)) [a-z\- ]{0,30}?(?:thing|sentence|line|words?|question|insight|move|answer)s?\b[^.!?\n]{0,40}?\b(?:you['\u2019]?ve|you have|you|anybody['\u2019]?s|anyone['\u2019]?s) (?:said|told|asked|done|named|put|made|given|handed)\b|\b(?:you['\u2019]?ve|you have|you) (?:just )?(?:said|told me|handed me|given me|named) (?:the|about the) (?:most|best|sharpest|truest|clearest|strongest|single most) /gi;
+  while ((m = reGas4.exec(text)) !== null) push(m, 'gasup');
+  //   (c) "you just said something that changes the entire picture" / "you
+  //       just named something real" / "nobody has figured that out the way
+  //       you have" — the insight medal.
+  const reGas5 = /\byou (?:just )?(?:said|named|told me|put your finger on|landed on|hit on|handed me) something (?:real|true|big|huge|important|worth|that (?:changes|matters))\b|\b(?:nobody|no one|no-one|not many people|few people|most people never)\b[^.!?\n]{0,40}\b(?:the way you (?:just )?(?:did|do|have|put|said|named)|like you (?:just )?did)\b/gi;
+  while ((m = reGas5.exec(text)) !== null) push(m, 'gasup');
+  // Part 118 — the exposure-therapy medal, Amber A verbatim: "the whole, you
+  // said it out loud and [the house didn't catch fire]"; Della's own reply
+  // agreed it was "the same calcified move wearing a different hat" and did
+  // it again forty minutes later ("nothing catastrophic happened"). Past
+  // tense only: "nothing bad happens, and you log it" describing an exercise
+  // is instruction and stays legal.
+  const reFire = /\b(?:the (?:house|sky|world|roof|ceiling|walls|floor)|nothing) (?:didn['\u2019]?t|did not|hasn['\u2019]?t|has not) (?:catch (?:on )?fire|fall(?: in| down)?|end|burn down|cave in|collapse|explode|crumble|open up|swallow you)\b|\bnothing (?:catastrophic|terrible|bad|awful|horrible) happened\b|\bthe (?:world|sky|roof|house) (?:is )?still (?:standing|there|up|here)\b/gi;
+  while ((m = reFire.exec(text)) !== null) push(m, 'exposure_cliche');
   return matches;
 }
 
