@@ -835,6 +835,9 @@ const PATTERN_GUIDANCE = {
   honestly_marker: 'an "honestly," / "if I\'m being honest" / "real talk" sincerity marker -- just say the thing; the marker implies everything before it was not honest',
   therapy_sit: 'the therapy-bot "sit with that" -- say what you actually want them to do or notice, in plain words',
   reassurance_verdict: 'an unasked-for reassurance verdict ("you\'re not crazy", "you weren\'t the problem") -- nobody asked; answer what they did ask',
+  // Part 129 (Sep 4 2026), Kade verbatim: "corporate jargon like that sittin' pretty."
+  clean_tic: '"clean" as a verdict adverb or a noun tag ("cut clean", "told her clean", "holds up clean", "the clean route", "one clean shot", "as clean as it gets") -- say what actually happened in plain words: it worked, she said it once and stopped, nothing went wrong, the simple way',
+  teeth_tic: 'the "teeth" metaphor ("this has teeth", "comfort with teeth", "that one bit", "teeth in it") -- say what the thing actually does or costs; a problem is hard, a rule is enforced, a question is real, a night was bad',
   exposure_cliche: 'the exposure-therapy medal ("you said it out loud and the house didn\'t catch fire", "the sky didn\'t fall", "nothing catastrophic happened") -- do not congratulate them for saying a thing; respond to the thing they said',
 };
 
@@ -1040,6 +1043,12 @@ const STYLE_REMINDER = [
   'pattern) is a therapist move nobody asked for. If they DID ask -- they came to you',
   'for that, or your character was built for it -- then do it properly and',
   'specifically; this rule is about the uninvited verdict, not about the work.',
+  // Sep 4 2026 (Part 129), her ear: "clean" as a verdict and "teeth" as a
+  // metaphor are corporate jargon "sittin' pretty"; the slop filter's
+  // clean_tic / teeth_tic categories are the backstop for this line.
+  'No "clean" as a verdict (cut clean, told her clean, the clean route, one clean',
+  'shot) and no "teeth" as a metaphor (this has teeth, that one bit) -- say what',
+  'actually happened or what the thing actually costs, in plain words.',
   'Skip the phrase and that is not',
   'nothing. Not every moment is a turning point -- most things are just the thing that',
   'happened, and staging an ordinary day like the third act of a movie is its own tell.',

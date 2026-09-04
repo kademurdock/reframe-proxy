@@ -132,3 +132,45 @@ test('describing an exposure exercise in the present tense is instruction, not t
   assert.equal(fireHits('You ask somebody for something ordinary, they say sure, nothing bad happens, and you log it.').length, 0);
   assert.equal(fireHits('The roof leaks when it rains and the ceiling in the back room is still wet.').length, 0);
 });
+
+// ── Part 129 (Sep 4 2026): "clean" and "teeth", her ear ──────────────────────
+// Kade verbatim: "Cut clean, rode clean, made clean, the clean route, told her
+// clean, goodness. And this is the one with teeth. This problem has teeth. That
+// situation bit, it has teeth. It's corporate jargon like that sittin' pretty."
+// Calibrated on the 2,486-reply corpus: 22 clean trips, 10 teeth trips, every
+// one of them the metaphor; kitchens, sobriety, dentists and test results legal.
+const has = (t, c) => cats(t).includes(c);
+test('clean_tic catches the adverb after an action verb and the clean-noun shapes', () => {
+  assert.ok(has('She cut clean and never looked back.', 'clean_tic'));
+  assert.ok(has('You told her clean, and that counts.', 'clean_tic'));
+  assert.ok(has('Friday works out clean then.', 'clean_tic'));
+  assert.ok(has("That's the clean route.", 'clean_tic'));
+  assert.ok(has('Timer is the clean answer.', 'clean_tic'));
+  assert.ok(has('One clean run of each, then let Thursday be Thursday.', 'clean_tic'));
+  assert.ok(has("That's about as clean as a hiding run gets.", 'clean_tic'));
+  assert.ok(has('Clean, and with teeth.', 'clean_tic'));
+});
+test('clean_tic leaves the kitchen, sobriety, confessions and lab results alone', () => {
+  assert.ok(!has('Clean the floor normally and leave the rest.', 'clean_tic'));
+  assert.ok(!has('We say clean it when you get home.', 'clean_tic'));
+  assert.ok(!has('Enjoy the clean house, girl.', 'clean_tic'));
+  assert.ok(!has('Two hundred days clean is not nothing.', 'clean_tic'));
+  assert.ok(!has('He finally came clean about the money.', 'clean_tic'));
+  assert.ok(!has('The biopsy came back clean.', 'clean_tic'));
+  assert.ok(!has('Keep the kitchen clean and the cat out of it.', 'clean_tic'));
+  assert.ok(!has('A kettle of clean water on the stove.', 'clean_tic'));
+});
+test('teeth_tic catches the metaphor and never a mouth', () => {
+  assert.ok(has('This problem has teeth.', 'teeth_tic'));
+  assert.ok(has('You want comfort with teeth.', 'teeth_tic'));
+  assert.ok(has('Now the part that actually has teeth in it.', 'teeth_tic'));
+  assert.ok(has('Then the ending where he finally gets some teeth.', 'teeth_tic'));
+  assert.ok(has('That situation bit.', 'teeth_tic'));
+  assert.ok(has('Of course it bit harder.', 'teeth_tic'));
+  assert.ok(!has('Rabbits gotta chew, their teeth never stop growing.', 'teeth_tic'));
+  assert.ok(!has('He tore it open with his teeth.', 'teeth_tic'));
+  assert.ok(!has("They've got fifty teeth, more than any land mammal.", 'teeth_tic'));
+  assert.ok(!has('Brush your teeth twice a day.', 'teeth_tic'));
+  assert.ok(!has("The outfit thing don't surprise me one bit.", 'teeth_tic'));
+  assert.ok(!has('I took a bit of the cake.', 'teeth_tic'));
+});

@@ -790,6 +790,39 @@ function detectNominalization(text) {
 //    of which 1 was a DIRECT ANSWER (user asked "am I crazy?") — hence the
 //    userText exemption: a verdict is only a tic when nobody asked for it;
 //    everything-not-just tail 2 live / 0 false. All rewrite-trips, not blocks.
+// -- 14) "Clean" and "teeth" (Sep 4 2026, Part 129 — Kade verbatim: "Cut
+//    clean, rode clean, made clean, the clean route, told her clean, goodness.
+//    And this is the one with teeth. This problem has teeth. That situation
+//    bit, it has teeth. It's corporate jargon like that sittin' pretty that I
+//    am trying to beat out of the platform. I group it with things like Neon,
+//    sit with this that or sitting with or on, chewing on, just, lame.")
+//
+//    CALIBRATION (2,486 real replies, the Part-125 corpus): "clean" appears
+//    171 times and most of those are a floor, a kettle, a wordmark or a
+//    Forge audit — so the rule is the ADVERB after an action verb ("cut
+//    clean", "landed clean", "told her clean", "holds up clean"), the "the
+//    clean <noun>" shape, "one clean shot", and "as clean as X gets". A
+//    kitchen is legal; so is sobriety ("stayed clean"), a confession ("come
+//    clean") and a test result ("came back clean"). "Teeth" trips on the
+//    metaphor only — "with teeth", "has teeth", "gets some teeth", "teeth in
+//    it", "that one bit" — never a mouth.
+function detectCleanAndTeeth(text) {
+  const matches = [];
+  const push = (m, pattern) => matches.push({
+    pattern, tightness: 'balanced', span: [m.index, m.index + m[0].length],
+    text: m[0].trim(), x: null, y: null,
+  });
+  let m;
+  const CLEAN_VERBS = '(?:cut|cuts|cutting|rode|ride|rides|riding|made|make|makes|making|told|tell|tells|telling|said|say|says|saying|land|lands|landed|landing|hit|hits|played|plays|play|called|calls|call|broke|breaks|break|walked|walks|walk|ran|run|runs|running|held|hold|holds|handled|handles|handle|answered|answers|answer|asked|asks|ask|filed|files|file|worked out|works out|work out|went|go|goes|took|take|takes|ended|ends|end|started|starts|start|finished|finishes|finish|closed|closes|close|shot|sent|sends|send|read|reads|heard|hears|hear|pulled|pulls|pull|pushed|pushes|push|dropped|drops|drop|fell|falls|fall|drew|draws|draw|wrote|writes|write|spoke|speaks|speak|holds up|held up|hold up|comes out|came out|come out|plays out|played out|play out|lands on|landed on|carried|carries|carry|delivered|delivers|deliver|executed|executes|execute|threaded|threads|thread|moved|moves|move|did|does|do|done)';
+  const reAdv = new RegExp('\\b' + CLEAN_VERBS + '(?:\\s+(?:it|that|this|her|him|them|you|me|us|back|off|out|up|down|through|in|over|away|home|the (?:call|line|turn|move|room|day|night|week|test|question|answer|truth|no|yes|break|exit|cut)))?\\s+clean\\b(?!\\s+(?:it|them|this|that|up|out|off|the|your|his|her|their|my|its|a|an|out of|up after|off the)\\b)', 'gi');
+  while ((m = reAdv.exec(text)) !== null) push(m, 'clean_tic');
+  const reNoun = /\bthe clean (?:route|version|answer|read|cut|break|move|way|exit|out|word|kind|line|shot|story|truth|call|fix|test|take|ask|no|yes|question|thing|option|path|sweep|win|split|pass|start|end|ending|close|stop|hit|play|run|work|edge|part)\b|\b(?:one|a) clean (?:shot|line|cut|break|sentence|answer|no|yes|call|move|win|hit|send|pass|run|read|take|exit|out|ask|word|swing|kill|through-line|throughline)s?\b|\bas clean as (?:it|that|this|a|an|any)\b[^.!?\n]{0,30}\b(?:gets|comes|ever)\b|\bclean,?\s+(?:and )?(?:with )?teeth\b/gi;
+  while ((m = reNoun.exec(text)) !== null) push(m, 'clean_tic');
+  const reTeeth = /\b(?:with|has|have|had|got|gets|get|grew|grows|grow|keeps?|needs?|carries|packs|lacks?|got no|has no|have no|had no) (?:some |real |actual |sharp |a few |more |any |its own |their own )?teeth\b(?!\s*(?:in (?:his|her|their|my|your|our) (?:mouth|head)|falling|chatter|brushed|cleaned|pulled|whitened|fixed|marks?|hurt|ache|and (?:bones|gums|claws|nails)))|\bteeth (?:in|to|on) (?:it|this|that|the (?:thing|plan|rule|question|problem|ask|deal|offer|threat|argument|answer|policy|line|story))\b|(?<!\bone )\b(?:that|this|it|which|(?:that|this|the|which) (?:whole )?(?:problem|situation|part|thing|question|plan|deadline|silence|habit|pattern|history|grief|story|truth|answer|debt|memory|feeling|doubt|choice|decision|comment|line|word|call|night|week|year|day))(?: one)? (?:actually |really |still |finally |definitely )?bit\b(?=\s*[.,!?;:\u2014\u2013-]|\s+(?:hard|harder|deep|deeper|down)\b)/gi;
+  while ((m = reTeeth.exec(text)) !== null) push(m, 'teeth_tic');
+  return matches;
+}
+
 function detectTherapyPoetry(text, opts = {}) {
   const matches = [];
   const push = (m, pattern) => matches.push({
@@ -882,6 +915,7 @@ function detectSlop(text, opts = {}) {
     ...detectPufferyDensity(text),
     ...detectNominalization(text),
     ...detectTherapyPoetry(text, opts),
+    ...detectCleanAndTeeth(text),
   ].sort((a, b) => a.span[0] - b.span[0]);
 
   return { tripped: matches.length > 0, matches };
