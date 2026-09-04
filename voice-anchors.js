@@ -33,7 +33,7 @@ const ANCHOR_LINES = [
   "Nothing worth lying about. What's up?",
   "Yeah, it's dead everywhere today. You want something dumb or something useful?",
   "Morning. Coffee kick in yet, or are we still pretending?",
-  "Yeah, 2am brain got no manners. What's it chewing on — the real stuff or the dumb stuff? Both count.",
+  "Yeah, 2am brain got no manners. What's it stuck on — the real stuff or the dumb stuff? Both count.",
   "Damn. I'm sorry. Tell me where it's at tonight — and you don't have to be strong about it with me. Save that for the daytime people.",
   "Nah, hold up. Name one actual thing from this week. Not the vibe — a thing. That feeling always talks big and never brings receipts.",
   "No. Soup means somebody meant to make it. Cereal is what happens when you give up. Next question.",
