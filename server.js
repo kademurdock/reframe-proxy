@@ -339,6 +339,15 @@ app.get('/slop-stats', (req, res) => {
   res.json(slopStats.snapshot());
 });
 const zaiPulse = makeZaiPulse();
+// Part 131 (Sep 5 2026): Z.AI spend, metered here — see zaimeter.js.
+const { makeZaiMeter } = require('./zaimeter.js');
+const zaiMeter = makeZaiMeter();
+app.get('/zai-spend', (req, res) => {
+  if ((req.headers['authorization'] || '') !== `Bearer ${PROXY_SHARED_SECRET}`) {
+    return res.status(401).json({ error: { message: 'Unauthorized' } });
+  }
+  res.json(zaiMeter.snapshot());
+});
 
 const ZAI_ROLE_SHIM = process.env.KADE_ZAI_ROLE_SHIM !== '0';
 const TOOLWIRE_DEBUG = process.env.KADE_TOOLWIRE_DEBUG !== '0';
@@ -719,6 +728,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
     err.body = text;
     throw err;
   }
+  if (isZaiDirectModel(body.model) && json && json.usage) zaiMeter.note(body.model, json.usage);
   return json;
 }
 
@@ -3531,6 +3541,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   if (usage) {
     const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;
     console.log(`[req ${reqId}] upstream usage: prompt=${usage.prompt_tokens ?? '?'} cached=${cached} completion=${usage.completion_tokens ?? '?'}${cached ? ` -- CACHE HIT ${Math.round((cached / (usage.prompt_tokens || 1)) * 100)}%` : ' -- no cache hit'}`);
+    if (isZaiDirectModel(upstreamBody.model)) zaiMeter.note(upstreamBody.model, usage);
   }
 
   if (toolMode) {
