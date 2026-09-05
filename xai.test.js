@@ -27,9 +27,11 @@ test('bad env JSON is ignored, pin still applies', () => {
   assert.deepEqual(xaiProviderPrefs({ KADE_XAI_PROVIDER: '{nope' }), { zdr: true, sort: 'price' });
 });
 
-test('KADE_XAI_ZDR=0 is the kill switch', () => {
-  const body = { model: 'x-ai/grok-4.20', messages: [] };
-  assert.strictEqual(adaptForXai(body, { KADE_XAI_ZDR: '0' }), body);
+test('KADE_XAI_ZDR=0 kills the provider pin (the cache_control strip is a correctness fix and stays)', () => {
+  const body = { model: 'x-ai/grok-4.20', messages: [{ role: 'user', content: 'hi' }] };
+  const out = adaptForXai(body, { KADE_XAI_ZDR: '0' });
+  assert.equal(out.provider, undefined);
+  assert.deepEqual(out.messages, body.messages);
 });
 
 test('nothing else on the body moves', () => {
