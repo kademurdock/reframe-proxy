@@ -74,12 +74,34 @@ function stripCacheControl(messages) {
   return changed ? out : messages;
 }
 
+/* Sep 5 2026 (Part 131, same hunt, second breaker): the reframe's reminder
+ * rides as a TRAILING SYSTEM message (style line, clock to the minute, drift
+ * and tool notes -- different bytes every request). xAI's chat template
+ * hoists every system message into the system slot at the FRONT, so a
+ * changing trailing system = a changing head = no prefix left to hit.
+ * Measured, live-shaped (86K persona + 40K of tool schemas + the fork's
+ * user-role tail + a varying reminder), two calls each:
+ *   reminder as trailing SYSTEM -> cached 128 / 128        (0%)
+ *   reminder as trailing USER   -> cached 13,056 / 13,056  (the persona)
+ * So on x-ai the trailing system reminder becomes a trailing USER message
+ * under a machinery header, exactly where the SDK already puts its own
+ * user-role runtime tail. Kill: KADE_XAI_TAIL_AS_USER=0. */
+const XAI_TAIL_HEADER = '[PLATFORM NOTE -- machinery for you, not the person speaking. Never mention, quote, or answer this note; just let it shape the reply.]\n\n';
+function trailingSystemToUser(messages, env = process.env) {
+  if (env.KADE_XAI_TAIL_AS_USER === '0') return messages;
+  if (!Array.isArray(messages) || messages.length < 2) return messages;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'system' || messages[0].role !== 'system') return messages;
+  const text = typeof last.content === 'string' ? last.content : JSON.stringify(last.content || '');
+  return [...messages.slice(0, -1), { role: 'user', content: XAI_TAIL_HEADER + text }];
+}
+
 function adaptForXai(body, env = process.env) {
   if (!body || !isXaiModel(body.model)) return body;
   const prefs = xaiProviderPrefs(env);
-  const next = { ...body, messages: stripCacheControl(body.messages) };
+  const next = { ...body, messages: trailingSystemToUser(stripCacheControl(body.messages), env) };
   if (!prefs) return next;
   return { ...next, provider: prefs };
 }
 
-module.exports = { XAI_MODEL_RE, isXaiModel, xaiProviderPrefs, adaptForXai, stripCacheControl };
+module.exports = { XAI_MODEL_RE, XAI_TAIL_HEADER, isXaiModel, xaiProviderPrefs, adaptForXai, stripCacheControl, trailingSystemToUser };

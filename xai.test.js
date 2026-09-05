@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { isXaiModel, adaptForXai, xaiProviderPrefs, stripCacheControl } = require('./xai');
+const { isXaiModel, adaptForXai, xaiProviderPrefs, stripCacheControl, trailingSystemToUser, XAI_TAIL_HEADER } = require('./xai');
 
 test('only x-ai/ models are touched', () => {
   assert.equal(isXaiModel('x-ai/grok-4.20'), true);
@@ -60,4 +60,22 @@ test('adaptForXai strips markers on x-ai and leaves other models byte-identical'
   assert.equal(adaptForXai(body, {}).messages[0].content, 'P');
   const glm = { model: 'z-ai/glm-5.3-flash', messages: body.messages };
   assert.strictEqual(adaptForXai(glm, {}), glm);
+});
+
+test('the trailing system reminder becomes a trailing user message under the machinery header', () => {
+  const msgs = [{ role: 'system', content: 'P' }, { role: 'user', content: 'hi' }, { role: 'system', content: 'Quick style check' }];
+  const out = trailingSystemToUser(msgs, {});
+  assert.equal(out.length, 3);
+  assert.equal(out[2].role, 'user');
+  assert.equal(out[2].content, XAI_TAIL_HEADER + 'Quick style check');
+  assert.strictEqual(out[0], msgs[0]);
+});
+
+test('no trailing system, a lone system, or the kill switch: untouched', () => {
+  const a = [{ role: 'system', content: 'P' }, { role: 'user', content: 'hi' }];
+  assert.strictEqual(trailingSystemToUser(a, {}), a);
+  const b = [{ role: 'system', content: 'P' }];
+  assert.strictEqual(trailingSystemToUser(b, {}), b);
+  const c = [{ role: 'system', content: 'P' }, { role: 'user', content: 'hi' }, { role: 'system', content: 'tail' }];
+  assert.strictEqual(trailingSystemToUser(c, { KADE_XAI_TAIL_AS_USER: '0' }), c);
 });
