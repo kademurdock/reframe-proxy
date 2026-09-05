@@ -1269,6 +1269,13 @@ function laneNoteFor(body) {
     'it like you mean it -- underreacting reads flat out loud. Never direct',
     'something a microphone cannot hear. The tags never show on screen; they',
     'only shape the voice.',
+    /* Sep 5 2026 (Part 132.3), her ear on the boat: Grok opens with one tag
+     * and then goes flat for the rest of a long reply, or skips the tag on a
+     * short one. Density, stated as a rule instead of a hope. */
+    'DENSITY: every reply opens with a tag. Anything longer than two',
+    'sentences carries at least one more, placed where the mood turns, and',
+    'a long reply carries two or three. A reply with no tag at all is wrong',
+    'for voice, however short.',
   ].join(' ');
 }
 
