@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { isXaiModel, adaptForXai, xaiProviderPrefs } = require('./xai');
+const { isXaiModel, adaptForXai, xaiProviderPrefs, stripCacheControl } = require('./xai');
 
 test('only x-ai/ models are touched', () => {
   assert.equal(isXaiModel('x-ai/grok-4.20'), true);
@@ -38,4 +38,24 @@ test('nothing else on the body moves', () => {
   assert.equal(out.temperature, 0.85);
   assert.deepEqual(out.reasoning, { effort: 'none' });
   assert.deepEqual(out.messages, body.messages);
+});
+
+test('cache_control comes off every part and a lone text part collapses to a string', () => {
+  const msgs = [
+    { role: 'system', content: [{ type: 'text', text: 'PERSONA', cache_control: { type: 'ephemeral' } }] },
+    { role: 'user', content: 'hi' },
+    { role: 'user', content: [{ type: 'text', text: 'a', cache_control: { type: 'ephemeral' } }, { type: 'image_url', image_url: { url: 'data:x' } }] },
+  ];
+  const out = stripCacheControl(msgs);
+  assert.equal(out[0].content, 'PERSONA');
+  assert.equal(out[1].content, 'hi');
+  assert.deepEqual(out[2].content, [{ type: 'text', text: 'a' }, { type: 'image_url', image_url: { url: 'data:x' } }]);
+  assert.strictEqual(stripCacheControl(msgs)[1], msgs[1]);
+});
+
+test('adaptForXai strips markers on x-ai and leaves other models byte-identical', () => {
+  const body = { model: 'x-ai/grok-4.20', messages: [{ role: 'system', content: [{ type: 'text', text: 'P', cache_control: { type: 'ephemeral' } }] }] };
+  assert.equal(adaptForXai(body, {}).messages[0].content, 'P');
+  const glm = { model: 'z-ai/glm-5.3-flash', messages: body.messages };
+  assert.strictEqual(adaptForXai(glm, {}), glm);
 });

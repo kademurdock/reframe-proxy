@@ -41,11 +41,45 @@ function xaiProviderPrefs(env = process.env) {
   return { ...extra, zdr: true, sort: 'price' };
 }
 
+/* Sep 5 2026 (Part 131, the 0%-cache hunt, live receipts): LibreChat's agent
+ * SDK, with OpenRouter promptCache on, stamps an Anthropic-style
+ * `cache_control: {type:'ephemeral'}` onto the system text part (and onto the
+ * last stable-prefix messages). Anthropic reads that as a cache breakpoint.
+ * xAI reads it as noise that CHANGES the prompt: measured on the identical
+ * 86K-char Kiana system message, two calls each --
+ *   array part WITH cache_control  -> cached 128 / 128      (0%)
+ *   array part, marker stripped     -> cached 14,528 / 14,528 (99.9%)
+ *   plain string                    -> cached 14,528 / 14,528 (99.9%)
+ * So for x-ai the marker comes off every part, and a single-text-part array
+ * collapses to the plain string (the proven shape). Nothing else moves. */
+function stripCacheControl(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let changed = false;
+  const out = messages.map((m) => {
+    if (!m || !Array.isArray(m.content)) return m;
+    const parts = m.content.map((p) => {
+      if (p && typeof p === 'object' && 'cache_control' in p) {
+        const { cache_control, ...rest } = p; // eslint-disable-line no-unused-vars
+        changed = true;
+        return rest;
+      }
+      return p;
+    });
+    if (parts.length === 1 && parts[0] && parts[0].type === 'text' && typeof parts[0].text === 'string') {
+      changed = true;
+      return { ...m, content: parts[0].text };
+    }
+    return changed ? { ...m, content: parts } : m;
+  });
+  return changed ? out : messages;
+}
+
 function adaptForXai(body, env = process.env) {
   if (!body || !isXaiModel(body.model)) return body;
   const prefs = xaiProviderPrefs(env);
-  if (!prefs) return body;
-  return { ...body, provider: prefs };
+  const next = { ...body, messages: stripCacheControl(body.messages) };
+  if (!prefs) return next;
+  return { ...next, provider: prefs };
 }
 
-module.exports = { XAI_MODEL_RE, isXaiModel, xaiProviderPrefs, adaptForXai };
+module.exports = { XAI_MODEL_RE, isXaiModel, xaiProviderPrefs, adaptForXai, stripCacheControl };
