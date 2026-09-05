@@ -2920,6 +2920,21 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       return `${m.role}:${shape}:${t.length}ch:${crypto.createHash('sha1').update(t).digest('hex').slice(0, 8)}`;
     });
     console.log(`[req ${reqId}] msg-fingerprints: ${fps.join(' | ')}`);
+    /* Sep 5 2026 (Part 131, the 62K-blob hunt): a fingerprint says a message
+     * CHANGED, not what it IS. For every big message, name its opening line
+     * so the shape can be read off the log without a request dump. One line
+     * per big message, heads only, never the person's own words (those are
+     * short). Threshold KADE_BIG_MSG_CHARS, default 4000. */
+    try {
+      const big = Number(process.env.KADE_BIG_MSG_CHARS || 4000);
+      (Array.isArray(upstreamBody.messages) ? upstreamBody.messages : []).forEach((m, i) => {
+        const t = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+        if (t.length >= big) {
+          const heads = t.split('\n').filter((l) => /^#{1,3}\s|^\[[A-Z]/.test(l.trim())).slice(0, 12).map((l) => l.trim().slice(0, 70));
+          console.log(`[req ${reqId}] big-msg #${i} ${m.role} ${t.length}ch opens "${t.slice(0, 90).replace(/\s+/g, ' ')}" headings: ${heads.join(' || ') || '(none)'}`);
+        }
+      });
+    } catch {}
     // Aug 4 2026 cache hunt: tools serialize AHEAD of messages in provider
     // prompt caches -- a per-turn wobble here zeroes every hit even when all
     // messages are byte-stable. Hash the exact serialized form.
