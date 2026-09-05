@@ -841,6 +841,8 @@ const PATTERN_GUIDANCE = {
   // Part 129 (Sep 4 2026), Kade verbatim: "corporate jargon like that sittin' pretty."
   clean_tic: '"clean" as a verdict adverb or a noun tag ("cut clean", "told her clean", "holds up clean", "the clean route", "one clean shot", "as clean as it gets") -- say what actually happened in plain words: it worked, she said it once and stopped, nothing went wrong, the simple way',
   teeth_tic: 'the "teeth" metaphor ("this has teeth", "comfort with teeth", "that one bit", "teeth in it") -- say what the thing actually does or costs; a problem is hard, a rule is enforced, a question is real, a night was bad',
+  // Part 131 (Sep 5 2026), Kade: "I can't think of a single context where no fluff would be a saying I would want to hear."
+  nofluff_tic: 'the "no fluff" tag ("No fluff.", "zero fluff", "without the fluff", "fluff-free") -- delete it; a reply that is plain does not need to announce it',
   exposure_cliche: 'the exposure-therapy medal ("you said it out loud and the house didn\'t catch fire", "the sky didn\'t fall", "nothing catastrophic happened") -- do not congratulate them for saying a thing; respond to the thing they said',
 };
 
@@ -1052,6 +1054,8 @@ const STYLE_REMINDER = [
   'No "clean" as a verdict (cut clean, told her clean, the clean route, one clean',
   'shot) and no "teeth" as a metaphor (this has teeth, that one bit) -- say what',
   'actually happened or what the thing actually costs, in plain words.',
+  // Sep 5 2026 (Part 131), her ear on the first Grok reply: "No fluff." Never.
+  'Never tag a reply "no fluff" (or zero fluff, fluff-free) -- being plain is shown, not announced.',
   'Skip the phrase and that is not',
   'nothing. Not every moment is a turning point -- most things are just the thing that',
   'happened, and staging an ordinary day like the third act of a movie is its own tell.',

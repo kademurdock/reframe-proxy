@@ -174,3 +174,15 @@ test('teeth_tic catches the metaphor and never a mouth', () => {
   assert.ok(!has("The outfit thing don't surprise me one bit.", 'teeth_tic'));
   assert.ok(!has('I took a bit of the cake.', 'teeth_tic'));
 });
+
+test('nofluff_tic: the tag trips, the possessive stays legal (Part 131)', () => {
+  const trip = (s) => detectSlop(s).matches.filter((m) => m.pattern === 'nofluff_tic').length;
+  assert.equal(trip('I kinda respect that about them. No fluff.'), 1);
+  assert.equal(trip('Straight answer, zero fluff: the car is done.'), 1);
+  assert.equal(trip("Here's the no-fluff version."), 1);
+  assert.equal(trip('Fluff-free take: go to bed.'), 1);
+  assert.equal(trip('That coat has no fluff left on it.'), 0);
+  assert.equal(trip("They've got no fluff, they just say it."), 0);
+  assert.equal(trip('The kitten is all fluff and no fight.'), 0);
+  assert.equal(trip('marshmallow fluff on the sandwich'), 0);
+});

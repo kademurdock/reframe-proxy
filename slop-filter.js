@@ -823,6 +823,24 @@ function detectCleanAndTeeth(text) {
   return matches;
 }
 
+
+/* Sep 5 2026 (Part 131), her ear on Kiana's first Grok reply ("No fluff."):
+ * "I can't think of a single context where no fluff would be a saying I would
+ * want to hear... only if someone said they have no fluff." So the tag form
+ * trips on sight -- "no fluff", "no-fluff", "zero fluff", "without the fluff",
+ * "fluff-free", "skip the fluff", "cut the fluff" -- and the possessive third-
+ * person form ("has no fluff", "they've got no fluff", "a coat with no fluff")
+ * stays legal. Corpus: 2 hits in 2,486 GLM replies, both the tag. */
+function detectNoFluff(text) {
+  const matches = [];
+  const re = /(?<!\b(?:has|have|had|got|gets|with|carries|carry|keeps?|holds?|there'?s|there is|there was)\s)(?<!\bhas\s)\b(?:no[- ]fluff|zero fluff|without (?:the |any )?fluff|fluff[- ]free|(?:skip|cut|drop|minus|lose|none of) the fluff|no filler,? no fluff|no fluff,? no filler)\b/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    matches.push({ pattern: 'nofluff_tic', tightness: 'balanced', span: [m.index, m.index + m[0].length], text: m[0].trim(), x: null, y: null });
+  }
+  return matches;
+}
+
 function detectTherapyPoetry(text, opts = {}) {
   const matches = [];
   const push = (m, pattern) => matches.push({
@@ -916,6 +934,7 @@ function detectSlop(text, opts = {}) {
     ...detectNominalization(text),
     ...detectTherapyPoetry(text, opts),
     ...detectCleanAndTeeth(text),
+    ...detectNoFluff(text),
   ].sort((a, b) => a.span[0] - b.span[0]);
 
   return { tripped: matches.length > 0, matches };
