@@ -104,11 +104,27 @@ function trailingSystemToUser(messages, env = process.env) {
   const text = typeof last.content === 'string' ? last.content : JSON.stringify(last.content || '');
   const note = { role: 'user', content: XAI_TAIL_HEADER + text };
   const body = messages.slice(0, -1);
-  const prev = body[body.length - 1];
-  if (env.KADE_XAI_TAIL_BEFORE_USER !== '0' && prev && prev.role === 'user' && body.length >= 2) {
-    return [...body.slice(0, -1), note, prev];
+  if (env.KADE_XAI_TAIL_BEFORE_USER === '0' || body.length < 2) return [...body, note];
+  /* Walk back over the SDK's own user-role machinery (runtime context, memory
+   * recall, file notes) to the person's actual words; the note and any of
+   * that machinery go in front of them, so the words are last. Measured on
+   * live turns: the SDK tail lands BEFORE the words on later turns and AFTER
+   * them on a first turn -- both shapes end the same way now. */
+  let i = body.length - 1;
+  const machinery = [];
+  while (i >= 0 && body[i].role === 'user' && isMachineryUser(body[i])) {
+    machinery.unshift(body[i]);
+    i--;
+  }
+  if (i >= 1 && body[i].role === 'user') {
+    return [...body.slice(0, i), note, ...machinery, body[i]];
   }
   return [...body, note];
+}
+const MACHINERY_RE = /^\s*(\[PLATFORM NOTE|#\s|- Note:|<runtime|# `web_search`)/;
+function isMachineryUser(m) {
+  const c = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? (m.content.find((p) => p && p.type === 'text') || {}).text || '' : '';
+  return MACHINERY_RE.test(String(c));
 }
 
 function adaptForXai(body, env = process.env) {

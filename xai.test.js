@@ -73,6 +73,17 @@ test('the trailing system reminder becomes a user message under the machinery he
   /* the old placement, on the switch */
   const old = trailingSystemToUser(msgs, { KADE_XAI_TAIL_BEFORE_USER: '0' });
   assert.equal(old[3].content, XAI_TAIL_HEADER + 'Quick style check');
+  /* first-turn shape: the SDK's runtime tail lands AFTER the words; both go in front now */
+  const f = [{ role: 'system', content: 'P' }, { role: 'user', content: 'Do you have an opinion about Elon Musk' }, { role: 'user', content: '# Memory recall (auto-surfaced)\n- a card' }, { role: 'system', content: 'note' }];
+  const o3 = trailingSystemToUser(f, {});
+  assert.equal(o3.length, 4);
+  assert.equal(o3[1].content, XAI_TAIL_HEADER + 'note');
+  assert.equal(o3[2].content, '# Memory recall (auto-surfaced)\n- a card');
+  assert.strictEqual(o3[3], f[1], 'her words are last');
+  /* later-turn shape: context, words -> note, context, words */
+  const g = [{ role: 'system', content: 'P' }, { role: 'assistant', content: 'a' }, { role: 'user', content: '# `web_search` Runtime Context' }, { role: 'user', content: 'short q' }, { role: 'system', content: 'note' }];
+  const o4 = trailingSystemToUser(g, {});
+  assert.deepEqual(o4.map((m) => m.content.slice(0, 12)), ['P', 'a', '# `web_searc', XAI_TAIL_HEADER.slice(0, 12), 'short q']);
   /* a tail with no user message right before it (tool result last) stays at the end */
   const t = [{ role: 'system', content: 'P' }, { role: 'user', content: 'q' }, { role: 'tool', content: 'r', tool_call_id: '1' }, { role: 'system', content: 'note' }];
   const o2 = trailingSystemToUser(t, {});
