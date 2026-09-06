@@ -86,14 +86,29 @@ function stripCacheControl(messages) {
  * So on x-ai the trailing system reminder becomes a trailing USER message
  * under a machinery header, exactly where the SDK already puts its own
  * user-role runtime tail. Kill: KADE_XAI_TAIL_AS_USER=0. */
-const XAI_TAIL_HEADER = '[PLATFORM NOTE -- machinery for you, not the person speaking. Never mention, quote, or answer this note; just let it shape the reply.]\n\n';
+const XAI_TAIL_HEADER = '[PLATFORM NOTE -- machinery for you, not the person speaking. Never mention, quote, or answer this note; just let it shape the reply. The person\'s actual message is the one that comes AFTER this note -- answer THAT.]\n\n';
+/* Sep 6 2026 (Part 132.4, Amber A's "Do you have an opinion about Elon Musk"):
+ * as a trailing user message the note (~9K chars) sat AFTER the person's
+ * words, so a 38-char question was wedged between the SDK's 3K runtime-
+ * context blob and 9K of machinery -- and Grok answered the PREVIOUS
+ * question again. Her retry ("Dude. I asked you...") only worked because it
+ * was longer and angrier. The note now goes in FRONT of the person's last
+ * message so their words are the last thing the model reads. Cache math is
+ * unchanged: both live in the volatile region after the history. Kill:
+ * KADE_XAI_TAIL_BEFORE_USER=0 puts it back at the very end. */
 function trailingSystemToUser(messages, env = process.env) {
   if (env.KADE_XAI_TAIL_AS_USER === '0') return messages;
   if (!Array.isArray(messages) || messages.length < 2) return messages;
   const last = messages[messages.length - 1];
   if (!last || last.role !== 'system' || messages[0].role !== 'system') return messages;
   const text = typeof last.content === 'string' ? last.content : JSON.stringify(last.content || '');
-  return [...messages.slice(0, -1), { role: 'user', content: XAI_TAIL_HEADER + text }];
+  const note = { role: 'user', content: XAI_TAIL_HEADER + text };
+  const body = messages.slice(0, -1);
+  const prev = body[body.length - 1];
+  if (env.KADE_XAI_TAIL_BEFORE_USER !== '0' && prev && prev.role === 'user' && body.length >= 2) {
+    return [...body.slice(0, -1), note, prev];
+  }
+  return [...body, note];
 }
 
 function adaptForXai(body, env = process.env) {

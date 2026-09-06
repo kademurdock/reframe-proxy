@@ -62,13 +62,21 @@ test('adaptForXai strips markers on x-ai and leaves other models byte-identical'
   assert.strictEqual(adaptForXai(glm, {}), glm);
 });
 
-test('the trailing system reminder becomes a trailing user message under the machinery header', () => {
-  const msgs = [{ role: 'system', content: 'P' }, { role: 'user', content: 'hi' }, { role: 'system', content: 'Quick style check' }];
+test('the trailing system reminder becomes a user message under the machinery header, IN FRONT of the person\'s words (132.4)', () => {
+  const msgs = [{ role: 'system', content: 'P' }, { role: 'assistant', content: 'earlier' }, { role: 'user', content: 'Do you have an opinion about Elon Musk' }, { role: 'system', content: 'Quick style check' }];
   const out = trailingSystemToUser(msgs, {});
-  assert.equal(out.length, 3);
+  assert.equal(out.length, 4);
   assert.equal(out[2].role, 'user');
   assert.equal(out[2].content, XAI_TAIL_HEADER + 'Quick style check');
+  assert.strictEqual(out[3], msgs[2], 'the person\'s message is the last thing the model reads');
   assert.strictEqual(out[0], msgs[0]);
+  /* the old placement, on the switch */
+  const old = trailingSystemToUser(msgs, { KADE_XAI_TAIL_BEFORE_USER: '0' });
+  assert.equal(old[3].content, XAI_TAIL_HEADER + 'Quick style check');
+  /* a tail with no user message right before it (tool result last) stays at the end */
+  const t = [{ role: 'system', content: 'P' }, { role: 'user', content: 'q' }, { role: 'tool', content: 'r', tool_call_id: '1' }, { role: 'system', content: 'note' }];
+  const o2 = trailingSystemToUser(t, {});
+  assert.equal(o2[3].role, 'user'); assert.equal(o2[2].role, 'tool');
 });
 
 test('no trailing system, a lone system, or the kill switch: untouched', () => {
