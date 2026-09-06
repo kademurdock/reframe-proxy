@@ -1380,7 +1380,12 @@ const {
   isDiaryRepairShapedBody,
 } = require('./machines.js');
 
+const { isLyricBody, LYRIC_OUTPUT_NOTE } = require('./lyrics');
+
 function appendReminder(body) {
+  if (isLyricBody(body)) {
+    return { ...body, messages: [...body.messages, { role: 'system', content: LYRIC_OUTPUT_NOTE }] };
+  }
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
   /* ⚠️ PART 91 — THIS TEST MOVED OUT OF THE TITLE-SHAPED BRANCH, AND THAT WAS
    * THE BUG. A body stops being title-shaped the moment it carries a system
@@ -1945,6 +1950,10 @@ async function detectAndRewrite(result, upstreamBody) {
    * SLOP_REWRITE_MAX_CHARS. A shorter persona, or a relationship summary,
    * would have been rewritten by the anti-slop model and STORED that way.
    * Same detector as the inbound carve-out, so the two halves cannot drift. */
+  if (isLyricBody(upstreamBody)) {
+    console.log('[lyrics] preserving the songwriter output; prose rewrite skipped');
+    return result;
+  }
   if (isSweptMachineBody(upstreamBody)) {
     console.log('[slop] swept machine lane (summary / repair / persona writer) — reply detection and rewrite skipped');
     return result;
