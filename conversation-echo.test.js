@@ -68,6 +68,16 @@ test('a complaint about repetition is not permission to repeat', () => {
     assert.equal(note(request(text)),true,text);
   }
 });
+
+test('short repetition corrections are not mistaken for ambiguous follow-ups', () => {
+  for (const text of ['You already said that.', 'We covered that.', 'You’re repeating yourself.',
+    'Don’t repeat yourself.', 'You said that already.', 'Stop bringing that up.']) {
+    assert.equal(note(request(text)), true, text);
+  }
+  for (const text of ['Say that again.', 'How so?', 'What about that?', 'Tell me more.']) {
+    assert.equal(note(request(text)), false, text);
+  }
+});
 test('tool preambles are not completed answers and tool chains remain intact', () => {
   const body=request(); body.messages.push({role:'assistant',content:advice,tool_calls:[{id:'x'}]},
     {role:'tool',content:advice,tool_call_id:'x'});

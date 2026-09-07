@@ -287,7 +287,14 @@ function conversationEcho(body, { isInjected = () => false, personText = t => t 
   }
   // At request time the last human turn must still be waiting for its answer.
   if (!pending || pending.answer || turns.length < 2) return null;
-  const stopRepeat = t => /\b(?:stop|quit|avoid|don't|do not)\s+(?:\w+\s+){0,2}(?:repeat\w*|recap\w*|revisit\w*|bringing\s+up)\b/i.test(t);
+  const stopRepeat = text => {
+    const t = text.replace(/[’‘]/g, "'");
+    return /\b(?:stop|quit|avoid|don't|do not)\s+(?:\w+\s+){0,2}(?:repeat\w*|recap\w*|revisit\w*|bringing\s+(?:(?:that|this|it)\s+)?up)\b/i.test(t) ||
+      /\byou(?:'ve| have)?\s+already\s+(?:said|covered|explained|mentioned)\s+(?:that|this|it)\b/i.test(t) ||
+      /\byou\s+(?:said|covered|explained|mentioned)\s+(?:that|this|it)\s+already\b/i.test(t) ||
+      /\bwe(?:'ve| have)?\s+(?:already\s+)?covered\s+(?:that|this|it)\b/i.test(t) ||
+      /\byou(?:'re| are)\s+repeating\s+yourself\b/i.test(t);
+  };
   const asksAgain = t => !stopRepeat(t) && (
     /(?:^|[.!?]\s+)(?:please\s+)?(?:repeat|recap|summari[sz]e|remind me|restate)\b/i.test(t) ||
     /\b(?:can|could|would|will) you (?:please )?(?:repeat|recap|summari[sz]e|remind|restate)\b/i.test(t) ||
