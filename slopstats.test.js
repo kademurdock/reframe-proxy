@@ -57,3 +57,36 @@ test('keeps at most KEEP_DAYS days', () => {
   }
   assert.equal(Object.keys(s.snapshot().days).length, KEEP_DAYS);
 });
+
+test('spoken status accounts for failed rewrites in the observed six-reply regression', () => {
+  let t = Date.parse('2026-09-06T20:00:00Z');
+  const s = makeSlopStats(() => t);
+  for (const outcome of ['rewrite_failed', 'rewrite_failed', 'second_pass', 'rewrite_clean', 'rewrite_clean', 'still_tripping']) {
+    s.record([{ pattern: 'reframe_bare' }], outcome);
+  }
+  t = Date.parse('2026-09-07T06:00:00Z');
+  const { spoken } = s.snapshot();
+  assert.match(spoken, /6 replies tripped/);
+  assert.match(spoken, /3 rewritten clean/);
+  assert.match(spoken, /1 shipped still tripping/);
+  assert.match(spoken, /2 failed rewrites kept the original/);
+});
+
+test('today reports failure-only and unfinished outcomes instead of hiding them', () => {
+  const s = makeSlopStats(() => Date.parse('2026-09-07T06:00:00Z'));
+  s.record([{ pattern: 'reframe_bare' }], 'rewrite_failed');
+  s.record([{ pattern: 'reframe_bare' }]);
+  const { spoken } = s.snapshot();
+  assert.match(spoken, /so far today 2 replies/);
+  assert.match(spoken, /1 failed rewrites kept the original/);
+  assert.match(spoken, /1 without a recorded outcome yet/);
+});
+
+test('two quiet days do not erase a previously recorded trip from the spoken history', () => {
+  let t = Date.parse('2026-09-01T12:00:00Z');
+  const s = makeSlopStats(() => t);
+  s.record([{ pattern: 'reframe_bare' }], 'rewrite_clean');
+  t += 3 * 864e5;
+  assert.match(s.snapshot().spoken, /no trips recorded today or yesterday/);
+  assert.doesNotMatch(s.snapshot().spoken, /has not tripped since/);
+});

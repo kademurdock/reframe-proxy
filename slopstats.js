@@ -115,11 +115,20 @@ function sumTrips(b) {
 }
 
 function say(n, word) {
-  return `${n} ${word}${n === 1 ? '' : 's'}`;
+  return `${n} ${n === 1 ? word : word === 'reply' ? 'replies' : word + 's'}`;
 }
 
 function nice(cat) {
   return String(cat).replace(/_/g, ' ');
+}
+
+function spokenOutcomes(b) {
+  const o = b.outcomes;
+  const fixed = (o.rewrite_clean || 0) + (o.second_pass || 0);
+  const missing = Math.max(0, b.replies - Object.values(o).reduce((a, n) => a + n, 0));
+  return `${fixed} rewritten clean, ${o.longform_kept || 0} long-form kept as written, `
+    + `${o.still_tripping || 0} shipped still tripping, ${o.rewrite_failed || 0} failed rewrites kept the original`
+    + (missing ? `, ${missing} without a recorded outcome yet` : '');
 }
 
 function spokenLine(today, td, yesterday, y, hours) {
@@ -130,7 +139,9 @@ function spokenLine(today, td, yesterday, y, hours) {
     bits.push(`the slop counter has only been running ${hours} hours since the last deploy, so these are partial`);
   }
   if (yt === 0 && tt === 0) {
-    bits.push('the slop filter has not tripped since it started counting');
+    bits.push(hours < 24
+      ? 'the slop filter has not tripped since it started counting'
+      : 'the slop filter has no trips recorded today or yesterday');
     return bits.join('; ') + '.';
   }
   const top = (b) =>
@@ -141,18 +152,13 @@ function spokenLine(today, td, yesterday, y, hours) {
       .join(', ');
   if (yt > 0) {
     bits.push(`slop filter yesterday: ${say(y.replies, 'reply')} tripped (${top(y)})`);
-    const o = y.outcomes;
-    const fixed = (o.rewrite_clean || 0) + (o.second_pass || 0);
-    if (fixed || o.longform_kept || o.still_tripping) {
-      bits.push(
-        `${fixed} rewritten clean, ${o.longform_kept || 0} long-form kept as written, ${o.still_tripping || 0} shipped still tripping`,
-      );
-    }
+    bits.push(spokenOutcomes(y));
   } else {
     bits.push('slop filter yesterday: no trips');
   }
   if (tt > 0) {
     bits.push(`so far today ${say(td.replies, 'reply')} (${top(td)})`);
+    bits.push(spokenOutcomes(td));
   }
   return bits.join('; ') + '.';
 }
