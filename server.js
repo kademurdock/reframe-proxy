@@ -2425,6 +2425,10 @@ function stripInstantFromBody(body) {
  * looks injected, fall back to the first one: a bad excerpt still beats an
  * empty one, which would route everything to instant silently. */
 const DYNAMIC_TAIL_MARKERS = [
+  // primeFiles() emits these literal prefixes before recall/runtime context.
+  // Without them the classifier reads machinery instead of the person's turn.
+  /^- Note: Semantic search is available through the file_search tool but no files are currently loaded\./,
+  /^- Note: Use the file_search tool to find relevant information within:/,
   /^#\s*`[a-z_]+`\s+Runtime Context/i,     // buildWebSearchDynamicContext + siblings
   /^#\s*`[a-z_]+`:/i,                        // buildWebSearchContext-shaped tool blocks
   /^#\s*Waiting nudges for this user/i,    // kadeNudges
