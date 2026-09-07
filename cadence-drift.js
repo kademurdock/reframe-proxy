@@ -137,6 +137,77 @@ function contentOverlap(a, b) {
   return n / Math.max(A.size, B.size);
 }
 
+/* Sentences of a reply that carry enough content to be compared: tags off,
+ * at least ECHO_MIN_WORDS content words. */
+const ECHO_MIN_WORDS = 5;
+const ECHO_SENT_SIM = 0.5;    // content-word overlap that makes two sentences one thought
+const ECHO_MIN_HITS = 2;      // restated sentences before anything is said...
+const ECHO_MIN_SHARE = 0.2;   // ...and a fifth of the newest reply
+const ECHO_BIGRAM_SHARE = 0.12; // OR: this share of the reply's content bigrams already said...
+const ECHO_BIGRAM_MIN = 15;   // ...and at least this many of them (a paraphrased recap)
+const ECHO_BACK = 3;          // how many earlier replies the newest is checked against
+/* words that recur in any restatement without naming its topic */
+const ECHO_TOPIC_SKIP = new Set(('when without anything something nothing would could should still only ' +
+  'even more most some into from than then there their what which where also back thing things going ' +
+  'want need make sure keep give take have here they them those these will been being done know').split(' '));
+function contentSentences(text) {
+  return stripTags(text).split(/(?<=[.!?])\s+|\n+/)
+    .map((t) => t.trim())
+    .filter((t) => contentWords(t).length >= ECHO_MIN_WORDS);
+}
+function contentBigrams(text) {
+  const w = contentWords(stripTags(text)).filter((x) => x.length > 2);
+  const out = new Set();
+  for (let i = 0; i + 1 < w.length; i++) out.add(w[i] + ' ' + w[i + 1]);
+  return out;
+}
+/* Calibrated on Amber A's Sep 7 chat (nine Kiana replies, three of them
+ * recaps a human flagged on sight) and her Sep 6 chat (eight replies, none):
+ * the sentence rule alone caught only the near-verbatim recap (3 of 12
+ * sentences at 0.58-0.83); the recaps a person hears are PARAPHRASED, and
+ * what survives paraphrase is the content bigrams -- "hair catcher", "rubber
+ * gasket", "product names" -- 36 of 152 (24%) on the worst reply, 19-23 on
+ * the two milder ones, 5-12 on replies that were actually new, 0-5 on the
+ * whole other chat. */
+function contentEcho(history) {
+  if (!Array.isArray(history) || history.length < 2) return null;
+  const newestText = history[history.length - 1];
+  const earlierTexts = history.slice(-(ECHO_BACK + 1), -1);
+  const newest = contentSentences(newestText);
+  const earlier = earlierTexts.flatMap(contentSentences);
+  if (!newest.length || !earlier.length) return null;
+  const hits = [];
+  for (const s of newest) {
+    let best = 0; let bestMate = null;
+    for (const e of earlier) {
+      const o = contentOverlap(s, e);
+      if (o > best) { best = o; bestMate = e; }
+    }
+    if (best >= ECHO_SENT_SIM) hits.push({ s, e: bestMate });
+  }
+  const bySentence = hits.length >= ECHO_MIN_HITS && hits.length / newest.length >= ECHO_MIN_SHARE;
+  const nb = contentBigrams(newestText);
+  const eb = new Set();
+  for (const t of earlierTexts) for (const g of contentBigrams(t)) eb.add(g);
+  const repeated = [...nb].filter((g) => eb.has(g));
+  const byBigram = nb.size >= ECHO_BIGRAM_MIN && repeated.length >= ECHO_BIGRAM_MIN && repeated.length / nb.size >= ECHO_BIGRAM_SHARE;
+  if (!bySentence && !byBigram) return null;
+  /* topic words: the content words that recur most across the repeated
+   * material, so the note can name what to drop */
+  const count = {};
+  const bump = (w) => { if (w.length > 3 && !ECHO_TOPIC_SKIP.has(w)) count[w] = (count[w] || 0) + 1; };
+  for (const g of repeated) g.split(' ').forEach(bump);
+  for (const h of hits) {
+    const mate = new Set(contentWords(h.e));
+    for (const w of new Set(contentWords(h.s))) if (mate.has(w)) bump(w);
+  }
+  const topics = Object.keys(count).sort((a, b) => count[b] - count[a] || a.localeCompare(b)).slice(0, 4);
+  return {
+    hits: hits.length, of: newest.length, bigrams: repeated.length, ofBigrams: nb.size,
+    topics: topics.length ? topics : ['the same points'],
+  };
+}
+
 function lastSentence(text) {
   const t = stripTags(text).trim();
   const parts = t.split(/(?<=[.!?])\s+/);
@@ -454,6 +525,32 @@ function driftSteerNote(body) {
     }
   }
 
+  /* CONTENT ECHO (Part 141, Sep 7 2026 — Kade, reading Amber A's cat chat:
+   * "it keeps bringing things up and repeating them"). Nine turns, and every
+   * reply re-explained the drain screen, the pheromone diffuser and how the
+   * Sunday service went, whatever Amber had actually just said — "take the
+   * one you already have with you so you can feel the difference" shipped
+   * three times in ten minutes. The channels above hear a stuck CLOSER or a
+   * stuck TAG; none of them hears the same ADVICE said again. This one does:
+   * sentence-level content overlap between the newest reply and the replies
+   * before it in the window. A sentence is a restatement when its content
+   * words mostly reappear in one sentence of an earlier reply. Two or more
+   * such sentences making up a third of the newest reply = the note, with
+   * the topic words quoted back so the model knows WHAT to drop. Steer only:
+   * a recap has to be left out at writing time, it cannot be cut cleanly. */
+  try {
+    const echo = contentEcho(history);
+    if (echo) {
+      notes.push(
+        `Repetition note: your last reply restated advice you had already given ` +
+        `earlier in this conversation (${echo.topics.join(', ')}). They were there ` +
+        `for it. Do not restate earlier advice or circle back to earlier topics ` +
+        `unless they ask again -- answer only what they just said, and if an old ` +
+        `topic needs nothing new, leave it out entirely.`
+      );
+    }
+  } catch { /* a style check must never kill a turn */ }
+
   /* REFRAME HABIT (Aug 21 2026 — Kade, after v144's in-persona ban did not
    * hold: "I'm still seeing that's not blah, blah blah." Measured that
    * afternoon: 9 reframe constructions in 64 post-v144 replies, live
@@ -575,7 +672,7 @@ module.exports = {
   registerOf,
   // exported for the harness + future tuning
   _internals: {
-    lastSentence, firstClause, overlap, contentOverlap, promptRepeated,
+    lastSentence, firstClause, overlap, contentOverlap, promptRepeated, contentEcho, contentSentences, contentBigrams,
     W_CLOSER, W_OPENER, W_QUESTION, Q_IN_W, REGISTER_RUN, SIM,
   },
 };

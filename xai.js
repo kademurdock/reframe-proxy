@@ -110,16 +110,42 @@ function trailingSystemToUser(messages, env = process.env) {
    * that machinery go in front of them, so the words are last. Measured on
    * live turns: the SDK tail lands BEFORE the words on later turns and AFTER
    * them on a first turn -- both shapes end the same way now. */
-  let i = body.length - 1;
+  /* Part 141 (Sep 7 2026, Amber A's cat chat, every turn a tool turn): the
+   * 132.4 walk stopped at the first non-user message, so on a turn where
+   * the model had already searched (assistant tool_calls + tool results
+   * after the words) the note fell through to the very end again -- ~10K
+   * chars of machinery as the last thing before the answer, on the exact
+   * turns that were recapping everything. Now the walk first steps back
+   * over this turn's own tool traffic to the person's message, and the note
+   * goes in front of THAT; the tool results stay last, which is the shape
+   * every tool-using model is trained on. Kill: KADE_XAI_TOOL_TURN_NOTE=0. */
+  let end = body.length; /* exclusive: where this turn's tool traffic starts */
+  if (env.KADE_XAI_TOOL_TURN_NOTE !== '0') {
+    let j = body.length - 1;
+    while (j >= 1 && isToolTraffic(body[j])) j--;
+    if (j >= 1 && j < body.length - 1 && body[j].role === 'user') end = j + 1;
+  }
+  let i = end - 1;
   const machinery = [];
   while (i >= 0 && body[i].role === 'user' && isMachineryUser(body[i])) {
     machinery.unshift(body[i]);
     i--;
   }
   if (i >= 1 && body[i].role === 'user') {
-    return [...body.slice(0, i), note, ...machinery, body[i]];
+    return [...body.slice(0, i), note, ...machinery, body[i], ...body.slice(end)];
   }
   return [...body, note];
+}
+/* This turn's own tool traffic: a tool result, or an assistant message that
+ * only carries tool_calls (no prose). A real assistant reply ends the walk. */
+function isToolTraffic(m) {
+  if (!m) return false;
+  if (m.role === 'tool') return true;
+  if (m.role !== 'assistant') return false;
+  const hasCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+  const c = m.content;
+  const empty = c == null || c === '' || (Array.isArray(c) && c.length === 0);
+  return hasCalls && empty;
 }
 const MACHINERY_RE = /^\s*(\[PLATFORM NOTE|#\s|- Note:|<runtime|# `web_search`)/;
 function isMachineryUser(m) {
@@ -135,4 +161,4 @@ function adaptForXai(body, env = process.env) {
   return { ...next, provider: prefs };
 }
 
-module.exports = { XAI_MODEL_RE, XAI_TAIL_HEADER, isXaiModel, xaiProviderPrefs, adaptForXai, stripCacheControl, trailingSystemToUser };
+module.exports = { XAI_MODEL_RE, XAI_TAIL_HEADER, isXaiModel, xaiProviderPrefs, adaptForXai, stripCacheControl, trailingSystemToUser, isToolTraffic };

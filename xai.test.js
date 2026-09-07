@@ -84,10 +84,23 @@ test('the trailing system reminder becomes a user message under the machinery he
   const g = [{ role: 'system', content: 'P' }, { role: 'assistant', content: 'a' }, { role: 'user', content: '# `web_search` Runtime Context' }, { role: 'user', content: 'short q' }, { role: 'system', content: 'note' }];
   const o4 = trailingSystemToUser(g, {});
   assert.deepEqual(o4.map((m) => m.content.slice(0, 12)), ['P', 'a', '# `web_searc', XAI_TAIL_HEADER.slice(0, 12), 'short q']);
-  /* a tail with no user message right before it (tool result last) stays at the end */
-  const t = [{ role: 'system', content: 'P' }, { role: 'user', content: 'q' }, { role: 'tool', content: 'r', tool_call_id: '1' }, { role: 'system', content: 'note' }];
+  /* Part 141: a TOOL turn (this turn's tool_calls + results after the words)
+   * puts the note in front of the words too; the tool results stay last */
+  const t = [{ role: 'system', content: 'P' }, { role: 'assistant', content: 'earlier' }, { role: 'user', content: '# `web_search` Runtime Context' }, { role: 'user', content: 'q' }, { role: 'assistant', content: '', tool_calls: [{ id: '1' }] }, { role: 'tool', content: 'r', tool_call_id: '1' }, { role: 'system', content: 'note' }];
   const o2 = trailingSystemToUser(t, {});
-  assert.equal(o2[3].role, 'user'); assert.equal(o2[2].role, 'tool');
+  assert.deepEqual(o2.map((m) => m.role), ['system', 'assistant', 'user', 'user', 'user', 'assistant', 'tool']);
+  assert.equal(o2[2].content, '# `web_search` Runtime Context');
+  assert.equal(o2[3].content, XAI_TAIL_HEADER + 'note');
+  assert.equal(o2[4].content, 'q', 'her words sit right before this turn\'s tool traffic');
+  assert.strictEqual(o2[6], t[5], 'the tool result is still the last thing');
+  /* the old behavior on the switch: note at the very end */
+  const o2old = trailingSystemToUser(t, { KADE_XAI_TOOL_TURN_NOTE: '0' });
+  assert.equal(o2old[o2old.length - 1].content, XAI_TAIL_HEADER + 'note');
+  /* a first-turn tool shape: same rule, note in front of the words, result last */
+  const t1 = [{ role: 'system', content: 'P' }, { role: 'user', content: 'q' }, { role: 'tool', content: 'r', tool_call_id: '1' }, { role: 'system', content: 'note' }];
+  const o1 = trailingSystemToUser(t1, {});
+  assert.deepEqual(o1.map((m) => m.role), ['system', 'user', 'user', 'tool']);
+  assert.equal(o1[1].content, XAI_TAIL_HEADER + 'note'); assert.equal(o1[2].content, 'q');
 });
 
 test('no trailing system, a lone system, or the kill switch: untouched', () => {
