@@ -238,3 +238,36 @@ test('SOURCE GUARD: the buffered lane calls the extracted rescue and keeps NO in
   // is how the last predicate got disarmed for three days.
   assert.ok(!serverSrc.includes('delete fallbackBody.reasoning'), 'no duplicated rescue body-building in server.js');
 });
+
+// ═══ PART 141.3 — Grok is a reasoning model and nothing here knew ═══════════
+// (Sep 7 2026, Kade: "Agents are supposed to be on grok 4.20 with auto think,
+// it should match reasoning level with the classifier.")
+test('x-ai/grok-4.20 is a reasoning model, so the auto-think router runs on it', () => {
+  assert.strictEqual(M.isXaiModel('x-ai/grok-4.20'), true);
+  assert.strictEqual(M.isReasoningModel('x-ai/grok-4.20'), true);
+  assert.strictEqual(M.isReasoningModel('x-ai/grok-4.3'), true);
+  assert.strictEqual(M.isXaiModel('z-ai/glm-5.3'), false, 'z-ai is not x-ai');
+});
+
+test('a thinking Grok turn gets the token floor; an instant one does not', () => {
+  const quick = { model: 'x-ai/grok-4.20', reasoning: { effort: 'low', enabled: true }, max_tokens: 900 };
+  assert.strictEqual(M.thinkTierFor(quick), 'think');
+  assert.ok(M.adaptForGlm(quick).max_tokens >= 16000);
+  const deep = { model: 'x-ai/grok-4.20', reasoning: { effort: 'high', enabled: true }, max_tokens: 900 };
+  assert.strictEqual(M.thinkTierFor(deep), 'deep');
+  const instant = { model: 'x-ai/grok-4.20', reasoning: { effort: 'none' }, max_tokens: 900 };
+  assert.strictEqual(M.thinkTierFor(instant), false);
+  assert.strictEqual(M.adaptForGlm(instant).max_tokens, 900);
+});
+
+test('the wordless guard is armed on Grok', () => {
+  assert.strictEqual(M.isWordlessTurn({ model: 'x-ai/grok-4.20', finishReason: 'length', contentLength: 0 }), true);
+});
+
+test('the wordless rescue says reasoning OFF on Grok instead of letting Grok pick', async () => {
+  let sent = null;
+  const callOpenRouter = async (b) => { sent = b; return { choices: [{ message: { content: 'words' }, finish_reason: 'stop' }] }; };
+  const out = await M.rescueWordlessTurn({ upstreamBody: { model: 'x-ai/grok-4.20', stream: true, reasoning: { effort: 'high', enabled: true } }, reqId: 't', callOpenRouter });
+  assert.strictEqual(out.text, 'words');
+  assert.deepStrictEqual(sent.reasoning, { effort: 'none', enabled: false, exclude: false });
+});

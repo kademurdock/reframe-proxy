@@ -222,6 +222,7 @@ const {
   isKimiModel,
   isGlmModel,
   isReasoningModel,
+  isXaiModel,
   alwaysThinks,
   thinkTierFor,
   adaptForGlm,
@@ -2701,7 +2702,7 @@ async function maybeAutoThink(body, reqId = '??????') {
        * reasoning_effort:'none' so the field is normally present, but "the
        * config happens to save us" is not a guarantee -- one agent created
        * without it would silently draw the 97-second turn. Say it explicitly. */
-      return isGlmModel(cleaned.model)
+      return (isGlmModel(cleaned.model) || isXaiModel(cleaned.model))
         ? { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } }
         : cleaned; // kimi call turns keep the effort:'none' they arrived with
     }

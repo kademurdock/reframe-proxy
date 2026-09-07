@@ -100,8 +100,23 @@ function isKimiModel(model) {
 function isGlmModel(model) {
   return GLM_MODEL_RE.test(String(model || ''));
 }
+/* ⭐ PART 141.3 (Sep 7 2026, Kade: "Agents are supposed to be on grok 4.20
+ * with auto think, it should match reasoning level with the classifier.
+ * Most answers should have some reasoning."). The fleet moved to
+ * x-ai/grok-4.20 on Sep 5 and this predicate still said kimi-or-glm, so
+ * maybeAutoThink logged `skip: non-reasoning model (x-ai/grok-4.20)` on
+ * EVERY turn and the classifier never ran -- two days of the whole fleet at
+ * effort none, and the wordless guard below disarmed with it. Proved live
+ * on OpenRouter (xai/zdr, Sep 7 17:55Z, same one-line arithmetic prompt):
+ *   effort none -> 0 reasoning tokens
+ *   effort low  -> 379   medium -> 377   high -> 408
+ * Grok honours the flag; nothing here ever sent it. */
+const XAI_MODEL_RE = /^x-ai\//i;
+function isXaiModel(model) {
+  return XAI_MODEL_RE.test(String(model || ''));
+}
 function isReasoningModel(model) {
-  return isKimiModel(model) || isGlmModel(model);
+  return isKimiModel(model) || isGlmModel(model) || isXaiModel(model);
 }
 /** True when the model thinks whatever the caller asked for. */
 function alwaysThinks(model) {
@@ -117,7 +132,7 @@ const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 64000
  * @returns {'deep'|'think'|false}
  */
 function thinkTierFor(body) {
-  if (!body || !isGlmModel(body.model)) return false;
+  if (!body || !(isGlmModel(body.model) || isXaiModel(body.model))) return false;
   const r = body.reasoning || {};
   const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
   const asked = r.enabled === true || ['low', 'medium', 'high', 'xhigh'].includes(effort);
@@ -178,6 +193,9 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
     delete fallbackBody.reasoning;
     delete fallbackBody.include_reasoning;
     delete fallbackBody.reasoning_effort;
+    /* Part 141.3: on x-ai "reasoning off" must be SAID -- a bare body lets
+     * Grok pick, and Grok picks thinking. */
+    if (isXaiModel(fallbackBody.model)) fallbackBody.reasoning = { effort: 'none', enabled: false, exclude: false };
     let call = callOpenRouter(fallbackBody);
     if (timeoutMs > 0) {
       call = Promise.race([
@@ -295,6 +313,7 @@ module.exports = {
   isKimiModel,
   isGlmModel,
   isReasoningModel,
+  isXaiModel,
   alwaysThinks,
   thinkTierFor,
   adaptForGlm,
