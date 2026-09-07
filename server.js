@@ -1347,7 +1347,11 @@ function isTitleShapedBody(body) {
 function driftNoteFor(body) {
   if (!DRIFT_STEER) return '';
   try {
-    return driftSteerNote(body) || '';
+    return driftSteerNote(body, {
+      isInjected: looksInjected,
+      personText: stripContextReplay,
+      onEcho: echo => console.log(`[cadence] contextual repetition steer hits=${echo.hits} strong=${echo.strongHits} prior=${echo.priorTurns}`),
+    }) || '';
   } catch (err) {
     console.error('driftSteerNote threw, skipping:', err.message);
     return '';

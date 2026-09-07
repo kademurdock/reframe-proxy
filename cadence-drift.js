@@ -263,6 +263,62 @@ function priorUser(upstreamBody, n) {
     .slice(-n);
 }
 
+/* Compare completed conversational turns, retaining the user who prompted each
+ * answer. Tool preambles/results and injected runtime users are not dialogue.
+ * This is a conservative lexical signal, not semantic paraphrase detection.
+ * Ambiguous short follow-ups and requested repetition opt out. No input changes.
+ */
+function conversationEcho(body, { isInjected = () => false, personText = t => t } = {}) {
+  const turns = [];
+  let pending = null;
+  for (const m of Array.isArray(body?.messages) ? body.messages : []) {
+    if (!m) continue;
+    const text = msgText(m).trim();
+    if (m.role === 'user' && text && !isInjected(text) && !/^<tool_response>/.test(text)) {
+      if (pending?.answer) { turns.push(pending); pending = null; }
+      const human = personText(text).trim();
+      if (human) {
+        if (!pending) pending = { user: human, answer: '' };
+        else pending.user += '\n' + human;
+      }
+    } else if (m.role === 'assistant' && pending && text && !m.tool_calls?.length) {
+      pending.answer += (pending.answer ? '\n' : '') + text;
+    }
+  }
+  // At request time the last human turn must still be waiting for its answer.
+  if (!pending || pending.answer || turns.length < 2) return null;
+  const stopRepeat = t => /\b(?:stop|quit|avoid|don't|do not)\s+(?:\w+\s+){0,2}(?:repeat\w*|recap\w*|revisit\w*|bringing\s+up)\b/i.test(t);
+  const asksAgain = t => !stopRepeat(t) && (
+    /(?:^|[.!?]\s+)(?:please\s+)?(?:repeat|recap|summari[sz]e|remind me|restate)\b/i.test(t) ||
+    /\b(?:can|could|would|will) you (?:please )?(?:repeat|recap|summari[sz]e|remind|restate)\b/i.test(t) ||
+    /\b(?:say|show|tell|explain|go over)\b[^.!?]{0,60}\bagain\b/i.test(t) ||
+    /\b(?:want|need|like) (?:a|another|the) (?:recap|summary|repeat)\b/i.test(t)
+  );
+  const topicWords = t => new Set(contentWords(t).filter(w => w.length > 2 && !ECHO_TOPIC_SKIP.has(w)));
+  const relevant = (user, sentence) => {
+    if (stopRepeat(user)) return false;
+    const u = topicWords(user); const s = topicWords(sentence);
+    const shared = [...u].filter(w => s.has(w));
+    // A named subject or an underspecified continuation may legitimately refer back.
+    return shared.length >= 2 || shared.some(w => w.length >= 7) || u.size < 3;
+  };
+  const latest = turns[turns.length - 1];
+  if (asksAgain(pending.user) || asksAgain(latest.user)) return null;
+  const newest = contentSentences(latest.answer);
+  const old = turns.slice(-13, -1).flatMap(t => contentSentences(t.answer));
+  let hits = 0; let strongHits = 0;
+  for (const sentence of newest) {
+    if (relevant(latest.user, sentence) || relevant(pending.user, sentence)) continue;
+    let best = 0;
+    for (const earlier of old) best = Math.max(best, contentOverlap(sentence, earlier));
+    if (best >= ECHO_SENT_SIM) hits++;
+    if (best >= 0.75 && topicWords(sentence).size >= 6) strongHits++;
+  }
+  if (!strongHits && !(hits >= ECHO_MIN_HITS && hits / newest.length >= ECHO_MIN_SHARE)) return null;
+  // Deliberately no topic words or copied passages in the model's final note.
+  return { hits, strongHits, of: newest.length, priorTurns: Math.min(turns.length - 1, 12) };
+}
+
 /* ── THE ECHO EXEMPTION ────────────────────────────────────────────────────
  * Measured false positives, both from the same root cause: the harness
  * flagged Spotter-style image descriptions ("of the view from my perspective
@@ -452,7 +508,7 @@ function splitDrift(res) {
  *   detectDrift(content,body) response side — the PROSE repeats, which the
  *                             existing rewrite pass can genuinely repair.
  * ══════════════════════════════════════════════════════════════════════════ */
-function driftSteerNote(body) {
+function driftSteerNote(body, options) {
   const history = priorAssistant(body, Math.max(W_QUESTION, W_CLOSER));
   if (history.length < 2) return '';
   const notes = [];
@@ -525,28 +581,20 @@ function driftSteerNote(body) {
     }
   }
 
-  /* CONTENT ECHO (Part 141, Sep 7 2026 — Kade, reading Amber A's cat chat:
-   * "it keeps bringing things up and repeating them"). Nine turns, and every
-   * reply re-explained the drain screen, the pheromone diffuser and how the
-   * Sunday service went, whatever Amber had actually just said — "take the
-   * one you already have with you so you can feel the difference" shipped
-   * three times in ten minutes. The channels above hear a stuck CLOSER or a
-   * stuck TAG; none of them hears the same ADVICE said again. This one does:
-   * sentence-level content overlap between the newest reply and the replies
-   * before it in the window. A sentence is a restatement when its content
-   * words mostly reappear in one sentence of an earlier reply. Two or more
-   * such sentences making up a third of the newest reply = the note, with
-   * the topic words quoted back so the model knows WHAT to drop. Steer only:
-   * a recap has to be left out at writing time, it cannot be cut cleanly. */
+  /* Repetition steering uses paired human/assistant turns. A strong single
+   * recycled sentence can count, but requested repeats and relevant follow-ups
+   * opt out. Topic names are not copied into the final instruction. This remains
+   * a next-reply reminder; it neither rewrites answers nor proves model compliance. */
   try {
-    const echo = contentEcho(history);
+    const echo = conversationEcho(body, options);
     if (echo) {
+      options?.onEcho?.(echo);
       notes.push(
         `Repetition note: your last reply restated advice you had already given ` +
-        `earlier in this conversation (${echo.topics.join(', ')}). They were there ` +
-        `for it. Do not restate earlier advice or circle back to earlier topics ` +
-        `unless they ask again -- answer only what they just said, and if an old ` +
-        `topic needs nothing new, leave it out entirely.`
+        `earlier while the person was discussing something else. Do not restate earlier advice ` +
+        `just to acknowledge it or announce that it is resolved. Respond to the person's ` +
+        `current message; keep relevant context, requested follow-ups and ongoing tool work. ` +
+        `Leave unrelated finished subjects out. This is about relevance, not reply length.`
       );
     }
   } catch { /* a style check must never kill a turn */ }
@@ -672,7 +720,7 @@ module.exports = {
   registerOf,
   // exported for the harness + future tuning
   _internals: {
-    lastSentence, firstClause, overlap, contentOverlap, promptRepeated, contentEcho, contentSentences, contentBigrams,
+    lastSentence, firstClause, overlap, contentOverlap, promptRepeated, contentEcho, conversationEcho, contentSentences, contentBigrams,
     W_CLOSER, W_OPENER, W_QUESTION, Q_IN_W, REGISTER_RUN, SIM,
   },
 };

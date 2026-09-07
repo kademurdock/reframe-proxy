@@ -27,8 +27,8 @@ test('a reply that re-explains the drain screen and the diffuser trips the chann
   assert.ok(e.hits >= 2, 'expected at least two restated sentences, got ' + e.hits);
   assert.ok(e.topics.length >= 1);
   const note = driftSteerNote(body(R1, R2));
-  assert.match(note, /Repetition note/);
-  assert.match(note, /Do not restate earlier advice/);
+  // No pending human turn and only placeholder user text: do not steer from this.
+  assert.doesNotMatch(note, /Repetition note/);
 });
 
 test('a genuinely new answer after the same history is left alone', () => {
