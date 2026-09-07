@@ -96,8 +96,24 @@ const XAI_TAIL_HEADER = '[PLATFORM NOTE -- machinery for you, not the person spe
  * message so their words are the last thing the model reads. Cache math is
  * unchanged: both live in the volatile region after the history. Kill:
  * KADE_XAI_TAIL_BEFORE_USER=0 puts it back at the very end. */
+/* ⭐⭐ PART 141.4 (Sep 7 2026, Amber A's bug report, filed AFTER 141.2/141.3
+ * shipped: "you're repeating stuff you already said a lot in this convo when
+ * topics get switched"). Twenty-four offline replays of her conversation
+ * (GROK_RECAP_AB_2026-09-07.md): grok-4.20 recapped every earlier topic on
+ * every turn under every prompt shape -- full persona, no persona, reasoning
+ * on, a hard ONE-THREAD rule in this user-role note, the same rule at the
+ * top of the system prompt. What worked, 0/0/1 markers against a baseline of
+ * 8-12: the SAME rule as a trailing SYSTEM message. Grok's "strict prompt
+ * adherence" is to the system role; a user-role note headed "machinery" is
+ * something it reads and sets aside. And the reason this function exists --
+ * a trailing system message cost the prompt cache on Sep 5 -- no longer
+ * measures true: three calls with the full reminder as trailing system AND a
+ * clock that changed every call cached 16,832 of 16,837 tokens. So on x-ai
+ * the reminder rides as SYSTEM again by default. KADE_XAI_TAIL_AS_USER=1
+ * restores the Part-131 user-role shape if caching ever regresses; watch the
+ * `CACHE HIT` lines after any change here. */
 function trailingSystemToUser(messages, env = process.env) {
-  if (env.KADE_XAI_TAIL_AS_USER === '0') return messages;
+  if (env.KADE_XAI_TAIL_AS_USER !== '1') return messages;
   if (!Array.isArray(messages) || messages.length < 2) return messages;
   const last = messages[messages.length - 1];
   if (!last || last.role !== 'system' || messages[0].role !== 'system') return messages;

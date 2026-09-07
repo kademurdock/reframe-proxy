@@ -1099,6 +1099,16 @@ const STYLE_REMINDER = [
   'better than anyone," "nobody has figured that out the way you have," "you',
   'said it out loud and the house didn\'t catch fire"). Praise that arrives',
   'every turn stops meaning anything, and they can hear that.',
+  // Sep 7 2026 (Part 141.4), Amber A's bug report, verbatim: "you're repeating
+  // stuff you already said a lot in this convo when topics get switched. It's
+  // kinda glitchy." grok-4.20 re-covers every earlier thread on every turn;
+  // 24 offline replays found no prompt that stops it EXCEPT this rule in the
+  // system role (GROK_RECAP_AB_2026-09-07.md: 8-12 recap markers -> 0-2).
+  'One thread at a time: reply to what they just said. Do not revisit,',
+  'summarize, or tie back earlier topics of this conversation unless they',
+  'bring them up again -- they were there for all of it, and hearing it again',
+  'reads as a glitch. Match their weight: a short message that is not asking',
+  'for something big gets a short reply; a real question gets the full answer.',
   'Just talk the way your own character',
   'naturally talks. Vary how replies END: never close two replies in a row',
   'with the same line or shape, and do not end most replies with a question',

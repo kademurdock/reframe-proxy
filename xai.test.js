@@ -64,41 +64,41 @@ test('adaptForXai strips markers on x-ai and leaves other models byte-identical'
 
 test('the trailing system reminder becomes a user message under the machinery header, IN FRONT of the person\'s words (132.4)', () => {
   const msgs = [{ role: 'system', content: 'P' }, { role: 'assistant', content: 'earlier' }, { role: 'user', content: 'Do you have an opinion about Elon Musk' }, { role: 'system', content: 'Quick style check' }];
-  const out = trailingSystemToUser(msgs, {});
+  const out = trailingSystemToUser(msgs, { KADE_XAI_TAIL_AS_USER: '1' });
   assert.equal(out.length, 4);
   assert.equal(out[2].role, 'user');
   assert.equal(out[2].content, XAI_TAIL_HEADER + 'Quick style check');
   assert.strictEqual(out[3], msgs[2], 'the person\'s message is the last thing the model reads');
   assert.strictEqual(out[0], msgs[0]);
   /* the old placement, on the switch */
-  const old = trailingSystemToUser(msgs, { KADE_XAI_TAIL_BEFORE_USER: '0' });
+  const old = trailingSystemToUser(msgs, { KADE_XAI_TAIL_AS_USER: '1', KADE_XAI_TAIL_BEFORE_USER: '0' });
   assert.equal(old[3].content, XAI_TAIL_HEADER + 'Quick style check');
   /* first-turn shape: the SDK's runtime tail lands AFTER the words; both go in front now */
   const f = [{ role: 'system', content: 'P' }, { role: 'user', content: 'Do you have an opinion about Elon Musk' }, { role: 'user', content: '# Memory recall (auto-surfaced)\n- a card' }, { role: 'system', content: 'note' }];
-  const o3 = trailingSystemToUser(f, {});
+  const o3 = trailingSystemToUser(f, { KADE_XAI_TAIL_AS_USER: '1' });
   assert.equal(o3.length, 4);
   assert.equal(o3[1].content, XAI_TAIL_HEADER + 'note');
   assert.equal(o3[2].content, '# Memory recall (auto-surfaced)\n- a card');
   assert.strictEqual(o3[3], f[1], 'her words are last');
   /* later-turn shape: context, words -> note, context, words */
   const g = [{ role: 'system', content: 'P' }, { role: 'assistant', content: 'a' }, { role: 'user', content: '# `web_search` Runtime Context' }, { role: 'user', content: 'short q' }, { role: 'system', content: 'note' }];
-  const o4 = trailingSystemToUser(g, {});
+  const o4 = trailingSystemToUser(g, { KADE_XAI_TAIL_AS_USER: '1' });
   assert.deepEqual(o4.map((m) => m.content.slice(0, 12)), ['P', 'a', '# `web_searc', XAI_TAIL_HEADER.slice(0, 12), 'short q']);
   /* Part 141: a TOOL turn (this turn's tool_calls + results after the words)
    * puts the note in front of the words too; the tool results stay last */
   const t = [{ role: 'system', content: 'P' }, { role: 'assistant', content: 'earlier' }, { role: 'user', content: '# `web_search` Runtime Context' }, { role: 'user', content: 'q' }, { role: 'assistant', content: '', tool_calls: [{ id: '1' }] }, { role: 'tool', content: 'r', tool_call_id: '1' }, { role: 'system', content: 'note' }];
-  const o2 = trailingSystemToUser(t, {});
+  const o2 = trailingSystemToUser(t, { KADE_XAI_TAIL_AS_USER: '1' });
   assert.deepEqual(o2.map((m) => m.role), ['system', 'assistant', 'user', 'user', 'user', 'assistant', 'tool']);
   assert.equal(o2[2].content, '# `web_search` Runtime Context');
   assert.equal(o2[3].content, XAI_TAIL_HEADER + 'note');
   assert.equal(o2[4].content, 'q', 'her words sit right before this turn\'s tool traffic');
   assert.strictEqual(o2[6], t[5], 'the tool result is still the last thing');
   /* the old behavior on the switch: note at the very end */
-  const o2old = trailingSystemToUser(t, { KADE_XAI_TOOL_TURN_NOTE: '0' });
+  const o2old = trailingSystemToUser(t, { KADE_XAI_TAIL_AS_USER: '1', KADE_XAI_TOOL_TURN_NOTE: '0' });
   assert.equal(o2old[o2old.length - 1].content, XAI_TAIL_HEADER + 'note');
   /* a first-turn tool shape: same rule, note in front of the words, result last */
   const t1 = [{ role: 'system', content: 'P' }, { role: 'user', content: 'q' }, { role: 'tool', content: 'r', tool_call_id: '1' }, { role: 'system', content: 'note' }];
-  const o1 = trailingSystemToUser(t1, {});
+  const o1 = trailingSystemToUser(t1, { KADE_XAI_TAIL_AS_USER: '1' });
   assert.deepEqual(o1.map((m) => m.role), ['system', 'user', 'user', 'tool']);
   assert.equal(o1[1].content, XAI_TAIL_HEADER + 'note'); assert.equal(o1[2].content, 'q');
 });
@@ -110,4 +110,6 @@ test('no trailing system, a lone system, or the kill switch: untouched', () => {
   assert.strictEqual(trailingSystemToUser(b, {}), b);
   const c = [{ role: 'system', content: 'P' }, { role: 'user', content: 'hi' }, { role: 'system', content: 'tail' }];
   assert.strictEqual(trailingSystemToUser(c, { KADE_XAI_TAIL_AS_USER: '0' }), c);
+  /* Part 141.4: the DEFAULT is now the system tail -- untouched */
+  assert.strictEqual(trailingSystemToUser(c, {}), c);
 });
