@@ -2016,24 +2016,6 @@ async function detectAndRewrite(result, upstreamBody) {
     }
   }
 
-  // This checks relevance before prose polishing. Regeneration stays on the
-  // character's model. Utility review never authors the delivered reply.
-  if (REPLY_FOCUS_ON && isKianaBody(upstreamBody)) {
-    const focused = await repairRepetition(upstreamBody, content, {
-      complete: callOpenRouterOnce, isInjected: looksInjected, personText: stripContextReplay,
-    });
-    replyFocusCounts[focused.status] = (replyFocusCounts[focused.status] || 0) + 1;
-    if (focused.status !== 'skipped') {
-      // These are platform quality costs, not original-model tokens to add to
-      // a person's bill at the wrong rate. Keep each provider receipt separate.
-      console.log('[reply-focus] ' + JSON.stringify({ id: result.id, status: focused.status, calls: focused.events }));
-    }
-    if (focused.status === 'repaired' && coherenceTells(focused.text, 0).length === 0) {
-      content = normalizeVoiceTagTypos(scrubSearchArtifacts(focused.text));
-      choice.message.content = content;
-    }
-  }
-
   const matches = collectMatches(content, upstreamBody);
 
   if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
@@ -2041,9 +2023,7 @@ async function detectAndRewrite(result, upstreamBody) {
       `[slop] tripped (${matches.length} match(es)) but reply is ${content.length} chars > ${SLOP_REWRITE_MAX_CHARS} — long-form reply keeps its original text (see Aug 10 2026 note above rewritePass)`
     );
     slopStats.record(matches, 'longform_kept');
-    return result;
-  }
-  if (matches.length > 0) {
+  } else if (matches.length > 0) {
     slopStats.record(matches);
     console.log(
       `[slop] tripped (${matches.length} match(es): ${matches.map((m) => m.pattern).join(', ')}) — running rewrite pass`
@@ -2134,6 +2114,24 @@ async function detectAndRewrite(result, upstreamBody) {
       slopStats.outcome('rewrite_failed');
     }
   }
+  // Review the final prose, after cleanup. Nothing rewrites an accepted
+  // character repair afterward. Utility review never authors the reply.
+  if (REPLY_FOCUS_ON && isKianaBody(upstreamBody)) {
+    const focused = await repairRepetition(upstreamBody, choice.message.content, {
+      complete: callOpenRouterOnce, isInjected: looksInjected, personText: stripContextReplay,
+    });
+    replyFocusCounts[focused.status] = (replyFocusCounts[focused.status] || 0) + 1;
+    if (focused.status !== 'skipped') {
+      // These are platform quality costs, not original-model tokens to add to
+      // a person's bill at the wrong rate. Keep each provider receipt separate.
+      console.log('[reply-focus] ' + JSON.stringify({ id: result.id, status: focused.status, calls: focused.events }));
+    }
+    if (focused.status === 'repaired' && coherenceTells(focused.text, 0).length === 0) {
+      content = normalizeVoiceTagTypos(scrubSearchArtifacts(focused.text));
+      choice.message.content = content;
+    }
+  }
+
   return result;
 }
 
