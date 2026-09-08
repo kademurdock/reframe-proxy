@@ -822,6 +822,7 @@ async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
 
 // -- rewrite guidance --------------------------------------------------------
 const PATTERN_GUIDANCE = {
+  internet_label: 'stock personal labels such as "that is main character energy" or "that is mental gymnastics" -- delete the label sentence when the next sentence already states the specific action or disagreement; otherwise state that existing observation plainly. Do not substitute another generic label such as "that is some behavior", diagnose motives or invent an insult',
   reframe: 'the rhetorical reframe device "It\'s not X, it\'s Y" (or "isn\'t just X, it\'s Y" / "not X but Y")',
   throat_clearing_opener: 'a throat-clearing opener (e.g. "Look,", "Honestly?", "Here\'s the thing,") at the start of a sentence',
   rhetorical_qa_combo: 'a stacked rhetorical question-then-short-answer combo (e.g. "Is it perfect? No. Is it good enough? Yeah.")',
@@ -878,6 +879,9 @@ function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
     '',
     'Rewrite the passage so it says the same thing, with the same facts, tone,',
     'and length, WITHOUT any of those tics anywhere. Do not introduce new claims.',
+    'Make the smallest edits that remove the identified tics. Leave unaffected sentences alone.',
+    'Preserve the speaker\'s first-person opinions, contractions, dialect, profanity, humor and warmth.',
+    'Do not turn casual speech into a polished explanation or replace a specific observation with a stock phrase.',
     'Do not add commentary, a preamble, or quotation marks around your answer.',
     'Output ONLY the rewritten passage, nothing else.',
   ];

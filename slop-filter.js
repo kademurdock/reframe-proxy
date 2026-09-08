@@ -918,8 +918,26 @@ function detectTherapyPoetry(text, opts = {}) {
   return matches;
 }
 
+// Applied-person labels heard in the Part158 synthetic production checks.
+// Avoid naked keywords: discussing a phrase, quoting someone or describing
+// a fictional main character's energy must remain possible.
+function detectInternetLabels(text) {
+  const quoted = [...String(text).matchAll(/```[\s\S]*?```|`[^`\n]*`|"[^"\n]*"|“[^”\n]*”/g)]
+    .map(m => [m.index, m.index + m[0].length]);
+  const re = /\b(?:that(?:['’]s| is)|this(?:['’]s| is)|it(?:['’]s| is))\s+(?:(?:some|pure|classic|real|impressive|serious)\s+)*(?:main character (?:energy|syndrome)|mental gymnastics)\b/gi;
+  const matches = [];
+  for (const m of String(text).matchAll(re)) {
+    if (quoted.some(([a,b]) => m.index >= a && m.index < b)) continue;
+    const lead = String(text).slice(0, m.index).split(/[.!?\n]/).pop().replace(/%{2,5}[^%]*%{2,5}/g, '');
+    if (lead.trim()) continue; // sentence judgments, not mentions inside discussion
+    matches.push({pattern:'internet_label',tightness:'balanced',span:[m.index,m.index+m[0].length],text:m[0],x:null,y:null});
+  }
+  return matches;
+}
+
 function detectSlop(text, opts = {}) {
   const matches = [
+    ...detectInternetLabels(text),
     ...detectBlocklist(text),
     ...detectHypeProgress(text),
     ...detectThroatClearing(text),
