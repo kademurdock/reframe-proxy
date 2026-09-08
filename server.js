@@ -69,6 +69,10 @@ const crypto = require('crypto');
 const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
 const { detectDrift, driftSteerNote } = require('./cadence-drift');
+const { repairRepetition } = require('./reply-focus');
+const { isKianaBody } = require('./voice-anchors');
+const REPLY_FOCUS_ON = process.env.KADE_REPLY_FOCUS !== '0';
+const replyFocusCounts = {};
 
 /* ⚠️ KILL SWITCHES FOR THE SEQUENCE DETECTOR (added Aug 20 2026, same day it
  * shipped, because it went out without them and everything else risky in this
@@ -135,6 +139,7 @@ app.get('/health', (req, res) => {
    * it moved the harness's /health detail behind its secret. */
   if ((req.headers['authorization'] || '') === `Bearer ${PROXY_SHARED_SECRET}`) {
     out.zai = zaiPulse.snapshot();
+    out.replyFocus = { enabled: REPLY_FOCUS_ON, counts: { ...replyFocusCounts } };
   }
   res.json(out);
 });
@@ -1107,8 +1112,8 @@ const STYLE_REMINDER = [
   'One thread at a time: reply to what they just said. Do not revisit,',
   'summarize, or tie back earlier topics of this conversation unless they',
   'bring them up again -- they were there for all of it, and hearing it again',
-  'reads as a glitch. Match their weight: a short message that is not asking',
-  'for something big gets a short reply; a real question gets the full answer.',
+  'reads as a glitch. Continuing the same subject does not mean repeating',
+  'the same facts. Add new relevant substance at the depth the person wants.',
   'Just talk the way your own character',
   'naturally talks. Vary how replies END: never close two replies in a row',
   'with the same line or shape, and do not end most replies with a question',
@@ -2016,6 +2021,24 @@ async function detectAndRewrite(result, upstreamBody) {
           console.error(`[coherence] regeneration failed (${err.message}) — shipping the original`);
         }
       }
+    }
+  }
+
+  // This checks relevance before prose polishing. Regeneration stays on the
+  // character's model. Utility review never authors the delivered reply.
+  if (REPLY_FOCUS_ON && isKianaBody(upstreamBody)) {
+    const focused = await repairRepetition(upstreamBody, content, {
+      complete: callOpenRouterOnce, isInjected: looksInjected, personText: stripContextReplay,
+    });
+    replyFocusCounts[focused.status] = (replyFocusCounts[focused.status] || 0) + 1;
+    if (focused.status !== 'skipped') {
+      // These are platform quality costs, not original-model tokens to add to
+      // a person's bill at the wrong rate. Keep each provider receipt separate.
+      console.log('[reply-focus] ' + JSON.stringify({ id: result.id, status: focused.status, calls: focused.events }));
+    }
+    if (focused.status === 'repaired' && coherenceTells(focused.text, 0).length === 0) {
+      content = normalizeVoiceTagTypos(scrubSearchArtifacts(focused.text));
+      choice.message.content = content;
     }
   }
 

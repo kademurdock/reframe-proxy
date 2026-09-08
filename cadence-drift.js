@@ -268,7 +268,23 @@ function priorUser(upstreamBody, n) {
  * This is a conservative lexical signal, not semantic paraphrase detection.
  * Ambiguous short follow-ups and requested repetition opt out. No input changes.
  */
-function conversationEcho(body, { isInjected = () => false, personText = t => t } = {}) {
+const stopRepeat = text => {
+  const t = text.replace(/[’‘]/g, "'");
+  return /\b(?:stop|quit|avoid|don't|do not)\s+(?:\w+\s+){0,2}(?:repeat\w*|recap\w*|revisit\w*|bringing\s+(?:(?:that|this|it)\s+)?up)\b/i.test(t) ||
+    /\byou(?:'ve| have)?\s+already\s+(?:said|covered|explained|mentioned)\s+(?:that|this|it)\b/i.test(t) ||
+    /\byou\s+(?:said|covered|explained|mentioned)\s+(?:that|this|it)\s+already\b/i.test(t) ||
+    /\bwe(?:'ve| have)?\s+(?:already\s+)?covered\s+(?:that|this|it)\b/i.test(t) ||
+    /\byou(?:'re| are)\s+repeating\s+yourself\b/i.test(t);
+};
+const asksAgain = t => !stopRepeat(t) && (
+  /(?:^|[.!?,]\s+)(?:please\s+)?(?:repeat|recap|summari[sz]e|remind me|restate)\b/i.test(t) ||
+  /\bplease\s+(?:repeat|recap|summari[sz]e|remind me|restate)\b/i.test(t) ||
+  /\b(?:can|could|would|will) you (?:please )?(?:repeat|recap|summari[sz]e|remind|restate)\b/i.test(t) ||
+  /\b(?:say|show|tell|explain|go over)\b[^.!?]{0,60}\bagain\b/i.test(t) ||
+  /\b(?:want|need|like) (?:a|another|the) (?:recap|summary|repeat)\b/i.test(t)
+);
+
+function conversationTurns(body, { isInjected = () => false, personText = t => t } = {}) {
   const turns = [];
   let pending = null;
   for (const m of Array.isArray(body?.messages) ? body.messages : []) {
@@ -285,22 +301,13 @@ function conversationEcho(body, { isInjected = () => false, personText = t => t 
       pending.answer += (pending.answer ? '\n' : '') + text;
     }
   }
+  return { turns, pending };
+}
+
+function conversationEcho(body, options) {
+  const { turns, pending } = conversationTurns(body, options);
   // At request time the last human turn must still be waiting for its answer.
   if (!pending || pending.answer || turns.length < 2) return null;
-  const stopRepeat = text => {
-    const t = text.replace(/[’‘]/g, "'");
-    return /\b(?:stop|quit|avoid|don't|do not)\s+(?:\w+\s+){0,2}(?:repeat\w*|recap\w*|revisit\w*|bringing\s+(?:(?:that|this|it)\s+)?up)\b/i.test(t) ||
-      /\byou(?:'ve| have)?\s+already\s+(?:said|covered|explained|mentioned)\s+(?:that|this|it)\b/i.test(t) ||
-      /\byou\s+(?:said|covered|explained|mentioned)\s+(?:that|this|it)\s+already\b/i.test(t) ||
-      /\bwe(?:'ve| have)?\s+(?:already\s+)?covered\s+(?:that|this|it)\b/i.test(t) ||
-      /\byou(?:'re| are)\s+repeating\s+yourself\b/i.test(t);
-  };
-  const asksAgain = t => !stopRepeat(t) && (
-    /(?:^|[.!?]\s+)(?:please\s+)?(?:repeat|recap|summari[sz]e|remind me|restate)\b/i.test(t) ||
-    /\b(?:can|could|would|will) you (?:please )?(?:repeat|recap|summari[sz]e|remind|restate)\b/i.test(t) ||
-    /\b(?:say|show|tell|explain|go over)\b[^.!?]{0,60}\bagain\b/i.test(t) ||
-    /\b(?:want|need|like) (?:a|another|the) (?:recap|summary|repeat)\b/i.test(t)
-  );
   const topicWords = t => new Set(contentWords(t).filter(w => w.length > 2 && !ECHO_TOPIC_SKIP.has(w)));
   const relevant = (user, sentence) => {
     if (stopRepeat(user)) return false;
@@ -727,7 +734,7 @@ module.exports = {
   registerOf,
   // exported for the harness + future tuning
   _internals: {
-    lastSentence, firstClause, overlap, contentOverlap, promptRepeated, contentEcho, conversationEcho, contentSentences, contentBigrams,
+    lastSentence, firstClause, overlap, contentOverlap, promptRepeated, contentEcho, conversationEcho, conversationTurns, asksAgain, contentSentences, contentBigrams,
     W_CLOSER, W_OPENER, W_QUESTION, Q_IN_W, REGISTER_RUN, SIM,
   },
 };
