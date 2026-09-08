@@ -478,9 +478,9 @@ function detectDrift(content, upstreamBody) {
       });
       steerNotes.push(
         `Delivery note: your last ${run} replies were all directed in the same ` +
-        `register. Whatever this next one is, direct it somewhere else -- a ` +
-        `different mood, a different pace, or drop the tag entirely if the ` +
-        `moment is plain.`
+        `register. Check whether that direction still fits the current words. ` +
+        `Keep the feeling when it fits; omit a habitual tag when it adds nothing. ` +
+        `Keep the conversational pace consistent. Repetition alone is not a reason to change mood.`
       );
     }
   }
@@ -548,8 +548,9 @@ function driftSteerNote(body, options) {
   if (fam && run >= REGISTER_RUN - 1) {
     notes.push(
       `Delivery note: your last ${run} replies were all directed in the same ` +
-      `register. Direct this one somewhere else -- a different mood, a ` +
-      `different pace -- or drop the tag entirely if the moment is plain.`
+      `register. Check whether that direction still fits the current words. ` +
+      `Keep the feeling when it fits; omit a habitual tag when it adds nothing. ` +
+      `Keep the conversational pace consistent. Repetition alone is not a reason to change mood.`
     );
   }
 
@@ -588,9 +589,9 @@ function driftSteerNote(body, options) {
     if (echo) {
       notes.push(
         `Delivery note: your recent voice directions keep reusing the phrase ` +
-        `"${echo}" -- the delivery is stuck in one groove. Write this turn's ` +
-        `direction from scratch in genuinely different words and a different ` +
-        `mood, or drop the tag if the moment is plain.`
+        `"${echo}". Use a direction only if it fits what you are saying now. ` +
+        `A continuing feeling can stay; keep a natural conversational pace. ` +
+        `Do not invent a mood change to avoid repeating a tag.`
       );
     }
   }
