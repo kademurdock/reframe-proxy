@@ -2027,6 +2027,21 @@ async function detectAndRewrite(result, upstreamBody) {
     console.log('[slop] swept machine lane (summary / repair / persona writer) — reply detection and rewrite skipped');
     return result;
   }
+  /* Part 179 (Sep 11 2026): THE KEEPER BELT ON THE WAY OUT. Part 107 carved the
+   * memory keeper out of appendReminder (the way in) and, per machines.js, that
+   * carve-out also covers every lane that reuses processMemory with the belt
+   * (history miner, GPT import, call memory write, consolidateV2). The reply
+   * side never got the same door: detection + rewrite kept running on those
+   * lanes' prose NOTES. em_dash_restatement had been tripping there quietly;
+   * the Part 178 user_echo channel then fired on every consolidation bucket at
+   * the 12:00Z sweep (its "user" text is a machine prompt the model naturally
+   * restates) -- two rewrite calls per bucket, on text no person reads as a
+   * reply. Same detector as the inbound carve-out, so the halves cannot drift.
+   * Kill: KADE_KEEPER_OUT_CARVEOUT=0. */
+  if (process.env.KADE_KEEPER_OUT_CARVEOUT !== '0' && isMemoryKeeperShapedBody(upstreamBody)) {
+    console.log('[slop] keeper-belt machine lane (keeper / consolidation / miner) -- reply detection and rewrite skipped');
+    return result;
+  }
 
   // Aug 15 2026 (Part 70.5): MACHINE-LANE EXEMPTION. Internal helpers (memory
   // consolidation, the diary voice repair, anything asking a model for strict
