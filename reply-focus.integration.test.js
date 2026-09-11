@@ -4,7 +4,7 @@ const start=source.indexOf('async function detectAndRewrite('),end=source.indexO
 function setup(enabled=true){
  const calls=[];
  const context={console, REPLY_FOCUS_ON:enabled, replyFocusCounts:{}, COHERENCE_ON:false,
-  scrubSearchArtifacts:t=>t,normalizeVoiceTagTypos:t=>t,isLyricBody:b=>b.lyric,isSweptMachineBody:b=>b.machine,
+  scrubSearchArtifacts:t=>t,normalizeVoiceTagTypos:t=>t,isLyricBody:b=>b.lyric,isSweptMachineBody:b=>b.machine,isMemoryKeeperShapedBody:b=>!!b.keeper,KEEPER_OUT_CARVEOUT:true,
   isKianaBody:b=>b.kiana,looksInjected:()=>false,stripContextReplay:t=>t,coherenceTells:()=>[],
   callOpenRouterOnce:()=>{throw Error('Must be passed to the guarded helper, not called directly');},
   repairRepetition:async(body,draft,options)=>{calls.push({body,draft,options});return {text:'Fresh character reply',status:'repaired',events:[{model:'utility',usage:{prompt_tokens:99}}]};},

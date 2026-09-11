@@ -1962,6 +1962,10 @@ function detectCadenceLockins(content, upstreamBody) {
  * path, where her 17K worldbuilding replies are legitimate (the Aug-10
  * lesson). Kill: KADE_COHERENCE=0. */
 const COHERENCE_ON = process.env.KADE_COHERENCE !== '0';
+/* Part 179: the keeper belt's reply-side carve-out (see detectAndRewrite).
+ * Read once here, like SLOP_VERIFY, so the function body never touches
+ * process -- the reply-focus tests run that body in a bare vm context. */
+const KEEPER_OUT_CARVEOUT = process.env.KADE_KEEPER_OUT_CARVEOUT !== '0';
 const COHERENCE_META_RE = /\b(?:attempt collapsed mid-thought|let me land it|i keep tangling|i'?m tangling myself|let me just say it straight|ok(?:ay)? i'?m tangling)\b/i;
 const ADJ_REPEAT_SKIP = new Set(['that', 'had', 'very', 'really', 'blah']);
 function coherenceTells(text, baselineChars = 0) {
@@ -2038,7 +2042,7 @@ async function detectAndRewrite(result, upstreamBody) {
    * restates) -- two rewrite calls per bucket, on text no person reads as a
    * reply. Same detector as the inbound carve-out, so the halves cannot drift.
    * Kill: KADE_KEEPER_OUT_CARVEOUT=0. */
-  if (process.env.KADE_KEEPER_OUT_CARVEOUT !== '0' && isMemoryKeeperShapedBody(upstreamBody)) {
+  if (KEEPER_OUT_CARVEOUT && isMemoryKeeperShapedBody(upstreamBody)) {
     console.log('[slop] keeper-belt machine lane (keeper / consolidation / miner) -- reply detection and rewrite skipped');
     return result;
   }

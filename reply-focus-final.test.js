@@ -4,7 +4,7 @@ const start=source.indexOf('async function detectAndRewrite('),end=source.indexO
 function setup({long=false,repair=false,coherent=true}={}){
  const seen=[],events=[];
  const context={console,REPLY_FOCUS_ON:true,replyFocusCounts:{},COHERENCE_ON:true,SLOP_REWRITE_MAX_CHARS:long?3:10000,SLOP_VERIFY:true,
-  scrubSearchArtifacts:t=>t,normalizeVoiceTagTypos:t=>t,isLyricBody:()=>false,isSweptMachineBody:()=>false,isKianaBody:()=>true,
+  scrubSearchArtifacts:t=>t,normalizeVoiceTagTypos:t=>t,isLyricBody:()=>false,isSweptMachineBody:()=>false,isMemoryKeeperShapedBody:()=>false,KEEPER_OUT_CARVEOUT:true,isKianaBody:()=>true,
   looksInjected:()=>false,stripContextReplay:t=>t,coherenceTells:t=>!coherent&&t==='Character correction'?['bad']:[],
   coherenceRetryWorthy:()=>false,protectSentinelTags:t=>({text:t,tags:[]}),restoreSentinelTags:t=>t,
   collectMatches:t=>['Initial reply','Character correction'].includes(t)?[{pattern:'clean_tic'}]:[],

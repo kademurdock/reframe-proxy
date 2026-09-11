@@ -33,6 +33,7 @@ test('detectAndRewrite skips the keeper belt right after the swept machine lanes
   assert.match(fn, /isSweptMachineBody\(upstreamBody\)/);
   assert.match(fn, /isMemoryKeeperShapedBody\(upstreamBody\)/);
   assert.ok(fn.indexOf('isSweptMachineBody(upstreamBody)') < fn.indexOf('isMemoryKeeperShapedBody(upstreamBody)'));
-  assert.match(fn, /KADE_KEEPER_OUT_CARVEOUT/);
+  assert.match(fn, /KEEPER_OUT_CARVEOUT && isMemoryKeeperShapedBody/);
+  assert.match(src, /const KEEPER_OUT_CARVEOUT = process\.env\.KADE_KEEPER_OUT_CARVEOUT !== '0'/);
   assert.match(fn, /keeper-belt machine lane .* reply detection and rewrite skipped/);
 });
