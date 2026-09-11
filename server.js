@@ -1231,6 +1231,18 @@ const TOOL_NOTES = {
   kade_call_me: "Tool note (kade_call_me): when the user asks you to CALL them (a wake-up call, a spoken reminder, a scheduled voice check-in), use kade_call_me schedule_call -- kade_notify is a silent text, this one actually rings. THE DATE LAW: compute the real 'YYYY-MM-DD' from today's date given in this prompt; never pass 'tomorrow'. Only claim a call is set AFTER the tool confirms it this turn, then read the plan back naturally: who's calling, the day and time in plain words, why, and which ringtone. If the tool returns a quiet-hours warning, ask whether this one should ring through the night (wake-up calls usually yes, everything else usually no) and re-schedule with override_quiet_hours:true only on their explicit yes. Offer a test_call on a first-ever setup so they can hear the ring. Never schedule a call they did not ask for.",
   kade_notify: "Tool note (kade_notify): if a request is going to take a real while -- several hand-offs, deep research, anything with a lot of steps -- say so plainly and offer to ping her phone when it is done, then actually send that ping the moment you finish, as part of your final reply. Do not offer it for ordinary quick replies.",
   kade_adventure: 'Tool note (kade_adventure): adventure progress is saved by the tool. Build only on the state it returns; do not invent past events or claim to have saved on your own.',
+  /* Part 177 (Sep 11 2026, Kade's iPhone conversation, read off the fork's
+   * logs): tools-as-retrieval attached web_search on 13 Kiana turns since
+   * Sep 10 afternoon and the model called it on 2. On her explicit "you
+   * should look it up" (04:22Z), retrieval kept web_search, the run made ONE
+   * LLM call, and Kiana wrote "I cannot pull fresh search right now" --
+   * echoing her own two earlier replies in that conversation, written on
+   * turns where search really was dropped. The fork's NO_WEB_NOTE covers the
+   * dropped case; nothing spoke for the kept case. This does, and it rides
+   * here because Part 141.4 measured that grok-4.20 obeys a trailing SYSTEM
+   * note where it sets a user-role one aside. Only turns whose body carries
+   * web_search see it. */
+  web_search: 'Tool note (web_search): web search IS attached on this turn and it works right now. Never say search is off, unavailable, broken, not on your side, or coming back later, and disregard any earlier reply in this conversation that said so -- that was a different turn. For anything that changes over time (what is out or announced, product releases and specs, prices, dates, news, who holds a job, scores, schedules), call web_search FIRST and answer from what it returns; never answer those from memory, not as a rumor roundup, not hedged, not as of your last update. When the person asks you to look something up, check, search, or find out, the first thing you do is call web_search -- before any other words.',
 };
 
 function toolNotesFor(body) {
