@@ -113,8 +113,12 @@ function detectPersonaParrot(content, systemText, opts = {}) {
   const n = opts.n || PARROT_N;
   const examples = Array.isArray(opts.exampleLines) ? opts.exampleLines : exampleLinesFromSystem(systemText);
   if (!examples.length) return [];
-  const bank = new Set();
-  for (const ex of examples) for (const g of shingleSet(ex, n)) bank.add(g);
+  /* gram -> the example line it came from, so a hit can carry the WHOLE
+   * scripted exchange to the rewriter (Part 179: told only the copied run,
+   * the rewriter kept the example's skeleton and swapped the nouns --
+   * "engine or the road" came back as "car or the highway"). */
+  const bank = new Map();
+  examples.forEach((ex, idx) => { for (const g of shingleSet(ex, n)) if (!bank.has(g)) bank.set(g, idx); });
   if (!bank.size) return [];
   const reply = words(stripTags(content));
   const hits = [];
@@ -125,7 +129,7 @@ function detectPersonaParrot(content, systemText, opts = {}) {
       // extend the run as far as it keeps matching, so one copied sentence is one match
       let end = i + n;
       while (end < reply.length && bank.has(reply.slice(end - n + 1, end + 1).join(' '))) end++;
-      hits.push(reply.slice(i, end).join(' '));
+      hits.push({ run: reply.slice(i, end).join(' '), example: examples[bank.get(gram)] });
       i = end;
     } else {
       i++;
@@ -134,13 +138,14 @@ function detectPersonaParrot(content, systemText, opts = {}) {
   const seen = new Set();
   const matches = [];
   for (const h of hits) {
-    if (seen.has(h)) continue;
-    seen.add(h);
+    if (seen.has(h.run)) continue;
+    seen.add(h.run);
     matches.push({
       pattern: 'persona_parrot', kind: 'rewrite', tightness: 'strict',
       span: [0, 0], x: null, y: null,
-      text: h.slice(0, 80),
-      detail: h.slice(0, 120),
+      text: h.run.slice(0, 80),
+      detail: h.run.slice(0, 120),
+      example: String(h.example || '').slice(0, 320),
     });
     if (matches.length >= PARROT_MAX) break;
   }

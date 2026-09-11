@@ -857,7 +857,12 @@ const PATTERN_GUIDANCE = {
   // Part 118 (Sep 2 2026): these five had no guidance line, so the rewriter
   // was handed the bare word "gasup" and guessed. Amber A named the shape.
   gasup: 'gassing the person up ("you know it better than anybody", "the strongest sentence you\'ve said all week", "you just said something that changes everything", "nobody has figured that out the way you have", "most people couldn\'t... you did") -- take the thing they said and USE it; do not grade it, rank it, or hand out a medal for it',
-  persona_parrot: 'a line copied word for word out of the character\'s own example script (the copied words are quoted after this note) -- say the same thing in fresh words with different imagery; the copied phrase must not survive in any form',
+  // Part 179 (Sep 11 2026): the first wording ("fresh words with different
+  // imagery") bought a noun swap -- "engine or the road" came back as "car or
+  // the highway", same skeleton, same punchline (reframe log 11:30Z Sep 11). A
+  // copied example is a SCRIPT being re-performed, so the rewriter now sees the
+  // whole example and is told to drop the bit, not re-dress it.
+  persona_parrot: 'a line lifted from the character\'s own example script (the copied words are quoted after this note, then the whole scripted example they came from) -- this is a script being re-performed, so do NOT keep its comparison, analogy, structure or punchline with the nouns swapped; drop that bit entirely and answer the person\'s actual question with a different point, in the same voice; nothing recognisable from the example may survive',
   user_echo: 'a sentence that repeats back what the person just said in nearly their own words (quoted after this note) -- cut it, or fold its content into a one-clause reaction; keep every sentence that adds something new',
   part_grading: 'grading their words for them ("that\'s the part that matters", "the part where you...") -- say the actual point instead of pointing at which part was good',
   honestly_marker: 'an "honestly," / "if I\'m being honest" / "real talk" sincerity marker -- just say the thing; the marker implies everything before it was not honest',
@@ -882,9 +887,13 @@ function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
     const g = guidanceFor(m.pattern);
     // Part 178: the echo channels name the offending words, so the rewriter
     // is told WHICH phrase to lose rather than that some phrase was copied.
-    return m.detail && (m.pattern === 'persona_parrot' || m.pattern === 'user_echo') ? `${g}: "${m.detail}"` : g;
+    if (m.pattern === 'persona_parrot' && m.detail) {
+      return m.example ? `${g}: "${m.detail}" -- from the scripted example: "${m.example}"` : `${g}: "${m.detail}"`;
+    }
+    return m.detail && m.pattern === 'user_echo' ? `${g}: "${m.detail}"` : g;
   }))];
   const list = categories.map((c) => `- ${c}`).join('\n');
+  const parroted = matches.some((m) => m.pattern === 'persona_parrot');
   const lines = [
     'You will be given a passage of text written by an AI assistant. The passage',
     'overuses one or more known AI-writing tics, specifically:',
@@ -898,6 +907,15 @@ function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
     'Do not add commentary, a preamble, or quotation marks around your answer.',
     'Output ONLY the rewritten passage, nothing else.',
   ];
+  if (parroted) {
+    lines.push(
+      '',
+      'One exception to "smallest edits": where a copied script line is listed above, the',
+      'smallest edit is not enough. Swapping its nouns, its comparison or its closing line',
+      'for lookalikes still re-performs the script. Cut that whole bit and put a different',
+      'point in its place -- the speaker\'s own take on the actual question, in the same voice.'
+    );
+  }
   if (hasProtectedTags) {
     lines.push(
       '',
