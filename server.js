@@ -70,6 +70,11 @@ const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
 const { detectDrift, driftSteerNote } = require('./cadence-drift');
 const { repairRepetition } = require('./reply-focus');
+const { detectEchoGuard, echoShare } = require('./echo-guard');
+/* Part 178 (Sep 11 2026): the two echoes read off the persona battery and
+ * her own Sep 8 chat -- a copied persona example line, and a near-verbatim
+ * restatement of the person's message. Kill: KADE_ECHO_GUARD=0. */
+const ECHO_GUARD_ON = process.env.KADE_ECHO_GUARD !== '0';
 const { isKianaBody } = require('./voice-anchors');
 const REPLY_FOCUS_ON = process.env.KADE_REPLY_FOCUS !== '0';
 const replyFocusCounts = {};
@@ -852,6 +857,8 @@ const PATTERN_GUIDANCE = {
   // Part 118 (Sep 2 2026): these five had no guidance line, so the rewriter
   // was handed the bare word "gasup" and guessed. Amber A named the shape.
   gasup: 'gassing the person up ("you know it better than anybody", "the strongest sentence you\'ve said all week", "you just said something that changes everything", "nobody has figured that out the way you have", "most people couldn\'t... you did") -- take the thing they said and USE it; do not grade it, rank it, or hand out a medal for it',
+  persona_parrot: 'a line copied word for word out of the character\'s own example script (the copied words are quoted after this note) -- say the same thing in fresh words with different imagery; the copied phrase must not survive in any form',
+  user_echo: 'a sentence that repeats back what the person just said in nearly their own words (quoted after this note) -- cut it, or fold its content into a one-clause reaction; keep every sentence that adds something new',
   part_grading: 'grading their words for them ("that\'s the part that matters", "the part where you...") -- say the actual point instead of pointing at which part was good',
   honestly_marker: 'an "honestly," / "if I\'m being honest" / "real talk" sincerity marker -- just say the thing; the marker implies everything before it was not honest',
   therapy_sit: 'the therapy-bot "sit with that" -- say what you actually want them to do or notice, in plain words',
@@ -871,7 +878,12 @@ function guidanceFor(patternName) {
 }
 
 function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
-  const categories = [...new Set(matches.map((m) => guidanceFor(m.pattern)))];
+  const categories = [...new Set(matches.map((m) => {
+    const g = guidanceFor(m.pattern);
+    // Part 178: the echo channels name the offending words, so the rewriter
+    // is told WHICH phrase to lose rather than that some phrase was copied.
+    return m.detail && (m.pattern === 'persona_parrot' || m.pattern === 'user_echo') ? `${g}: "${m.detail}"` : g;
+  }))];
   const list = categories.map((c) => `- ${c}`).join('\n');
   const lines = [
     'You will be given a passage of text written by an AI assistant. The passage',
@@ -1011,6 +1023,20 @@ function collectMatches(content, upstreamBody) {
       if (rewritable.length > 0) matches.push(...rewritable);
     } catch (err) {
       console.error('drift check threw, skipping:', err.message);
+    }
+  }
+  if (ECHO_GUARD_ON) {
+    try {
+      const humanText = stripContextReplay(autoThinkPersonText(upstreamBody));
+      const echo = detectEchoGuard(content, upstreamBody, { humanText });
+      if (echo.length > 0) {
+        console.log(`[echo-guard] ${echo.map((m) => `${m.pattern}: "${m.text}"`).join(' | ')}`);
+        matches.push(...echo);
+      }
+      const share = echoShare(content, humanText);
+      if (share != null) console.log(`[echo-guard] echoShare=${share}`);
+    } catch (err) {
+      console.error('echo guard threw, skipping:', err.message);
     }
   }
   return matches;
