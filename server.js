@@ -1496,9 +1496,10 @@ function appendReminder(body) {
   }
   if (isTitleShapedBody(body)) return body;
   const toolNotes = toolNotesFor(body);
+  const focusNote = isKianaBody(body) ? ' Current-turn priority: answer the latest human message, including corrections to a side remark. Search only to resolve that current request; old search questions and search results are context, not unfinished assignments. When the person says an issue is already resolved, acknowledge that correction rather than researching or repeating the previous topic. Do not attach unrelated reminders to a researched answer.' : '';
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + voiceNoteFor(body) + voicePerformanceNoteFor(body) + currentTimeNote() + toolNotes }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + voiceNoteFor(body) + voicePerformanceNoteFor(body) + currentTimeNote() + toolNotes + focusNote }],
   };
 }
 
@@ -2202,7 +2203,7 @@ async function detectAndRewrite(result, upstreamBody) {
       // a person's bill at the wrong rate. Keep each provider receipt separate.
       console.log('[reply-focus] ' + JSON.stringify({ id: result.id, status: focused.status, calls: focused.events }));
     }
-    if (focused.status === 'repaired' && coherenceTells(focused.text, 0).length === 0) {
+    if (['repaired', 'repetition_blocked'].includes(focused.status) && coherenceTells(focused.text, 0).length === 0) {
       content = normalizeVoiceTagTypos(scrubSearchArtifacts(focused.text));
       choice.message.content = content;
     }

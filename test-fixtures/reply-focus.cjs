@@ -9,7 +9,10 @@ global.fetch=async(url,opts)=>{
   if(JSON.stringify(input).includes('injected inventory'))throw Error('Machinery leaked into review');
   text=JSON.stringify({focus:'Convenience objection',reason:'Old paper advice',confidence:'high',replay:input.draft==='Heavy paper is the clean option.'||input.draft==='Heavy paper resists ink showing through.'});
  }else if(b.model.includes('glm'))text='Heavy paper resists ink showing through.';
- else if(b.messages.at(-1).content.startsWith('Write the final reply'))text='%%%amused%%% Then the corner shop wins. I sent you shopping when the notebook was already right there.';
+ else if(b.messages.some(m=>m.role==='system'&&m.content.startsWith('Write the final reply'))) {
+  if(b.messages.at(-1).role!=='user'||b.messages.at(-1).content!=='The corner shop is easier.')throw Error('Repair lost the current user');
+  text='%%%amused%%% Then the corner shop wins. I sent you shopping when the notebook was already right there.';
+ }
  else text='Heavy paper is the clean option.';
  const result={id:'offline-focus',model:b.model,choices:[{finish_reason:'stop',message:{role:'assistant',content:text}}],usage:{prompt_tokens:10,completion_tokens:20,total_tokens:30}};
  if(!b.stream)return Response.json(result);

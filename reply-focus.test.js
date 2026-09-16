@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'), assert=require('node:assert/strict');
-const {reviewInput,verdict,repairRepetition}=require('./reply-focus');
+const {reviewInput,verdict,repairBody,repairRepetition}=require('./reply-focus');
 const body={model:'x-ai/grok-4.20',messages:[
  {role:'system',content:'Character identity and privacy rules'},
  {role:'user',content:'Where did the fictional painter study?'},
@@ -14,6 +14,20 @@ const options={isInjected:t=>t.startsWith('# Runtime')};
 const answer=(content,finish_reason='stop')=>({choices:[{message:{content},finish_reason}],usage:{prompt_tokens:20,completion_tokens:10,cost:0.001}});
 const yes=JSON.stringify({replay:true,confidence:'high',reason:'Repeats the school instead of discussing color.',focus:'The violet light.'});
 const no=JSON.stringify({replay:false,confidence:'high',reason:'New response.',focus:'The violet light.'});
+
+test('repair ends with the actual correction and excludes stale search and runtime nudges',()=>{
+ const source={...body,messages:[...body.messages,
+  {role:'system',content:'Quick style check: old search and unrelated reminders'}]};
+ const input=reviewInput(source,'She studied at Redfern.',options);
+ const repaired=repairBody(source,input,{focus:'A correction',reason:'Answered an old question'});
+ assert.equal(repaired.messages.at(-1).role,'user');
+ assert.equal(repaired.messages.at(-1).content,'The violet light.');
+ assert.equal(repaired.messages[0].content,body.messages[0].content);
+ assert.ok(repaired.messages.some(m=>m.content.includes('At Redfern.')));
+ assert.doesNotMatch(JSON.stringify(repaired.messages),/old school records|Quick style check/);
+ assert.match(JSON.stringify(repaired.messages),/gallery entry/);
+ assert.equal(source.messages.length,body.messages.length+1);
+});
 test('reads only completed dialogue and keeps tool traffic out of the reviewer input',()=>{
  const input=reviewInput(body,'She studied at Redfern.',options);
  assert.equal(input.latestUser,'The violet light.');
@@ -50,11 +64,20 @@ test('replaces on the original model only after independent verification, withou
  assert.equal(JSON.stringify(body),before);assert.match(result.text,/%%%laugh%%%/);
  assert.ok(calls.every(c=>c.timeout<=14000));
 });
-test('unavailable, empty, truncated, or still-repetitive repair never replaces the original',async()=>{
- for(const results of [[answer(yes),answer('','stop')],[answer(yes),answer('cut','length')],[answer(yes),answer('Still repeats'),answer(yes)],[answer(yes),answer('New'),answer('broken')]]){
+test('unavailable, empty, truncated, or unverified repair never replaces the original',async()=>{
+ for(const results of [[answer(yes),answer('','stop')],[answer(yes),answer('cut','length')],[answer(yes),answer('New'),answer('broken')]]){
   const result=await repairRepetition(body,'Original',{...options,complete:async()=>results.shift()});
   assert.equal(result.text,'Original');assert.ok(result.events.length<=3);
  }
  const unavailable=await repairRepetition(body,'Original',{...options,complete:async()=>{throw Error('timeout');}});
  assert.equal(unavailable.status,'unavailable');assert.equal(unavailable.events.length,1);
+});
+
+test('two confirmed repetitive drafts produce an explicit failure instead of recycling the old answer',async()=>{
+ const results=[answer(yes),answer('Still repeats'),answer(yes)];
+ const result=await repairRepetition(body,'She studied at Redfern.',{...options,complete:async()=>results.shift()});
+ assert.equal(result.status,'repetition_blocked');
+ assert.doesNotMatch(result.text,/Redfern/);
+ assert.match(result.text,/couldn't produce a useful reply/);
+ assert.equal(result.events.length,3);
 });
