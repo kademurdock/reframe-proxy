@@ -1450,8 +1450,15 @@ const {
 } = require('./machines.js');
 
 const { isLyricBody, LYRIC_OUTPUT_NOTE } = require('./lyrics');
+const { writingDeskFor, WRITING_STYLE_NOTE } = require('./writing');
 
 function appendReminder(body) {
+  const writingDesk = writingDeskFor(body);
+  if (writingDesk) {
+    console.log(`[writing] ${writingDesk}: shared craft guidance; artifact format preserved`);
+    const note = WRITING_STYLE_NOTE + (writingDesk === 'lyrics' ? '\n' + LYRIC_OUTPUT_NOTE : '');
+    return { ...body, messages: [...body.messages, { role: 'system', content: note }] };
+  }
   if (isLyricBody(body)) {
     return { ...body, messages: [...body.messages, { role: 'system', content: LYRIC_OUTPUT_NOTE }] };
   }
@@ -1993,6 +2000,10 @@ function coherenceRetryWorthy(tells) {
 }
 
 async function detectAndRewrite(result, upstreamBody) {
+  if (writingDeskFor(upstreamBody)) {
+    console.log('[writing] artifact preserved; conversational scrub and paid prose rewrite skipped');
+    return result;
+  }
   const choice = result.choices?.[0];
   let content = choice?.message?.content;
   if (typeof content !== 'string' || content.length === 0) return result;

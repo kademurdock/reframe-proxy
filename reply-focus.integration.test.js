@@ -3,7 +3,7 @@ const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
 const start=source.indexOf('async function detectAndRewrite('),end=source.indexOf('\n// -- fake single-shot SSE',start);
 function setup(enabled=true){
  const calls=[];
- const context={console, REPLY_FOCUS_ON:enabled, replyFocusCounts:{}, COHERENCE_ON:false,
+ const context={writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',console, REPLY_FOCUS_ON:enabled, replyFocusCounts:{}, COHERENCE_ON:false,
   scrubSearchArtifacts:t=>t,normalizeVoiceTagTypos:t=>t,isLyricBody:b=>b.lyric,isSweptMachineBody:b=>b.machine,isMemoryKeeperShapedBody:b=>!!b.keeper,KEEPER_OUT_CARVEOUT:true,
   isKianaBody:b=>b.kiana,looksInjected:()=>false,stripContextReplay:t=>t,coherenceTells:()=>[],
   callOpenRouterOnce:()=>{throw Error('Must be passed to the guarded helper, not called directly');},

@@ -3,7 +3,7 @@ const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
 const start=source.indexOf('async function detectAndRewrite('),end=source.indexOf('\n// -- fake single-shot SSE',start);
 function setup({long=false,repair=false,coherent=true}={}){
  const seen=[],events=[];
- const context={console,REPLY_FOCUS_ON:true,replyFocusCounts:{},COHERENCE_ON:true,SLOP_REWRITE_MAX_CHARS:long?3:10000,SLOP_VERIFY:true,
+ const context={writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',console,REPLY_FOCUS_ON:true,replyFocusCounts:{},COHERENCE_ON:true,SLOP_REWRITE_MAX_CHARS:long?3:10000,SLOP_VERIFY:true,
   scrubSearchArtifacts:t=>t,normalizeVoiceTagTypos:t=>t,isLyricBody:()=>false,isSweptMachineBody:()=>false,isMemoryKeeperShapedBody:()=>false,KEEPER_OUT_CARVEOUT:true,isKianaBody:()=>true,
   looksInjected:()=>false,stripContextReplay:t=>t,coherenceTells:t=>!coherent&&t==='Character correction'?['bad']:[],
   coherenceRetryWorthy:()=>false,protectSentinelTags:t=>({text:t,tags:[]}),restoreSentinelTags:t=>t,
