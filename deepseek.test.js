@@ -3,9 +3,22 @@ const assert = require('node:assert/strict');
 const { isDeepseekModel, deepseekProviderPrefs, adaptForDeepseek } = require('./deepseek.js');
 const { isReasoningModel, thinkTierFor, adaptForGlm } = require('./modelbudget.js');
 
-test('deepseek turns are held to zero-retention endpoints, cheapest first, any country', () => {
+test('deepseek turns are held to zero-retention endpoints, fast hosts first, slow ones ignored', () => {
   const out = adaptForDeepseek({ model: 'deepseek/deepseek-v4.1-flash', messages: [] }, {});
-  assert.deepEqual(out.provider, { zdr: true, data_collection: 'deny', sort: 'price', allow_fallbacks: true });
+  assert.deepEqual(out.provider, {
+    zdr: true,
+    data_collection: 'deny',
+    order: ['together', 'parasail', 'modal', 'makora'],
+    ignore: ['morph', 'relace', 'deepinfra', 'digitalocean'],
+    allow_fallbacks: true,
+  });
+});
+
+test('the host lists are env-tunable and an empty order returns to price sort', () => {
+  const tuned = deepseekProviderPrefs({ KADE_DEEPSEEK_ORDER: 'modal, together', KADE_DEEPSEEK_IGNORE: '' });
+  assert.deepEqual(tuned.order, ['modal', 'together']);
+  assert.equal(tuned.ignore, undefined);
+  assert.deepEqual(deepseekProviderPrefs({ KADE_DEEPSEEK_ORDER: '' }), { zdr: true, data_collection: 'deny', sort: 'price', allow_fallbacks: true });
 });
 
 test('an upstream order or an env allow-list is kept but can never drop retention', () => {
