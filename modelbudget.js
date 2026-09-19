@@ -115,8 +115,15 @@ const XAI_MODEL_RE = /^x-ai\//i;
 function isXaiModel(model) {
   return XAI_MODEL_RE.test(String(model || ''));
 }
+/* Part 213 (Sep 19 2026): the fleet moved to deepseek/deepseek-v4.1-flash. The
+ * Sep 7 lesson above is the reason this line exists on day one: a fleet model
+ * missing from this predicate never reaches the classifier and never thinks. */
+const DEEPSEEK_MODEL_RE = /^deepseek\//i;
+function isDeepseekModel(model) {
+  return DEEPSEEK_MODEL_RE.test(String(model || ''));
+}
 function isReasoningModel(model) {
-  return isKimiModel(model) || isGlmModel(model) || isXaiModel(model);
+  return isKimiModel(model) || isGlmModel(model) || isXaiModel(model) || isDeepseekModel(model);
 }
 /** True when the model thinks whatever the caller asked for. */
 function alwaysThinks(model) {
@@ -132,7 +139,7 @@ const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 64000
  * @returns {'deep'|'think'|false}
  */
 function thinkTierFor(body) {
-  if (!body || !(isGlmModel(body.model) || isXaiModel(body.model))) return false;
+  if (!body || !(isGlmModel(body.model) || isXaiModel(body.model) || isDeepseekModel(body.model))) return false;
   const r = body.reasoning || {};
   const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
   const asked = r.enabled === true || ['low', 'medium', 'high', 'xhigh'].includes(effort);

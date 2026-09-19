@@ -410,6 +410,8 @@ function stripEmptyTextParts(messages) {
 
 // -- X-AI PROVIDER PIN (Sep 5 2026, Part 131): zdr + price, see xai.js --
 const { adaptForXai } = require('./xai.js');
+// -- DEEPSEEK PROVIDER PIN (Sep 19 2026, Part 213): US zero-retention hosts only, see deepseek.js --
+const { adaptForDeepseek } = require('./deepseek.js');
 
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
@@ -686,7 +688,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
   // 25s rewrite timeout. Routing now happens ONLY at the two person-facing
   // entry points (handleStreaming + the non-stream main route), each with a
   // real reqId, so internal helpers can never re-enter the router.
-  body = adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(body))));
+  body = adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(body)))));
   let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
     { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body) },
@@ -2705,7 +2707,7 @@ async function classifyThinkTier(excerpt, reqId) {
   try {
     const r = await fetchWithTimeout(
       chatCompletionsUrl(body.model),
-      { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(adaptForXai(adaptForGlm(adaptForKimi(body)))) },
+      { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(adaptForDeepseek(adaptForXai(adaptForGlm(adaptForKimi(body))))) },
       AUTO_CLASSIFY_TIMEOUT_MS
     );
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -3037,7 +3039,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
   upstreamBody = await maybeAutoThink(upstreamBody, reqId);
-  upstreamBody = adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(upstreamBody))));
+  upstreamBody = adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(upstreamBody)))));
   // Session 22 (Kade: "Check caching, because that saves money in multiple
   // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
   // repeated ~9K-token prefix -> cached_tokens 8192, hit rate $0.16/M vs
