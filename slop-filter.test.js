@@ -186,3 +186,11 @@ test('nofluff_tic: the tag trips, the possessive stays legal (Part 131)', () => 
   assert.equal(trip('The kitten is all fluff and no fight.'), 0);
   assert.equal(trip('marshmallow fluff on the sandwich'), 0);
 });
+
+/* Part 221 (Sep 19 2026) — em-dash restatement needs SHORT parallel items. */
+test('em dash restatement: the drumbeat trips, an ordinary run-on aside does not', () => {
+  const { detectSlop } = require('./slop-filter.js');
+  const hit = (t) => detectSlop(t).matches.some((m) => m.pattern === 'em_dash_restatement');
+  assert.equal(hit('It came out too bright — too much top, too much air, too much shine.'), true);
+  assert.equal(hit('Get her in this week — not to alarm you, but because there are things that mimic memory loss that are fixable, and a doctor can tell the difference.'), false);
+});

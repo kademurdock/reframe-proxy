@@ -77,4 +77,25 @@ function adaptForDeepseek(body, env = process.env) {
   return { ...body, provider: next };
 }
 
-module.exports = { DEEPSEEK_MODEL_RE, isDeepseekModel, deepseekProviderPrefs, adaptForDeepseek };
+/* Part 221 (Sep 19 2026): the model's own habits, named to it last in the
+ * context. Measured on ten Kiana turns the day of the switch: the negate-then-
+ * correct reframe ("this isn't one. It's a transaction", "the real question
+ * isn't X. It's Y") survived into 4 of 10 replies although it is the first
+ * line of STYLE_REMINDER, and every turn the slop filter had to rewrite cost
+ * the person 5-10 more seconds. 10 of 10 replies also opened on a voice
+ * direction. DeepSeek follows a note literally when the note is specific and
+ * close to the end, so this is short, concrete and rides deepseek turns only.
+ * Kill switch: KADE_DEEPSEEK_HABIT_NOTE=0. */
+const DEEPSEEK_HABIT_NOTE =
+  ' Your own habit to watch: setting up a point by first denying a different one ("this isn\'t X. It\'s Y", "the real question isn\'t X, it\'s Y",' +
+  ' "it\'s not about X", "not just X but Y"). Nobody said X. Say Y straight out as your own claim and keep going. If you catch the words' +
+  ' isn\'t, not just or not about arriving as a setup, drop that half of the sentence. Also vary how replies begin: many should simply start' +
+  ' with your words, with any voice direction arriving later where the feeling actually changes.';
+function deepseekHabitNoteFor(body, env = process.env) {
+  if (String(env.KADE_DEEPSEEK_HABIT_NOTE ?? '1') === '0') return '';
+  if (!body || !isDeepseekModel(body.model)) return '';
+  if (body.response_format && body.response_format.type !== 'text') return '';
+  return DEEPSEEK_HABIT_NOTE;
+}
+
+module.exports = { DEEPSEEK_HABIT_NOTE, deepseekHabitNoteFor, DEEPSEEK_FAST_ORDER, DEEPSEEK_SLOW_IGNORE, DEEPSEEK_MODEL_RE, isDeepseekModel, deepseekProviderPrefs, adaptForDeepseek };

@@ -410,7 +410,14 @@ function detectOverHedging(text) {
 
 // -- 5) Em-dash-into-profound-restatement: a clause, an em dash, then a
 //    dramatic 3+ item comma list re-saying the same point.
-const EM_DASH_RESTATEMENT_RE = /—\s*[^,.!?—]+,\s*[^,.!?—]+,\s*[^,.!?—]+[.!?]/g;
+/* Part 221 (Sep 19 2026): each item is now SHORT (one to six words). The old
+ * form took any three comma-separated stretches after a dash, so an ordinary
+ * aside tripped it on deepseek: "— not to alarm you, but because there are
+ * things that mimic memory loss that are fixable, and a doctor can tell the
+ * difference." The tic is a drumbeat of short parallel items ("too much top,
+ * too much air, too much shine"); a clause that runs on is just a sentence. */
+const EM_DASH_ITEM = String.raw`[^,.!?—\s]+(?:[ \t]+[^,.!?—\s]+){0,5}`;
+const EM_DASH_RESTATEMENT_RE = new RegExp(String.raw`—\s*${EM_DASH_ITEM},\s*${EM_DASH_ITEM},\s*(?:and\s+|or\s+)?${EM_DASH_ITEM}[.!?]`, 'g');
 
 function detectEmDashRestatement(text) {
   const matches = [];

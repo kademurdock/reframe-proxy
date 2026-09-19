@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {voicePerformanceNoteFor}=require('./voice-performance');
 const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
-const context={writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
+const context={deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
  LYRIC_OUTPUT_NOTE:'lyric',COMPACTION_DATE_ON:true,isCompactionShapedBody:b=>b.compaction,
  compactionDateNote:()=>'',KEEPER_CARVEOUT_ON:true,isMemoryKeeperShapedBody:b=>b.keeper,
  isSweptMachineBody:b=>b.machine,isMemorySummaryShapedBody:()=>true,isDiaryRepairShapedBody:()=>false,
@@ -25,4 +25,11 @@ test('structured output and emergency switch omit the new performance note',()=>
 test('performance guidance preserves explicit calm/deadpan, continuity, identity and artifact boundaries',()=>{
  const note=voicePerformanceNoteFor(body());
  for(const term of ['follow explicit delivery requests','without a tag quota','accent, personality','out of code'])assert.ok(note.includes(term));
+});
+test('deepseek turns get the pacing note; other models and the kill switch do not',()=>{
+ const ds=voicePerformanceNoteFor(body({model:'deepseek/deepseek-v4.1-flash'}));
+ assert.match(ds,/Voice pacing:/);assert.match(ds,/Steady pace does not mean steady pitch/);
+ assert.ok(!/%%%pause%%%/.test(ds),'timing directions are dropped by the speech proxy');
+ assert.ok(!voicePerformanceNoteFor(body({model:'x-ai/grok-4.20'})).includes('Voice pacing:'));
+ process.env.KADE_DEEPSEEK_VOICE_PACING='0';try{assert.ok(!voicePerformanceNoteFor(body({model:'deepseek/deepseek-v4.1-flash'})).includes('Voice pacing:'));}finally{delete process.env.KADE_DEEPSEEK_VOICE_PACING;}
 });

@@ -447,7 +447,7 @@ function stripEmptyTextParts(messages) {
 // -- X-AI PROVIDER PIN (Sep 5 2026, Part 131): zdr + price, see xai.js --
 const { adaptForXai } = require('./xai.js');
 // -- DEEPSEEK PROVIDER PIN (Sep 19 2026, Part 213): US zero-retention hosts only, see deepseek.js --
-const { adaptForDeepseek } = require('./deepseek.js');
+const { adaptForDeepseek, deepseekHabitNoteFor } = require('./deepseek.js');
 
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
@@ -914,8 +914,23 @@ const PATTERN_GUIDANCE = {
   exposure_cliche: 'the exposure-therapy medal ("you said it out loud and the house didn\'t catch fire", "the sky didn\'t fall", "nothing catastrophic happened") -- do not congratulate them for saying a thing; respond to the thing they said',
 };
 
+/* Part 221 (Sep 19 2026): the reframe family had EIGHT detector names with no
+ * entry above (isnt_reframe, isnt_just, isnt_about, not_x_but_y_bare/_cued,
+ * reframe_article, reframe_emphatic, reframe_bare_aint), so the rewriter was
+ * handed the bare words "isnt reframe" as its whole instruction. On
+ * deepseek-v4.1-flash this family is the dominant tic (3 of 10 measured Kiana
+ * turns), and the first rewrite failed on it 20 times in 96 turns. One recipe
+ * for the whole family, with a before and after the utility model can copy. */
+const REFRAME_FAMILY_RE = /^(?:isnt_|not_x_but_y|reframe_)/;
+const REFRAME_FAMILY_GUIDANCE =
+  'the negate-then-correct reframe ("this isn\'t X. It\'s Y", "the real question isn\'t X, it\'s Y", "not just X but Y", "it\'s not about X") -- ' +
+  'delete the negated half entirely and state Y as a plain claim in the speaker\'s voice. ' +
+  'Before: "So the real question isn\'t can I cover monthly. It\'s do I have a few hundred set aside." ' +
+  'After: "So the question is whether you have a few hundred set aside." ' +
+  'Swapping "isn\'t" for "is not", "not only" or "less X than Y" keeps the tic; the contrast itself has to go';
 function guidanceFor(patternName) {
   if (PATTERN_GUIDANCE[patternName]) return PATTERN_GUIDANCE[patternName];
+  if (REFRAME_FAMILY_RE.test(patternName)) return REFRAME_FAMILY_GUIDANCE;
   if (patternName.startsWith('blocklist:')) return 'generic AI-slop phrasing';
   return patternName.replace(/_/g, ' ');
 }
@@ -931,11 +946,18 @@ function buildRewriteSystemPrompt(matches, hasProtectedTags = false) {
     return m.detail && m.pattern === 'user_echo' ? `${g}: "${m.detail}"` : g;
   }))];
   const list = categories.map((c) => `- ${c}`).join('\n');
+  /* Part 221: name the sentences. The detectors already carry the matched
+   * text; the rewriter was only ever told the CATEGORY and had to find the
+   * sentence itself, which is half of why one pass was not enough. */
+  const offending = [...new Set(matches
+    .filter((m) => m && typeof m.text === 'string' && m.text.trim().length > 0 && m.pattern !== 'persona_parrot' && m.pattern !== 'user_echo')
+    .map((m) => m.text.trim().replace(/\s+/g, ' ').slice(0, 220)))].slice(0, 6);
   const parroted = matches.some((m) => m.pattern === 'persona_parrot');
   const lines = [
     'You will be given a passage of text written by an AI assistant. The passage',
     'overuses one or more known AI-writing tics, specifically:',
     list,
+    ...(offending.length ? ['', 'Where it happens in this passage:', ...offending.map((t) => `> ${t}`)] : []),
     '',
     'Rewrite the passage so it says the same thing, with the same facts, tone,',
     'and length, WITHOUT any of those tics anywhere. Do not introduce new claims.',
@@ -1034,6 +1056,14 @@ const SLOP_REWRITE_TIMEOUT_MS = parseInt(process.env.SLOP_REWRITE_TIMEOUT_MS || 
 const SLOP_REWRITE_MODEL = (process.env.SLOP_REWRITE_MODEL || 'z-ai/glm-4.5-air').trim();
 
 const SLOP_VERIFY = process.env.KADE_SLOP_VERIFY !== '0';
+/* Part 221 (Sep 19 2026): ONE PASS. Counted off the gateway log for the first
+ * 96 deepseek turns: the first rewrite still tripped 20 times, the second
+ * swing cleaned 1 of those 20 and cost about 5 s each time with the person
+ * waiting (a live turn: model done at 11.4 s, reply sent at 20.8 s). Kade:
+ * "if you think it only needs one pass that's fine." The verify still runs
+ * and still logs what is left; it just does not spend a second call.
+ * KADE_SLOP_SECOND_PASS=1 brings the second swing back. */
+const SLOP_SECOND_PASS = process.env.KADE_SLOP_SECOND_PASS === '1';
 const RETRY_TRUNCATED = process.env.KADE_RETRY_TRUNCATED !== '0';
 
 /* One place that knows what "the detectors" means. Was inline in the response
@@ -1544,7 +1574,7 @@ function appendReminder(body) {
   const focusNote = isKianaBody(body) ? ' Current-turn priority: answer the latest human message, including corrections to a side remark. Search only to resolve that current request; old search questions and search results are context, not unfinished assignments. When the person says an issue is already resolved, acknowledge that correction rather than researching or repeating the previous topic. Do not attach unrelated reminders to a researched answer.' : '';
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + voiceNoteFor(body) + voicePerformanceNoteFor(body) + currentTimeNote() + toolNotes + focusNote }],
+    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + voiceNoteFor(body) + voicePerformanceNoteFor(body) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) }],
   };
 }
 
@@ -2194,7 +2224,12 @@ async function detectAndRewrite(result, upstreamBody) {
          * Kill: KADE_SLOP_VERIFY=0. */
         if (SLOP_VERIFY) {
           const residual = collectMatches(finalText, upstreamBody);
-          if (residual.length > 0) {
+          if (residual.length > 0 && !SLOP_SECOND_PASS) {
+            console.warn(
+              `[slop] rewrite still trips (${residual.map((m) => m.pattern).join(', ')}) — one pass only, shipping the rewrite`
+            );
+            slopStats.outcome('still_tripping');
+          } else if (residual.length > 0) {
             console.warn(
               `[slop] rewrite STILL trips (${residual.map((m) => m.pattern).join(', ')}) — one more swing`
             );

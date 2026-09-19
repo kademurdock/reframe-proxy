@@ -46,3 +46,11 @@ test('deepseek is a reasoning model to auto-think and gets room to think and sti
   assert.equal(thinkTierFor({ model: 'deepseek/deepseek-v4.1-flash', reasoning: { effort: 'high' } }), 'deep');
   assert.ok(adaptForGlm({ model: 'deepseek/deepseek-v4.1-flash', max_tokens: 900, reasoning: { effort: 'high' } }).max_tokens > 900);
 });
+
+test('the habit note rides deepseek conversation turns only and has a kill switch', () => {
+  const { deepseekHabitNoteFor } = require('./deepseek.js');
+  assert.match(deepseekHabitNoteFor({ model: 'deepseek/deepseek-v4.1-flash' }, {}), /Say Y straight out/);
+  assert.equal(deepseekHabitNoteFor({ model: 'x-ai/grok-4.20' }, {}), '');
+  assert.equal(deepseekHabitNoteFor({ model: 'deepseek/deepseek-v4-flash', response_format: { type: 'json_schema' } }, {}), '');
+  assert.equal(deepseekHabitNoteFor({ model: 'deepseek/deepseek-v4.1-flash' }, { KADE_DEEPSEEK_HABIT_NOTE: '0' }), '');
+});
