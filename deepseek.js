@@ -7,14 +7,14 @@
  * not reproduce on it. Unlike xAI, DeepSeek is served by twenty-odd providers,
  * and the cheapest are Chinese hosts (Baidu, Alibaba, StreamLake, DeepSeek).
  * This platform carries therapy transcripts, medication lists and a child's
- * seat, so the pin is a hard allow-list of US hosts that OpenRouter lists as
- * zero-data-retention for this model, tried cheapest first, with fallback
- * allowed only INSIDE that list. Read live off /api/v1/endpoints/zdr on
- * Sep 19 2026: DeepInfra 0.14/0.42, Fireworks 0.22/0.66, Together 0.30/1.20,
- * BaseTen 0.30/1.20, Parasail 0.30/1.20.
+ * seat, so every deepseek body is held to zero-data-retention endpoints. It
+ * began (Part 213) as a US-only allow-list; Part 214 made it retention-only at
+ * her direction. Read live off /api/v1/endpoints/zdr on Sep 19 2026: about
+ * fifteen zero-retention hosts serve v4.1-flash, Morph 0.135/0.54 and
+ * DeepInfra 0.14/0.42 cheapest.
  *
  * Kill switch: KADE_DEEPSEEK_PIN=0 leaves deepseek bodies untouched.
- * KADE_DEEPSEEK_PROVIDERS overrides the list (comma separated, in order).
+ * KADE_DEEPSEEK_PROVIDERS adds an allow-list (comma separated); empty by default.
  */
 const DEEPSEEK_MODEL_RE = /^deepseek\//i;
 function isDeepseekModel(model) {
@@ -23,22 +23,30 @@ function isDeepseekModel(model) {
 
 function deepseekProviderPrefs(env = process.env) {
   if (String(env.KADE_DEEPSEEK_PIN ?? '1') === '0') return null;
-  const only = String(env.KADE_DEEPSEEK_PROVIDERS ?? 'DeepInfra,Fireworks,Together,BaseTen,Parasail')
+  /* Part 214 (Sep 19 2026), her word: "I don't see why it matters whether my
+   * info stays in the US or not. I'm slightly more worried about 0dr, less
+   * worried about who has my data." So the rule is retention, not geography:
+   * zdr is OpenRouter's hard filter to endpoints that keep no copy, price sort
+   * picks the cheapest of them, and fallback stays inside that filter. The
+   * same shape as xai.js. An allow-list is still available by env for the day
+   * she wants one; it is empty by default. */
+  const prefs = { zdr: true, data_collection: 'deny', sort: 'price', allow_fallbacks: true };
+  const only = String(env.KADE_DEEPSEEK_PROVIDERS ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!only.length) return null;
-  return { only, order: only, allow_fallbacks: true, zdr: true, data_collection: 'deny' };
+  return only.length ? { ...prefs, only } : prefs;
 }
 
 function adaptForDeepseek(body, env = process.env) {
   if (!body || !isDeepseekModel(body.model)) return body;
   const prefs = deepseekProviderPrefs(env);
   if (!prefs) return body;
-  // Never override an order someone set deliberately upstream; the allow-list
-  // and the retention rule still apply to it.
+  // An upstream order or allow-list is kept; the retention rule is not negotiable.
   const existing = body.provider || {};
-  return { ...body, provider: { ...prefs, ...existing, only: prefs.only, zdr: true, data_collection: 'deny' } };
+  const next = { ...prefs, ...existing, zdr: true, data_collection: 'deny' };
+  if (existing.order) delete next.sort; // OpenRouter rejects sort together with order
+  return { ...body, provider: next };
 }
 
 module.exports = { DEEPSEEK_MODEL_RE, isDeepseekModel, deepseekProviderPrefs, adaptForDeepseek };

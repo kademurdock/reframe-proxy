@@ -3,21 +3,18 @@ const assert = require('node:assert/strict');
 const { isDeepseekModel, deepseekProviderPrefs, adaptForDeepseek } = require('./deepseek.js');
 const { isReasoningModel, thinkTierFor, adaptForGlm } = require('./modelbudget.js');
 
-test('deepseek turns are pinned to US zero-retention hosts, cheapest first, fallback inside the list only', () => {
+test('deepseek turns are held to zero-retention endpoints, cheapest first, any country', () => {
   const out = adaptForDeepseek({ model: 'deepseek/deepseek-v4.1-flash', messages: [] }, {});
-  assert.deepEqual(out.provider.only, ['DeepInfra', 'Fireworks', 'Together', 'BaseTen', 'Parasail']);
-  assert.deepEqual(out.provider.order, out.provider.only);
-  assert.equal(out.provider.zdr, true);
-  assert.equal(out.provider.data_collection, 'deny');
-  assert.equal(out.provider.allow_fallbacks, true);
-  for (const host of ['Baidu', 'Alibaba', 'StreamLake', 'DeepSeek']) assert.ok(!out.provider.only.includes(host));
+  assert.deepEqual(out.provider, { zdr: true, data_collection: 'deny', sort: 'price', allow_fallbacks: true });
 });
 
-test('an upstream order is kept but can never widen the allow-list or drop retention', () => {
-  const out = adaptForDeepseek({ model: 'deepseek/deepseek-v4.1-flash', provider: { order: ['Fireworks'], only: ['Baidu'], zdr: false } }, {});
+test('an upstream order or an env allow-list is kept but can never drop retention', () => {
+  const out = adaptForDeepseek({ model: 'deepseek/deepseek-v4.1-flash', provider: { order: ['Fireworks'], zdr: false, data_collection: 'allow' } }, {});
   assert.deepEqual(out.provider.order, ['Fireworks']);
-  assert.ok(!out.provider.only.includes('Baidu'));
+  assert.equal(out.provider.sort, undefined, 'sort and order cannot ride together');
   assert.equal(out.provider.zdr, true);
+  assert.equal(out.provider.data_collection, 'deny');
+  assert.deepEqual(adaptForDeepseek({ model: 'deepseek/deepseek-v4-flash' }, { KADE_DEEPSEEK_PROVIDERS: 'DeepInfra, Together' }).provider.only, ['DeepInfra', 'Together']);
 });
 
 test('other models and the kill switch are untouched', () => {
@@ -25,7 +22,7 @@ test('other models and the kill switch are untouched', () => {
   assert.equal(adaptForDeepseek(grok, {}), grok);
   const body = { model: 'deepseek/deepseek-v4.1-flash' };
   assert.equal(adaptForDeepseek(body, { KADE_DEEPSEEK_PIN: '0' }), body);
-  assert.equal(deepseekProviderPrefs({ KADE_DEEPSEEK_PROVIDERS: ' ' }), null);
+  assert.equal(deepseekProviderPrefs({ KADE_DEEPSEEK_PROVIDERS: ' ' }).only, undefined);
   assert.equal(isDeepseekModel('moonshotai/kimi-k3'), false);
 });
 
