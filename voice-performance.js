@@ -23,11 +23,18 @@ const VOICE_PERFORMANCE_NOTE = [
  * obeys hidden notes literally, so the same words now overshoot. This rides
  * last in the context on deepseek turns only and keeps the animation while
  * giving each mood room. Kill switch: KADE_DEEPSEEK_VOICE_PACING=0. */
+/* Part 222, the same day, her correction after the first version of this note
+ * (which asked for fewer directions and let replies open bare): "I don't think
+ * any crap should start without a tag. Steering tags are what animate the
+ * speech and tell it how to act. But I do understand why one sentence yelling
+ * and the next sentence whispering is jarring. Stuff like that is what I mean,
+ * not boring flat emotion." So: every spoken reply opens on a direction, the
+ * directions stay vivid and frequent, and the ONLY restraint is the jump cut
+ * between far-apart energies. */
 const DEEPSEEK_VOICE_PACING_NOTE = [
-  ' Voice pacing: a listener needs time to travel with a mood. In an ordinary reply one direction is usual and two is plenty; a third belongs only in a long reply with a third real turn.',
-  'Let a direction carry at least three or four sentences before the next one. Keep the voice lively inside a direction through word choice, stress and one real sound such as %%%laugh%%% or %%%sigh%%% rather than by changing directions.',
-  'When the feeling truly turns, for example from joking to tender or from angry to calm, earn it out loud: finish the thought, start a new paragraph, and let a short bridging sentence or a real breath such as %%%sigh%%% or %%%breathe%%% come before the new direction, so the change arrives as a shift and not a jump cut. Never write a pause or a beat as a direction; punctuation and paragraphs do the timing.',
-  'Neighbouring directions should be within reach of each other in energy unless the moment is a genuine shock. Big swings are still welcome when the conversation itself swings; they are an event, not the rhythm of every reply.',
+  ' Voice directions: the %%%direction%%% tags are what animate your voice, so open every spoken reply with one and give each new stretch of feeling its own. Make them vivid and specific to the moment; big feelings, loud ones included, are welcome. Flat or neutral delivery is never the goal.',
+  'The one thing to avoid is the jump cut: shouting in one sentence and whispering in the next, or giddy straight into grave, with nothing in between. A real voice travels. When the feeling swings far, let it pass through a step on the way: a sentence that starts to turn, a direction that is part way there, or a real sound such as %%%sigh%%%, %%%laugh%%% or %%%breathe%%%, and then land the new direction.',
+  'Give a direction a few sentences to play before the next one, so each mood is heard rather than flickered past. Never write a pause or a beat as a direction; punctuation and paragraphs do the timing.',
 ].join(' ');
 function isDeepseekBody(body) {
   return /^deepseek\//i.test(String(body?.model || ''));

@@ -28,8 +28,8 @@ test('performance guidance preserves explicit calm/deadpan, continuity, identity
 });
 test('deepseek turns get the pacing note; other models and the kill switch do not',()=>{
  const ds=voicePerformanceNoteFor(body({model:'deepseek/deepseek-v4.1-flash'}));
- assert.match(ds,/Voice pacing:/);assert.match(ds,/Steady pace does not mean steady pitch/);
+ assert.match(ds,/Voice directions:/);assert.match(ds,/open every spoken reply with one/);assert.match(ds,/jump cut/);assert.match(ds,/Steady pace does not mean steady pitch/);
  assert.ok(!/%%%pause%%%/.test(ds),'timing directions are dropped by the speech proxy');
- assert.ok(!voicePerformanceNoteFor(body({model:'x-ai/grok-4.20'})).includes('Voice pacing:'));
- process.env.KADE_DEEPSEEK_VOICE_PACING='0';try{assert.ok(!voicePerformanceNoteFor(body({model:'deepseek/deepseek-v4.1-flash'})).includes('Voice pacing:'));}finally{delete process.env.KADE_DEEPSEEK_VOICE_PACING;}
+ assert.ok(!voicePerformanceNoteFor(body({model:'x-ai/grok-4.20'})).includes('Voice directions:'));
+ process.env.KADE_DEEPSEEK_VOICE_PACING='0';try{assert.ok(!voicePerformanceNoteFor(body({model:'deepseek/deepseek-v4.1-flash'})).includes('Voice directions:'));}finally{delete process.env.KADE_DEEPSEEK_VOICE_PACING;}
 });

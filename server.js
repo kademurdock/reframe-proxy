@@ -2285,9 +2285,9 @@ async function detectAndRewrite(result, upstreamBody) {
     if (focused.status !== 'skipped') {
       // These are platform quality costs, not original-model tokens to add to
       // a person's bill at the wrong rate. Keep each provider receipt separate.
-      console.log('[reply-focus] ' + JSON.stringify({ id: result.id, status: focused.status, calls: focused.events }));
+      console.log('[reply-focus] ' + JSON.stringify({ id: result.id, status: focused.status, review: focused.review, calls: focused.events }));
     }
-    if (['repaired', 'repetition_blocked'].includes(focused.status) && coherenceTells(focused.text, 0).length === 0) {
+    if (focused.status === 'repaired' && coherenceTells(focused.text, 0).length === 0) {
       content = normalizeVoiceTagTypos(scrubSearchArtifacts(focused.text));
       choice.message.content = content;
     }

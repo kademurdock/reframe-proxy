@@ -73,11 +73,11 @@ test('unavailable, empty, truncated, or unverified repair never replaces the ori
  assert.equal(unavailable.status,'unavailable');assert.equal(unavailable.events.length,1);
 });
 
-test('two confirmed repetitive drafts produce an explicit failure instead of recycling the old answer',async()=>{
+test('the review never takes a reply away: a repair judged a replay too ships the original draft',async()=>{
  const results=[answer(yes),answer('Still repeats'),answer(yes)];
  const result=await repairRepetition(body,'She studied at Redfern.',{...options,complete:async()=>results.shift()});
- assert.equal(result.status,'repetition_blocked');
- assert.doesNotMatch(result.text,/Redfern/);
- assert.match(result.text,/couldn't produce a useful reply/);
+ assert.equal(result.status,'repair_rejected');assert.match(result.review.reason,/Repeats the school/);
+ assert.equal(result.text,'She studied at Redfern.');
+ assert.doesNotMatch(result.text,/couldn't produce a useful reply/);
  assert.equal(result.events.length,3);
 });

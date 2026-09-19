@@ -7,6 +7,18 @@ Set replay=true with high confidence when the draft answers an OLD question agai
 Allow explicitly requested repeats, requested elaboration, relevant corrections, genuinely new discussion, and brief context needed to answer the CURRENT turn. A long substantive reply is welcome. A short reply can still be a replay. Shared words or mentioning a previous fact is not enough to flag a reply. If uncertain, say replay=false and confidence=uncertain. Ignore persona, profanity, humor, punctuation and voice tags. Do not fact-check or diagnose the person.
 Return only JSON, in this order: {"focus":"what changed in the latest human turn","reason":"how the draft engages that change, or what old answer it substitutes","replay":boolean,"confidence":"high"|"uncertain"}.`;
 
+/* Part 222 (Sep 19 2026). Kade asked Kiana for a restaurant menu. Kiana ran the
+ * web search and wrote a 1,738 character answer in 3.2 s. This review then
+ * called that answer a replay, called its own repair a replay too, and 35 s
+ * later the person received "I got stuck repeating my earlier answer" in
+ * place of a correct reply (gateway log 18:41Z, req is9h2m). Her words: "I
+ * can't get it to perform a simple search result."
+ * The rule now: the review may improve a reply; it may never take one away.
+ * When the repair is judged a replay as well, the judge is the likelier
+ * culprit, and the person gets the character's original draft. The side
+ * calls are held to 5 + 10 + 5 s (were 8 + 14 + 8) because somebody is
+ * waiting, and every flagged verdict carries its reason out to the log so a
+ * wrong call can be read instead of guessed at. */
 function reviewInput(body, draft, options) {
   const { turns, pending } = conversationTurns(body, options);
   if (!pending || pending.answer || !turns.length || !draft?.trim()) return null;
@@ -76,18 +88,15 @@ async function repairRepetition(body, draft, { complete, ...options }) {
     return choice.message?.content || null;
   };
   try {
-    const first = verdict(await call(reviewBody(input), 8000));
+    const first = verdict(await call(reviewBody(input), 5000));
     if (!first) return { text: draft, status: 'review_invalid', events };
     if (!first.replay) return { text: draft, status: 'kept', events };
-    const replacement = await call(repairBody(body, input, first), 14000);
+    const replacement = await call(repairBody(body, input, first), 10000);
     if (!replacement?.trim() || replacement.length > 12000) return { text: draft, status: 'repair_invalid', events };
-    const checked = verdict(await call(reviewBody({ ...input, draft: replacement }), 8000));
+    const checked = verdict(await call(reviewBody({ ...input, draft: replacement }), 5000));
     if (!checked) return { text: draft, status: 'repair_rejected', events };
-    if (checked.replay) return {
-      text: "I got stuck repeating my earlier answer and couldn't produce a useful reply to your latest message. Please try again.",
-      status: 'repetition_blocked', events,
-    };
-    return { text: replacement, status: 'repaired', events };
+    if (checked.replay) return { text: draft, status: 'repair_rejected', events, review: { focus: first.focus, reason: first.reason, recheck: checked.reason } };
+    return { text: replacement, status: 'repaired', events, review: { focus: first.focus, reason: first.reason } };
   } catch {
     // Preserve a deliverable answer when a utility service is unavailable.
     return { text: draft, status: 'unavailable', events };

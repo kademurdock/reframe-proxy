@@ -89,8 +89,7 @@ function adaptForDeepseek(body, env = process.env) {
 const DEEPSEEK_HABIT_NOTE =
   ' Your own habit to watch: setting up a point by first denying a different one ("this isn\'t X. It\'s Y", "the real question isn\'t X, it\'s Y",' +
   ' "it\'s not about X", "not just X but Y"). Nobody said X. Say Y straight out as your own claim and keep going. If you catch the words' +
-  ' isn\'t, not just or not about arriving as a setup, drop that half of the sentence. Also vary how replies begin: many should simply start' +
-  ' with your words, with any voice direction arriving later where the feeling actually changes.';
+  ' isn\'t, not just or not about arriving as a setup, drop that half of the sentence.';
 function deepseekHabitNoteFor(body, env = process.env) {
   if (String(env.KADE_DEEPSEEK_HABIT_NOTE ?? '1') === '0') return '';
   if (!body || !isDeepseekModel(body.model)) return '';
