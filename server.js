@@ -167,9 +167,45 @@ app.get('/models', async (req, res) => {
 // -- timeout-guarded OpenRouter calls (non-streaming) ------------------------
 const REQUEST_TIMEOUT_MS = 90_000;
 /* The deep lane's own, longer clock. See the note at its use site. */
-const DEEP_TIMEOUT_MS = Number(process.env.KADE_DEEP_TIMEOUT_MS || 420_000);
+const DEEP_TIMEOUT_MS = Number(process.env.KADE_DEEP_TIMEOUT_MS || 600_000);
+
+/* Sep 19 2026: Node's built-in fetch gives up waiting for response HEADERS at
+ * 300 seconds, whatever signal it is handed, and a non-streaming reasoning
+ * call sends no headers until the whole answer exists. Receipt: the Sound
+ * Booth's deep lyric draft died at 302 s with 'fetch failed' while this
+ * file's own clock still had two minutes on it. Calls allowed to run past
+ * that wall go through node's https module, which has no such limit, and
+ * hand back the few fetch-Response members the callers use. */
+const LONG_FETCH_MS = 290_000;
+function longPost(url, options, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const lib = target.protocol === 'http:' ? require('http') : require('https');
+    const payload = Buffer.from(options.body || '');
+    const req = lib.request(target, { method: options.method || 'POST', headers: { ...(options.headers || {}), 'Content-Length': payload.length } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('error', reject);
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          status: res.statusCode,
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          headers: { get: (name) => { const v = res.headers[String(name).toLowerCase()]; return v === undefined ? null : String(v); } },
+          text: async () => text,
+          json: async () => JSON.parse(text),
+        });
+      });
+    });
+    const timer = setTimeout(() => { const e = new Error('This operation was aborted'); e.name = 'AbortError'; reject(e); req.destroy(e); }, timeoutMs);
+    req.on('close', () => clearTimeout(timer));
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
 
 async function fetchWithTimeout(url, options, timeoutMs) {
+  if (timeoutMs > LONG_FETCH_MS && typeof options.body === 'string') return longPost(url, options, timeoutMs);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
