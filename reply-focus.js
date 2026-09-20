@@ -74,10 +74,29 @@ function repairBody(body, input, assessment) {
       }) }, { role: 'user', content: input.latestUser }] };
 }
 
-async function repairRepetition(body, draft, { complete, ...options }) {
+/* Part 224 (Sep 20 2026): `judge` is Jev (jev.js replayProbability), a typed
+ * yes/no that answers in ~400 ms where the glm review takes up to 5 s. It can
+ * only make this guard do LESS. Under JUDGE_CLEAR the draft is kept and the
+ * slow review never runs, which is nearly every turn. At or over it the glm
+ * review still has to agree, because the repair needs its written focus and
+ * reason. The recheck of a repair is Jev alone. A judge that fails or is
+ * absent leaves the old road exactly as it was. */
+const JUDGE_CLEAR = 0.5;
+
+async function repairRepetition(body, draft, { complete, judge, ...options }) {
   const input = reviewInput(body, draft, options);
   const events = [];
   if (!input) return { text: draft, status: 'skipped', events };
+  const opinion = async (candidate) => {
+    if (!judge) return null;
+    const event = { model: 'jev', usage: null };
+    events.push(event);
+    try {
+      const got = await judge(candidate);
+      event.model = got.model; event.usage = got.usage; event.p = got.p;
+      return got.p;
+    } catch (e) { event.error = e.message; return null; }
+  };
   const call = async (request, timeout) => {
     const event = { model: request.model, usage: null };
     events.push(event);
@@ -88,11 +107,19 @@ async function repairRepetition(body, draft, { complete, ...options }) {
     return choice.message?.content || null;
   };
   try {
+    const p = await opinion(input);
+    if (p !== null && p < JUDGE_CLEAR) return { text: draft, status: 'kept', events };
     const first = verdict(await call(reviewBody(input), 5000));
     if (!first) return { text: draft, status: 'review_invalid', events };
     if (!first.replay) return { text: draft, status: 'kept', events };
     const replacement = await call(repairBody(body, input, first), 10000);
     if (!replacement?.trim() || replacement.length > 12000) return { text: draft, status: 'repair_invalid', events };
+    const p2 = await opinion({ ...input, draft: replacement });
+    if (p2 !== null) {
+      const review = { focus: first.focus, reason: first.reason };
+      return p2 < JUDGE_CLEAR ? { text: replacement, status: 'repaired', events, review }
+        : { text: draft, status: 'repair_rejected', events, review: { ...review, recheck: `jev p=${p2.toFixed(2)}` } };
+    }
     const checked = verdict(await call(reviewBody({ ...input, draft: replacement }), 5000));
     if (!checked) return { text: draft, status: 'repair_rejected', events };
     if (checked.replay) return { text: draft, status: 'repair_rejected', events, review: { focus: first.focus, reason: first.reason, recheck: checked.reason } };

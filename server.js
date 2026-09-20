@@ -69,7 +69,14 @@ const crypto = require('crypto');
 const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
 const { detectDrift, driftSteerNote } = require('./cadence-drift');
-const { repairRepetition } = require('./reply-focus');
+const jev = require('./jev');
+const { repairRepetition: repairRepetitionGlm } = require('./reply-focus');
+/* Part 224: Jev gives reply-focus a fast first opinion (see reply-focus.js).
+ * Wrapped here so detectAndRewrite stays as the vm tests slice it.
+ * Kill: KADE_JEV_REPLY_FOCUS=0 puts the glm review back on its own. */
+const repairRepetition = (body, draft, options) => repairRepetitionGlm(body, draft, {
+  ...options, judge: jev.enabled('KADE_JEV_REPLY_FOCUS') ? jev.replayProbability : undefined,
+});
 const { detectEchoGuard, echoShare } = require('./echo-guard');
 /* Part 178 (Sep 11 2026): the two echoes read off the persona battery and
  * her own Sep 8 chat -- a copied persona example line, and a near-verbatim
@@ -146,6 +153,7 @@ app.get('/health', (req, res) => {
   if ((req.headers['authorization'] || '') === `Bearer ${PROXY_SHARED_SECRET}`) {
     out.zai = zaiPulse.snapshot();
     out.replyFocus = { enabled: REPLY_FOCUS_ON, counts: { ...replyFocusCounts } };
+    out.jev = { enabled: jev.enabled(), model: jev.MODEL, counts: { ...jev.counts } };
   }
   res.json(out);
 });
@@ -2762,7 +2770,24 @@ function autoThinkHeuristic(excerpt) {
  * titles. Non-kimi models route to OpenRouter automatically via
  * chatCompletionsUrl/chatHeaders, and adaptForKimi passes them through
  * untouched. Revert = put 'kimi-k2.6' back on this line. */
+/* Part 224 (Sep 20 2026): Jev answers first. A typed pick of three with a
+ * confidence, 330-510 ms measured, 12 of 13 on the routing set. It gets
+ * JEV_THINK_TIMEOUT_MS and then flash-lite below runs exactly as before, so
+ * the worst case is that much later and never a lost classification.
+ * Kill: KADE_JEV_THINK=0. */
+const JEV_THINK_TIMEOUT_MS = parseInt(process.env.KADE_JEV_THINK_TIMEOUT_MS || '800', 10);
+
 async function classifyThinkTier(excerpt, reqId) {
+  if (jev.enabled('KADE_JEV_THINK')) {
+    const t = Date.now();
+    try {
+      const got = await jev.thinkTier(excerpt, JEV_THINK_TIMEOUT_MS);
+      console.log(`[auto-think][req ${reqId}] jev -> ${got.tier} (conf ${got.confidence}, ${Date.now() - t}ms)`);
+      return got.tier;
+    } catch (e) {
+      console.log(`[auto-think][req ${reqId}] jev failed, asking flash-lite (${e.message}, ${Date.now() - t}ms)`);
+    }
+  }
   const body = {
     model: 'google/gemini-2.5-flash-lite',
     messages: [
