@@ -18,9 +18,9 @@ const VOICE_PERFORMANCE_NOTE = [
  * "Her emotions were all over the place with not that many pauses in between
  * major emotional shifts. I like the voices being animated for sure." Measured
  * on the vischeck seat the same day: three directions in a 110-word reply, a new
- * mood on every paragraph. Personas written for Grok push hard ("dead quiet to
- * screaming happy in a split second") because Grok half-ignored them; DeepSeek
- * obeys hidden notes literally, so the same words now overshoot. This rides
+ * mood on every paragraph. (Part 223 correction: the persona lines first blamed
+ * here came from a stale August copy; her live persona is calm about tags. A new
+ * mood per paragraph is DeepSeek's own habit.) This rides
  * last in the context on deepseek turns only and keeps the animation while
  * giving each mood room. Kill switch: KADE_DEEPSEEK_VOICE_PACING=0. */
 /* Part 222, the same day, her correction after the first version of this note
@@ -32,9 +32,19 @@ const VOICE_PERFORMANCE_NOTE = [
  * directions stay vivid and frequent, and the ONLY restraint is the jump cut
  * between far-apart energies. */
 const DEEPSEEK_VOICE_PACING_NOTE = [
-  ' Voice directions: the %%%direction%%% tags are what animate your voice, so open every spoken reply with one and give each new stretch of feeling its own. Make them vivid and specific to the moment; big feelings, loud ones included, are welcome. Flat or neutral delivery is never the goal.',
+  ' Voice directions: the %%%direction%%% tags are what animate your voice, so open every spoken reply with one and give each new stretch of feeling its own. Make them vivid and specific to the moment; big feelings are welcome. Flat or neutral delivery is never the goal.',
   'The one thing to avoid is the jump cut: shouting in one sentence and whispering in the next, or giddy straight into grave, with nothing in between. A real voice travels. When the feeling swings far, let it pass through a step on the way: a sentence that starts to turn, a direction that is part way there, or a real sound such as %%%sigh%%%, %%%laugh%%% or %%%breathe%%%, and then land the new direction.',
   'Give a direction a few sentences to play before the next one, so each mood is heard rather than flickered past. Never write a pause or a beat as a direction; punctuation and paragraphs do the timing.',
+  /* Sep 20 2026. Kade: "she goes from one chunk of text being slow, quiet, and
+   * calm, then she might do another few sentences in fast as hell, loud,
+   * hurried. It's jarring during a conversation... it really needs to be a
+   * steering transcriptive thing, like someone's auditing a live transcription
+   * of speech." Measured in the speech proxy (Part 109): a feeling word moves
+   * the speaking speed one to three percent, "unhurried" +42, "quick" -27, and
+   * it holds until the next tag. The proxy now strips tempo words from authored
+   * directions (inworld-tts-proxy, AUTHOR_TEMPO_STRIP); this sentence is so the
+   * model stops spending its direction on them. */
+  'Write each direction the way someone transcribing a live conversation would note how a line was said: the feeling, the tone, the texture of the voice (a grin in it, a catch, gravel, brightness, a wry edge). A direction never sets the speed or the volume. Leave out slow, unhurried, quick, fast, rushed, hurried, racing, breathless and every other pace word, and leave out loud, quiet, shouting and whispering as instructions; excitement shows in brightness and stress, calm shows in warmth, and the speaking pace stays that of one person talking across a table the whole way through.',
 ].join(' ');
 function isDeepseekBody(body) {
   return /^deepseek\//i.test(String(body?.model || ''));
