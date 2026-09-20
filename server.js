@@ -68,8 +68,9 @@ const express = require('express');
 const crypto = require('crypto');
 const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
-const { detectDrift, driftSteerNote } = require('./cadence-drift');
+const { detectDrift, driftSteerNote, steerRequest, steerOpinions } = require('./cadence-drift');
 const jev = require('./jev');
+const jevShadow = require('./jev-shadow');
 const { repairRepetition: repairRepetitionGlm } = require('./reply-focus');
 /* Part 236: Jev gives reply-focus a fast first opinion (see reply-focus.js).
  * Wrapped here so detectAndRewrite stays as the vm tests slice it.
@@ -1474,10 +1475,16 @@ function isTitleShapedBody(body) {
  * The note is computed from body.messages, which already carries the history,
  * so this needs no state and no storage. Wrapped in try/catch on the standing
  * rule that a style check must never be able to kill a turn. */
+/* Part 236: Jev's answers to the steer questions ride the body under a Symbol,
+ * so they reach this note without changing appendReminder's shape and can
+ * never serialise into the upstream request. Absent = regexes only.
+ * Symbol.for, spelled out at each use, because the tests run this function
+ * in a bare vm context that holds no constants from this file. */
 function driftNoteFor(body) {
   if (!DRIFT_STEER) return '';
   try {
     return driftSteerNote(body, {
+      opinions: body[Symbol.for('kade.jevOpinions')],
       isInjected: looksInjected,
       personText: stripContextReplay,
       onEcho: echo => console.log(`[cadence] contextual repetition steer hits=${echo.hits} strong=${echo.strongHits} prior=${echo.priorTurns}`),
@@ -2181,6 +2188,12 @@ async function detectAndRewrite(result, upstreamBody) {
   }
 
   const matches = collectMatches(content, upstreamBody);
+  /* Part 236: Jev listens to the delivered draft and logs three readings beside
+   * today's verdicts (jev-shadow.js). Not awaited, acts on nothing. The typeof
+   * guard is for the tests that run this function in a bare vm context. */
+  if (typeof jevShadow !== 'undefined' && !isPhoneTurn(upstreamBody)) {
+    jevShadow.listen(content, stripContextReplay(autoThinkPersonText(upstreamBody)), matches, result.id);
+  }
 
   if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
     console.log(
@@ -2777,11 +2790,54 @@ function autoThinkHeuristic(excerpt) {
  * Kill: KADE_JEV_THINK=0. */
 const JEV_THINK_TIMEOUT_MS = parseInt(process.env.KADE_JEV_THINK_TIMEOUT_MS || '800', 10);
 
+/* THE JEV PRE-PASS (Part 236). The steer note is written synchronously, before
+ * the router runs, so its three questions of meaning (cadence-drift.js
+ * steerRequest) have to be answered first. To keep that from stacking a
+ * second wait in front of the think router, the router's own Jev call is
+ * started here too and the two run side by side: classifyThinkTier picks the
+ * started call up by reqId. Person turns on the typed lane only. Calls stay
+ * on the regexes because a caller hears every millisecond, and machine lanes
+ * get no steer note at all. Any failure returns undefined and the note is
+ * written from the regexes exactly as before.
+ * Kill: KADE_JEV_STEER=0. Budget: KADE_JEV_STEER_TIMEOUT_MS (700). */
+const JEV_STEER_TIMEOUT_MS = parseInt(process.env.KADE_JEV_STEER_TIMEOUT_MS || '700', 10);
+const jevTierPrefetch = new Map();
+
+async function jevPrePass(body, reqId) {
+  try {
+    if (!jev.enabled() || !Array.isArray(body?.messages) || isPhoneTurn(body)) return undefined;
+    if (writingDeskFor(body) || isLyricBody(body) || isCompactionShapedBody(body) || isMemoryKeeperShapedBody(body) ||
+        isSweptMachineBody(body) || isTitleShapedBody(body)) return undefined;
+    if (jev.enabled('KADE_JEV_THINK') && AUTO_DEEPTHINK && isReasoningModel(body.model)) {
+      const excerpt = autoThinkExcerpt(body);
+      if (excerpt && autoThinkHeuristic(excerpt) === 'classify') {
+        const promise = jev.thinkTier(excerpt, JEV_THINK_TIMEOUT_MS);
+        promise.catch(() => {}); // read later, or never; an unread failure must not be unhandled
+        jevTierPrefetch.set(reqId, { excerpt, promise });
+        setTimeout(() => jevTierPrefetch.delete(reqId), 30000).unref?.();
+      }
+    }
+    if (!DRIFT_STEER || !jev.enabled('KADE_JEV_STEER')) return undefined;
+    const ask = steerRequest(body, { isInjected: looksInjected, personText: stripContextReplay });
+    if (!ask) return undefined;
+    const t = Date.now();
+    const { answers } = await jev.ask(ask.state, ask.questions, JEV_STEER_TIMEOUT_MS);
+    const opinions = steerOpinions(answers);
+    console.log(`[cadence][req ${reqId}] jev steer ${JSON.stringify(opinions)} (${Date.now() - t}ms)`);
+    return opinions;
+  } catch (e) {
+    console.log(`[cadence][req ${reqId}] jev steer unavailable, regexes only (${e.message})`);
+    return undefined;
+  }
+}
+
 async function classifyThinkTier(excerpt, reqId) {
   if (jev.enabled('KADE_JEV_THINK')) {
     const t = Date.now();
     try {
-      const got = await jev.thinkTier(excerpt, JEV_THINK_TIMEOUT_MS);
+      const early = jevTierPrefetch.get(reqId);
+      jevTierPrefetch.delete(reqId);
+      const got = await ((early && early.excerpt === excerpt && early.promise) || jev.thinkTier(excerpt, JEV_THINK_TIMEOUT_MS));
       console.log(`[auto-think][req ${reqId}] jev -> ${got.tier} (conf ${got.confidence}, ${Date.now() - t}ms)`);
       return got.tier;
     } catch (e) {
@@ -4351,7 +4407,7 @@ app.post('/chat/completions', async (req, res) => {
   if (shim.active) console.log(`[req ${reqId}] TOOL SHIM active for ${req.body.model} (${_toolNames.length} tools -> prompt)`);
 
   if (wantsStream) {
-    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: true })));
+    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: true, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId) })));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
     // Deep-Think shim turns need the buffered path (their reply is one big
@@ -4364,7 +4420,7 @@ app.post('/chat/completions', async (req, res) => {
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  let upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: false })));
+  let upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: false, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId) })));
   // Part 63: the router moved out of callOpenRouterOnce (see the comment
   // there). Non-stream person/room turns route here, same policy as the
   // streaming path at handleStreaming -- and now with a reqId in the logs.

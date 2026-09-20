@@ -304,6 +304,59 @@ function conversationTurns(body, { isInjected = () => false, personText = t => t
   return { turns, pending };
 }
 
+/* Part 236 (Sep 20 2026): THE STEER QUESTIONS FOR JEV. Three judgments in
+ * this file are questions about meaning answered by word lists: did she ask
+ * what you think (ASKS_TAKE), did any recent reply stake a claim (HAS_TAKE),
+ * and did the last reply drag back advice she had moved on from
+ * (conversationEcho, which says of itself that it is "not semantic
+ * paraphrase detection"). Trial the same day against the live model: 13 of
+ * 13, 3 of 4 (the miss read plain instructions as a stated position, which
+ * only ever means one note fewer), 6 of 6.
+ * This builds the request; server.js makes the call before the reminder is
+ * written and hands the answers back as options.opinions. No answers, no
+ * change: every channel below runs on its regex exactly as before.
+ * Notes only. Nothing here can touch a reply. */
+const clip = (t, n) => { const s = stripTags(String(t || '')).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n) : s; };
+const STEER_QUESTIONS = {
+  asksTake: { type: 'noul',
+    instructions: "Is the person in `message` asking for the listener's own opinion, recommendation or judgment call?",
+    criteria: {
+      true: 'They want to know what the listener personally thinks, would pick, or would do, or whether something is a good idea, even if phrased indirectly.',
+      false: 'They are asking for facts, instructions or a task, sharing news or feelings, or chatting, without asking what the listener thinks they should do.' } },
+  tookTake: { type: 'noul',
+    instructions: "Does any reply in `recentReplies` commit to the speaker's own position: a clear first-person opinion, pick or recommendation?",
+    criteria: {
+      true: 'At least one reply plainly says what the speaker thinks, would choose or recommends.',
+      false: 'The replies stay neutral: they list options, pros and cons, facts or questions without the speaker choosing a side.' } },
+  echo: { type: 'noul',
+    instructions: 'In `lastExchange`, did `lastExchange.answer` bring back advice or points already made in `earlierAnswers` that had nothing to do with what the person said in `lastExchange.user`?',
+    criteria: {
+      true: 'The answer restates or recaps earlier advice on a subject the person had moved on from.',
+      false: 'The answer deals with what the person just said. Referring back to something relevant to their message, or a requested recap, does not count.' } },
+};
+
+function steerRequest(body, options) {
+  const { turns, pending } = conversationTurns(body, options);
+  if (!pending || pending.answer || turns.length < 2) return null;
+  const latest = turns[turns.length - 1];
+  const state = { message: clip(pending.user, 1500), recentReplies: turns.slice(-3).map(t => clip(t.answer, 1200)) };
+  const questions = { asksTake: STEER_QUESTIONS.asksTake, tookTake: STEER_QUESTIONS.tookTake };
+  if (!asksAgain(pending.user) && !asksAgain(latest.user) && !stopRepeat(latest.user)) {
+    state.lastExchange = { user: clip(latest.user, 1200), answer: clip(latest.answer, 1500) };
+    state.earlierAnswers = turns.slice(-7, -1).map(t => clip(t.answer, 800));
+    questions.echo = STEER_QUESTIONS.echo;
+  }
+  return { state, questions };
+}
+
+// answers: the `answers` map of a Jev response. Anything malformed is dropped.
+function steerOpinions(answers) {
+  const out = {};
+  for (const k of Object.keys(STEER_QUESTIONS)) if (typeof answers?.[k]?.noul === 'number') out[k] = answers[k].noul;
+  return out;
+}
+const OPINION_YES = 0.85; const OPINION_NO = 0.15;
+
 function conversationEcho(body, options) {
   const { turns, pending } = conversationTurns(body, options);
   // At request time the last human turn must still be waiting for its answer.
@@ -601,8 +654,15 @@ function driftSteerNote(body, options) {
    * opt out. Topic names are not copied into the final instruction. This remains
    * a next-reply reminder; it neither rewrites answers nor proves model compliance. */
   try {
-    const echo = conversationEcho(body, options);
+    /* Part 236: Jev's reading of the same question, when there is one. A
+     * confident no stands a word-overlap hit down; a confident yes catches
+     * the paraphrased restatement word overlap cannot see. */
+    const pEcho = options?.opinions?.echo;
+    let echo = conversationEcho(body, options);
+    if (echo && typeof pEcho === 'number' && pEcho <= OPINION_NO) echo = null;
+    else if (!echo && typeof pEcho === 'number' && pEcho >= OPINION_YES) echo = { hits: 0, strongHits: 0, of: 0, priorTurns: 0, jev: pEcho };
     if (echo) {
+      if (typeof pEcho === 'number') echo.jev = pEcho;
       options?.onEcho?.(echo);
       notes.push(
         `Repetition note: your last reply restated advice you had already given ` +
@@ -711,9 +771,13 @@ function driftSteerNote(body, options) {
     const lastUserText = String(lastUserArr[0] || '');
     const ASKS_TAKE = /\b(?:should (?:i|we)|what do you think|do you think|what would you (?:do|pick|choose|say)|which (?:one would|would you)|is (?:it|that|this) (?:worth|better|smart|stupid|crazy|a good idea)|good idea or|thoughts\?|your (?:take|opinion|read) on)\b/i;
     const HAS_TAKE = /\bmy (?:take|read|call|vote|honest read)\b|\bi think\b|\bi['\u2019]d (?:say|go|pick|take|call|do)\b|\bif it were me\b|\bfor my money\b|\bi vote\b|\bhere['\u2019]s where i land\b/i;
-    if (ASKS_TAKE.test(lastUserText)) {
+    /* Part 236: either reader may hear the ask ("would it be dumb to...",
+     * "am I wrong for..." carry no trigger word), and either may hear that a
+     * claim was already staked. Both lean toward saying nothing. */
+    const op = options?.opinions || {};
+    if (ASKS_TAKE.test(lastUserText) || op.asksTake >= OPINION_YES) {
       const recent = history.slice(-3);
-      const took = recent.filter((h) => HAS_TAKE.test(stripTags(String(h)))).length;
+      const took = recent.filter((h) => HAS_TAKE.test(stripTags(String(h)))).length + (op.tookTake >= 0.5 ? 1 : 0);
       if (took === 0) {
         notes.push(
           `Style note: they just asked what you actually think, and none of your ` +
@@ -732,6 +796,8 @@ module.exports = {
   detectDrift,
   splitDrift,
   driftSteerNote,
+  steerRequest,
+  steerOpinions,
   registerOf,
   // exported for the harness + future tuning
   _internals: {
