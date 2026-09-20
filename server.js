@@ -71,7 +71,7 @@ const { detectSlop } = require('./slop-filter');
 const { detectDrift, driftSteerNote } = require('./cadence-drift');
 const jev = require('./jev');
 const { repairRepetition: repairRepetitionGlm } = require('./reply-focus');
-/* Part 224: Jev gives reply-focus a fast first opinion (see reply-focus.js).
+/* Part 236: Jev gives reply-focus a fast first opinion (see reply-focus.js).
  * Wrapped here so detectAndRewrite stays as the vm tests slice it.
  * Kill: KADE_JEV_REPLY_FOCUS=0 puts the glm review back on its own. */
 const repairRepetition = (body, draft, options) => repairRepetitionGlm(body, draft, {
@@ -2770,7 +2770,7 @@ function autoThinkHeuristic(excerpt) {
  * titles. Non-kimi models route to OpenRouter automatically via
  * chatCompletionsUrl/chatHeaders, and adaptForKimi passes them through
  * untouched. Revert = put 'kimi-k2.6' back on this line. */
-/* Part 224 (Sep 20 2026): Jev answers first. A typed pick of three with a
+/* Part 236 (Sep 20 2026): Jev answers first. A typed pick of three with a
  * confidence, 330-510 ms measured, 12 of 13 on the routing set. It gets
  * JEV_THINK_TIMEOUT_MS and then flash-lite below runs exactly as before, so
  * the worst case is that much later and never a lost classification.
