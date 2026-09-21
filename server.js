@@ -71,6 +71,7 @@ const { detectSlop } = require('./slop-filter');
 const { detectDrift, driftSteerNote, steerRequest, steerOpinions } = require('./cadence-drift');
 const jev = require('./jev');
 const jevShadow = require('./jev-shadow');
+const { conversationalRewriteMatches } = require('./conversation-style');
 const { repairRepetition: repairRepetitionGlm } = require('./reply-focus');
 /* Part 236: Jev gives reply-focus a fast first opinion (see reply-focus.js).
  * Wrapped here so detectAndRewrite stays as the vm tests slice it.
@@ -2115,12 +2116,17 @@ async function detectAndRewrite(result, upstreamBody) {
     }
   }
 
-  const matches = collectMatches(content, upstreamBody);
+  const observedMatches = collectMatches(content, upstreamBody);
+  const matches = typeof conversationalRewriteMatches === 'function'
+    ? conversationalRewriteMatches(observedMatches) : observedMatches;
+  if (matches.length < observedMatches.length) {
+    console.log(`[style-observation] ${observedMatches.length - matches.length} broad structure flag(s) retained as observations; ${matches.length} actionable flag(s)`);
+  }
   /* Part 236: Jev listens to the delivered draft and logs three readings beside
    * today's verdicts (jev-shadow.js). Not awaited, acts on nothing. The typeof
    * guard is for the tests that run this function in a bare vm context. */
   if (typeof jevShadow !== 'undefined' && !isPhoneTurn(upstreamBody)) {
-    jevShadow.listen(content, stripContextReplay(autoThinkPersonText(upstreamBody)), matches, result.id);
+    jevShadow.listen(content, stripContextReplay(autoThinkPersonText(upstreamBody)), observedMatches, result.id);
   }
 
   if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {

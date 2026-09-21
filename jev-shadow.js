@@ -9,7 +9,7 @@
  *                        because a marker list cannot be trusted to cut
  * Jev read all three well in a small trial (6 of 7; the miss was a requested
  * draft at 0.53). A small trial is not grounds to let it replace anybody's
- * reply. So this only LISTENS: one request per delivered reply, never
+ * reply. So this only LISTENS: one request per candidate reply before repair, never
  * awaited, one log line with Jev's three probabilities beside what the
  * detectors said. After a week of lines the thresholds can be chosen from
  * her family's real replies instead of from mine.
