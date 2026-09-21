@@ -21,5 +21,5 @@ test('repeated quiet tags retain contextual choice on request and response paths
 test('Kiana register anchors stay scoped and do not prescribe flat celebration',()=>{
  assert.equal(voiceNoteFor({messages:[{role:'system',content:'You are a different character.'}]}),'');
  const note=voiceNoteFor({messages:[{role:'system',content:'You are the flagship intelligence of Kade-AI.'}]});
- assert.match(note,/diplomatic ear/);assert.doesNotMatch(note,/glad never needs/);
+ assert.match(note,/loose conversation with a friend/);assert.doesNotMatch(note,/glad never needs/);
 });

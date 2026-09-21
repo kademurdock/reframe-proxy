@@ -34,3 +34,15 @@ test('essay voice joins the existing request, and invalid probabilities are igno
  assert.equal(calls,1);
  assert.deepEqual(p,{essayVoice:0.88});
 });
+
+test('management check shares the same background request and preserves banter and requested help',async()=>{
+ let calls=0;
+ const p=await listen(long,'Just telling you about tomorrow',[],'companions',async(state,questions)=>{
+  calls++;
+  assert.match(questions.unsolicitedManagement.criteria.false,/affectionate humor/);
+  assert.match(questions.unsolicitedManagement.criteria.false,/requested advice/);
+  return {answers:{unsolicitedManagement:{noul:0.92}}};
+ });
+ assert.equal(calls,1);
+ assert.deepEqual(p,{unsolicitedManagement:0.92});
+});
