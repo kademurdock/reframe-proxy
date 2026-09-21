@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {voicePerformanceNoteFor}=require('./voice-performance');
 const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
-const context={deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
+const context={learnLyricBody:()=>{},deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
  LYRIC_OUTPUT_NOTE:'lyric',COMPACTION_DATE_ON:true,isCompactionShapedBody:b=>b.compaction,
  compactionDateNote:()=>'',KEEPER_CARVEOUT_ON:true,isMemoryKeeperShapedBody:b=>b.keeper,
  isSweptMachineBody:b=>b.machine,isMemorySummaryShapedBody:()=>true,isDiaryRepairShapedBody:()=>false,

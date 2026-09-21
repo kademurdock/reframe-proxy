@@ -22,3 +22,15 @@ test('short replies, missing person text, and the kill switch ask nothing',async
 test('a failing Jev resolves to null and nothing escapes',async()=>{
  assert.equal(await listen(long,'hello there',[], 'r',async()=>{throw Error('HTTP 503');}),null);
 });
+
+test('essay voice joins the existing request, and invalid probabilities are ignored',async()=>{
+ let calls=0;
+ const p=await listen(long,'Just talking, not requesting a poem',[],'essay',async(state,questions)=>{
+  calls++;
+  assert.equal(questions.essayVoice.type,'noul');
+  assert.match(questions.essayVoice.criteria.false,/explicitly requested/);
+  return {answers:{essayVoice:{noul:0.876},userEcho:{noul:Infinity},pastedVoice:{noul:-0.1}}};
+ });
+ assert.equal(calls,1);
+ assert.deepEqual(p,{essayVoice:0.88});
+});
