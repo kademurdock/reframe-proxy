@@ -1532,7 +1532,7 @@ const {
   isDiaryRepairShapedBody,
 } = require('./machines.js');
 
-const { isLyricBody, LYRIC_OUTPUT_NOTE } = require('./lyrics');
+const { isLyricBody, learnLyricBody, LYRIC_OUTPUT_NOTE } = require('./lyrics');
 const { writingDeskFor, WRITING_STYLE_NOTE } = require('./writing');
 
 function appendReminder(body) {
@@ -1545,6 +1545,12 @@ function appendReminder(body) {
   if (isLyricBody(body)) {
     return { ...body, messages: [...body.messages, { role: 'system', content: LYRIC_OUTPUT_NOTE }] };
   }
+  /* Part 239: the two prefixes above did not match. If this prompt is a
+   * songwriting desk anyway — the exact fault that sang the music direction
+   * into Kade's song when the fork edited its opening line — Jev learns it
+   * here and every turn after this one is protected. Fire and forget: this
+   * request is not delayed and is not changed. See lyrics.js. */
+  learnLyricBody(body);
   if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
   /* ⚠️ PART 91 — THIS TEST MOVED OUT OF THE TITLE-SHAPED BRANCH, AND THAT WAS
    * THE BUG. A body stops being title-shaped the moment it carries a system
