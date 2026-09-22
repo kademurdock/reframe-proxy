@@ -882,7 +882,14 @@ const PATTERN_GUIDANCE = {
   rhetorical_qa_combo: 'a stacked rhetorical question-then-short-answer combo (e.g. "Is it perfect? No. Is it good enough? Yeah.")',
   stacked_fragments: 'a string of clipped one-word sentence fragments used for fake emphasis (e.g. "Clean. Fast. Done.")',
   over_hedging: 'multiple hedge words stacked in one sentence (e.g. "might possibly... depending on a few things")',
-  em_dash_restatement: 'an em dash followed by a dramatic comma-separated restatement of the same point (e.g. "too bright — too much top, too much air, too much shine")',
+  // Sep 22 2026: this line named the tic and never said how to fix it, and on
+  // the live lane the rewrite kept the drumbeat three times in one afternoon
+  // ("rewrite still trips (em_dash_restatement) -- shipping the rewrite"). The
+  // reframe family got a worked repair on Sep 19 for the same reason.
+  em_dash_restatement: 'an em dash followed by a drumbeat of short parallel items re-saying the same point (e.g. "too bright — too much top, too much air, too much shine") -- ' +
+    'remove the dash and the list together and keep ONE plain statement with the single most specific item. ' +
+    'Before: "It came out too bright — too much top, too much air, too much shine." After: "It came out too bright, with too much top end." ' +
+    'Swapping the dash for a comma or a colon keeps the drumbeat; the run of parallel items has to go',
   'blocklist:validation_slop': 'generic AI validation-slop phrasing (e.g. "I\'m here for you", "that takes courage")',
   'blocklist:therapy_closer': 'a therapy-bot closer (e.g. "be gentle with yourself", "take a deep breath")',
   'blocklist:filler_transition': 'a filler transition phrase (e.g. "at the end of the day", "needless to say")',
