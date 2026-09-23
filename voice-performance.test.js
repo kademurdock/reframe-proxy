@@ -1,8 +1,9 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {voicePerformanceNoteFor}=require('./voice-performance');
+const {conversationGuidanceFor, PILOT_MARKER}=require('./conversation-judgment');
 const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
-const context={learnLyricBody:()=>{},deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
+const context={conversationGuidanceFor,learnLyricBody:()=>{},deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
  LYRIC_OUTPUT_NOTE:'lyric',COMPACTION_DATE_ON:true,isCompactionShapedBody:b=>b.compaction,
  compactionDateNote:()=>'',KEEPER_CARVEOUT_ON:true,isMemoryKeeperShapedBody:b=>b.keeper,
  isSweptMachineBody:b=>b.machine,isMemorySummaryShapedBody:()=>true,isDiaryRepairShapedBody:()=>false,
@@ -12,6 +13,22 @@ vm.runInNewContext(source.slice(source.indexOf('function appendReminder(body)'),
 const body=extras=>({messages:[{role:'system',content:'You are a character.'},{role:'user',content:'Hello.'}],...extras});
 test('real prompt assembly adds performance guidance on conversation and phone lanes',()=>{
  for(const extra of [{},{phone:true}])assert.match(context.append(body(extra)).messages.at(-1).content,/Steady pace does not mean steady pitch/);
+});
+
+test('pilot replaces overlapping acting instructions without changing ordinary conversations',()=>{
+ const pilot=body();pilot.messages[0].content += '\n'+PILOT_MARKER;
+ const note=context.append(pilot).messages.at(-1).content;
+ assert.match(note,/An acknowledgment is not a request to repeat/);
+ assert.match(note,/open every spoken reply/);
+ assert.ok(!note.includes('include one concrete vocal cue'));
+ assert.equal(conversationGuidanceFor(body()),null);
+ assert.equal(conversationGuidanceFor({messages:[{role:'user',content:PILOT_MARKER}]}),null);
+ assert.equal(conversationGuidanceFor(pilot,{KADE_CONVERSATION_JUDGMENT:'0'}),null);
+ assert.equal(conversationGuidanceFor({...pilot,response_format:{type:'json_schema'}}),null);
+ assert.ok(conversationGuidanceFor(body(),{KADE_CONVERSATION_JUDGMENT:'1'}));
+ for(const flag of ['lyric','compaction','keeper','machine','title']) {
+  assert.ok(!JSON.stringify(context.append({...pilot,[flag]:true})).includes('An acknowledgment is not a request to repeat'));
+ }
 });
 test('machine, title, keeper, compaction and lyric carveouts stay intact',()=>{
  for(const flag of ['lyric','compaction','keeper','machine','title']){

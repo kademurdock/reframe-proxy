@@ -1,4 +1,5 @@
 const { createGistFilter } = require('./gist');
+const { conversationGuidanceFor } = require('./conversation-judgment');
 const { findDrift } = require('./drift');
 const GIST_ON = process.env.KADE_GIST !== '0';
 /* Part 92.27 — the Casio watch. Detect-and-log only; there is no cut to
@@ -1522,10 +1523,11 @@ function appendReminder(body) {
   }
   if (isTitleShapedBody(body)) return body;
   const toolNotes = toolNotesFor(body);
+  const guidance = conversationGuidanceFor(body);
   const focusNote = isKianaBody(body) ? ' Current-turn priority: answer the latest human message, including corrections to a side remark. Search only to resolve that current request; old search questions and search results are context, not unfinished assignments. When the person says an issue is already resolved, acknowledge that correction rather than researching or repeating the previous topic. Do not attach unrelated reminders to a researched answer.' : '';
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: STYLE_REMINDER + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + voiceNoteFor(body) + voicePerformanceNoteFor(body) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) }],
+    messages: [...body.messages, { role: 'system', content: (guidance?.conversation || STYLE_REMINDER) + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + (guidance ? guidance.performance : voiceNoteFor(body) + voicePerformanceNoteFor(body)) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) }],
   };
 }
 
