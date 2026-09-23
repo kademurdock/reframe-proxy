@@ -2,6 +2,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {voicePerformanceNoteFor}=require('./voice-performance');
 const {conversationGuidanceFor, PILOT_MARKER}=require('./conversation-judgment');
+// Exercise the rollback/pilot lane as well as the shipped default below.
+process.env.KADE_CONVERSATION_JUDGMENT='pilot';
 const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
 const context={conversationGuidanceFor,learnLyricBody:()=>{},deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
  LYRIC_OUTPUT_NOTE:'lyric',COMPACTION_DATE_ON:true,isCompactionShapedBody:b=>b.compaction,
@@ -26,6 +28,7 @@ test('pilot replaces overlapping acting instructions without changing ordinary c
  assert.equal(conversationGuidanceFor(pilot,{KADE_CONVERSATION_JUDGMENT:'0'}),null);
  assert.equal(conversationGuidanceFor({...pilot,response_format:{type:'json_schema'}}),null);
  assert.ok(conversationGuidanceFor(body(),{KADE_CONVERSATION_JUDGMENT:'1'}));
+ assert.ok(conversationGuidanceFor(body(),{}),'conversation guidance is the shipped default');
  const blocks=body();blocks.messages[0].content=[{type:'text',text:'Character\n'+PILOT_MARKER}];
  assert.match(context.append(blocks).messages.at(-1).content,/An acknowledgment is not a request to repeat/);
  for(const flag of ['lyric','compaction','keeper','machine','title']) {
