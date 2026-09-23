@@ -18,7 +18,8 @@ function conversationGuidanceFor(body, env = process.env) {
   if (env.KADE_CONVERSATION_JUDGMENT === '0') return null;
   if (body?.response_format && body.response_format.type !== 'text') return null;
   const pilot = (body?.messages || []).some(message => message.role === 'system' &&
-    (typeof message.content === 'string' ? message.content : '').includes(PILOT_MARKER));
+    (typeof message.content === 'string' ? message.content : Array.isArray(message.content)
+      ? message.content.filter(part => part?.type === 'text').map(part => part.text || '').join('\n') : '').includes(PILOT_MARKER));
   if (env.KADE_CONVERSATION_JUDGMENT !== '1' && !pilot) return null;
   return { conversation: CONVERSATION_NOTE, performance: PERFORMANCE_NOTE };
 }

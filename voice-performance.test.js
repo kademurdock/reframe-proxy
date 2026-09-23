@@ -26,6 +26,8 @@ test('pilot replaces overlapping acting instructions without changing ordinary c
  assert.equal(conversationGuidanceFor(pilot,{KADE_CONVERSATION_JUDGMENT:'0'}),null);
  assert.equal(conversationGuidanceFor({...pilot,response_format:{type:'json_schema'}}),null);
  assert.ok(conversationGuidanceFor(body(),{KADE_CONVERSATION_JUDGMENT:'1'}));
+ const blocks=body();blocks.messages[0].content=[{type:'text',text:'Character\n'+PILOT_MARKER}];
+ assert.match(context.append(blocks).messages.at(-1).content,/An acknowledgment is not a request to repeat/);
  for(const flag of ['lyric','compaction','keeper','machine','title']) {
   assert.ok(!JSON.stringify(context.append({...pilot,[flag]:true})).includes('An acknowledgment is not a request to repeat'));
  }
