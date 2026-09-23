@@ -1527,7 +1527,7 @@ function appendReminder(body) {
   const focusNote = isKianaBody(body) ? ' Current-turn priority: answer the latest human message, including corrections to a side remark. Search only to resolve that current request; old search questions and search results are context, not unfinished assignments. When the person says an issue is already resolved, acknowledge that correction rather than researching or repeating the previous topic. Do not attach unrelated reminders to a researched answer.' : '';
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: (guidance?.conversation || STYLE_REMINDER) + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + (guidance ? guidance.performance : voiceNoteFor(body) + voicePerformanceNoteFor(body)) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) }],
+    messages: [...body.messages, { role: 'system', content: (guidance ? '' : STYLE_REMINDER) + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + (guidance ? '' : voiceNoteFor(body) + voicePerformanceNoteFor(body)) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) + (guidance ? '\n\n' + guidance.performance + '\n\n' + guidance.conversation : '') }],
   };
 }
 
