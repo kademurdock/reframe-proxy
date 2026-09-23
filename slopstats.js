@@ -125,9 +125,15 @@ function nice(cat) {
 function spokenOutcomes(b) {
   const o = b.outcomes;
   const fixed = (o.rewrite_clean || 0) + (o.second_pass || 0);
+  const localKept = (o.phrase_kept || 0) + (o.phrase_no_targets || 0) + (o.phrase_jev_kept || 0);
+  const localRejected = Object.entries(o).filter(([name]) => name.startsWith('phrase_') &&
+    !['phrase_edited', 'phrase_kept', 'phrase_no_targets', 'phrase_jev_kept'].includes(name)).reduce((n, [, count]) => n + count, 0);
   const missing = Math.max(0, b.replies - Object.values(o).reduce((a, n) => a + n, 0));
   return `${fixed} rewritten clean, ${o.longform_kept || 0} long-form kept as written, `
     + `${o.still_tripping || 0} shipped still tripping, ${o.rewrite_failed || 0} failed rewrites kept the original`
+    + (o.phrase_edited ? `, ${o.phrase_edited} received local wording edits` : '')
+    + (localKept ? `, ${localKept} kept after a contextual wording check` : '')
+    + (localRejected ? `, ${localRejected} local edit failures kept the original` : '')
     + (missing ? `, ${missing} without a recorded outcome yet` : '');
 }
 

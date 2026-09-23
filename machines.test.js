@@ -113,7 +113,7 @@ test('detectAndRewrite skips swept machine lanes before the JSON probe', () => {
   assert.ok(fn > 0, 'detectAndRewrite exists');
   const guard = src.indexOf('if (isSweptMachineBody(upstreamBody))', fn);
   const probe = src.indexOf('const jsonProbe = content.trim();', fn);
-  const collect = src.indexOf('const matches = collectMatches(content, upstreamBody);', fn);
+  const collect = src.indexOf('const observedMatches = collectMatches(content, upstreamBody);', fn);
   assert.ok(guard > fn, 'guard is inside detectAndRewrite');
   assert.ok(probe > guard, 'guard runs before the bare-JSON probe');
   assert.ok(collect > guard, 'guard runs before collectMatches');

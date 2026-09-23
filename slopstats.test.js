@@ -3,6 +3,18 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { makeSlopStats, KEEP_DAYS } = require('./slopstats');
 
+test('spoken local-edit outcomes distinguish edits, contextual keeps and rejected proposals', () => {
+  const s = makeSlopStats();
+  for (const outcome of ['phrase_edited', 'phrase_kept', 'phrase_no_targets', 'phrase_protected_edit', 'phrase_failed']) {
+    s.record([{ pattern: 'importance_wrapper' }], outcome);
+  }
+  const { spoken } = s.snapshot();
+  assert.match(spoken, /1 received local wording edits/);
+  assert.match(spoken, /2 kept after a contextual wording check/);
+  assert.match(spoken, /2 local edit failures kept the original/);
+  assert.doesNotMatch(spoken, /without a recorded outcome/);
+});
+
 test('counts trips per category per UTC day and strips the blocklist prefix', () => {
   let t = Date.parse('2026-09-01T12:00:00Z');
   const s = makeSlopStats(() => t);

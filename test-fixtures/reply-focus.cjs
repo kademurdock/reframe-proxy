@@ -8,7 +8,8 @@ global.fetch=async(url,opts)=>{
   if(input.latestUser!=='The corner shop is easier.')throw Error('Reviewer lost latest human message');
   if(JSON.stringify(input).includes('injected inventory'))throw Error('Machinery leaked into review');
   text=JSON.stringify({focus:'Convenience objection',reason:'Old paper advice',confidence:'high',replay:input.draft==='Heavy paper is the clean option.'||input.draft==='Heavy paper resists ink showing through.'});
- }else if(b.model.includes('glm'))text='Heavy paper resists ink showing through.';
+ }else if(b.messages[0].content.startsWith('You edit small'))text=JSON.stringify({edits:[{id:0,before:'Heavy paper is the clean option.',after:'Heavy paper resists ink showing through.'}]});
+ else if(b.model.includes('glm'))text='Heavy paper resists ink showing through.';
  else if(b.messages.some(m=>m.role==='system'&&m.content.startsWith('Write the final reply'))) {
   if(b.messages.at(-1).role!=='user'||b.messages.at(-1).content!=='The corner shop is easier.')throw Error('Repair lost the current user');
   text='%%%amused%%% Then the corner shop wins. I sent you shopping when the notebook was already right there.';

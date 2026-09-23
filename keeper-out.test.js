@@ -29,7 +29,7 @@ test('a consolidation body (keeper belt, machine prompt as the user turn) is kee
 
 test('detectAndRewrite skips the keeper belt right after the swept machine lanes, before any detector runs', () => {
   const src = fs.readFileSync(require.resolve('./server.js'), 'utf8');
-  const fn = src.slice(src.indexOf('async function detectAndRewrite('), src.indexOf('const matches = collectMatches(content, upstreamBody);'));
+  const fn = src.slice(src.indexOf('async function detectAndRewrite('), src.indexOf('const observedMatches = collectMatches(content, upstreamBody);'));
   assert.match(fn, /isSweptMachineBody\(upstreamBody\)/);
   assert.match(fn, /isMemoryKeeperShapedBody\(upstreamBody\)/);
   assert.ok(fn.indexOf('isSweptMachineBody(upstreamBody)') < fn.indexOf('isMemoryKeeperShapedBody(upstreamBody)'));

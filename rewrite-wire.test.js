@@ -8,8 +8,10 @@ test('production HTTP reply path detects labels, dispatches a minimal repair and
   const r=await fetch('http://127.0.0.1:31861/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer offline'},body:JSON.stringify({model:'x-ai/grok-4.20',stream:false,max_tokens:300,messages:[{role:'system',content:'Speak casually with your friend.'},{role:'user',content:'What do you think? [INSTANT]'}]})});
   assert.equal(r.status,200);const out=(await r.json()).choices[0].message.content;
   assert.match(out,/^%%%amused%%%/);assert.match(out,/damn/);assert.match(out,/I'd still go to trivia with her\./);assert.doesNotMatch(out,/main character energy|@@TTSTAG/);
-  const calls=fs.readFileSync(receipt,'utf8').trim().split('\n').map(JSON.parse),repair=calls.filter(b=>b.model.includes('glm'));
-  assert.equal(repair.length,1,log);assert.match(repair[0].messages[0].content,/stock personal labels/);assert.match(repair[0].messages[0].content,/Leave unaffected sentences alone/);
+  const calls=fs.readFileSync(receipt,'utf8').trim().split('\n').map(JSON.parse),repair=calls.filter(b=>b.messages[0].content.startsWith('You edit small'));
+  assert.equal(repair.length,1,log);assert.match(repair[0].messages[1].content,/stock personal labels/);assert.match(repair[0].messages[0].content,/Leave unaffected sentences alone/);
+  assert.equal(out,"%%%amused%%%  I like Nessa, but damn, she got mad when we already had plans. I think she was wrong.\n\nI'd still go to trivia with her.");
+  assert.match(log,/phrase-repair.*edited/);
  }finally{child.kill();await new Promise(r=>child.once('exit',r));}
 });
 test('production HTTP keeps ordinary contrast banter and observes it without a repair',async()=>{
@@ -22,7 +24,7 @@ test('production HTTP keeps ordinary contrast banter and observes it without a r
   assert.equal(r.status,200);const out=(await r.json()).choices[0].message.content;
   assert.equal(out,"%%%amused%%% That's not modest. That's enormous.");
   const calls=fs.readFileSync(receipt,'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(calls.filter(b=>b.model.includes('glm')).length,0,log);
+  assert.equal(calls.filter(b=>b.messages[0].content.startsWith('You edit small')).length,0,log);
   assert.match(log,/style-observation/);
  }finally{child.kill();await new Promise(r=>child.once('exit',r));}
 });

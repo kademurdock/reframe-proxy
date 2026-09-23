@@ -69,8 +69,12 @@ const express = require('express');
 const crypto = require('crypto');
 const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
+const { detectStockPhrasing, repairPhrases } = require('./phrase-repair');
+const PHRASE_REPAIR_ON = process.env.KADE_PHRASE_REPAIR !== '0';
+const PHRASE_REPAIR_MODEL = (process.env.KADE_PHRASE_REPAIR_MODEL || 'deepseek/deepseek-v4.1-flash').trim();
 const { detectDrift, driftSteerNote, steerRequest, steerOpinions } = require('./cadence-drift');
 const jev = require('./jev');
+const { judgeTargets: judgePhraseTargets, verifyEdits: verifyPhraseEdits } = require('./phrase-judge');
 const jevShadow = require('./jev-shadow');
 const { conversationalRewriteMatches } = require('./conversation-style');
 const { repairRepetition: repairRepetitionGlm } = require('./reply-focus');
@@ -877,6 +881,9 @@ async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
 
 // -- rewrite guidance --------------------------------------------------------
 const PATTERN_GUIDANCE = {
+  importance_wrapper: 'an importance announcement ("that matters because") -- when it is only a lead-in, state the existing reason directly; keep a natural answer to why something matters',
+  part_wrapper: 'pointing at "the part that/where" instead of saying the feeling or observation -- only simplify rhetorical framing; keep literal references to scenes, passages, objects and jokes',
+  explanation_wrapper: 'commentary announcing the explanation ("here is what actually backs the claim", "the straight version") -- remove a redundant setup or state the existing point directly',
   internet_label: 'stock personal labels such as "that is main character energy" or "that is mental gymnastics" -- delete the label sentence when the next sentence already states the specific action or disagreement; otherwise state that existing observation plainly. Do not substitute another generic label such as "that is some behavior", diagnose motives or invent an insult',
   reframe: 'the rhetorical reframe device "It\'s not X, it\'s Y" (or "isn\'t just X, it\'s Y" / "not X but Y")',
   throat_clearing_opener: 'a throat-clearing opener (e.g. "Look,", "Honestly?", "Here\'s the thing,") at the start of a sentence',
@@ -1089,6 +1096,7 @@ const RETRY_TRUNCATED = process.env.KADE_RETRY_TRUNCATED !== '0';
  * three checks that flagged it in the first place. */
 function collectMatches(content, upstreamBody) {
   const matches = [];
+  if (PHRASE_REPAIR_ON) matches.push(...detectStockPhrasing(content));
   /* Part 85: the reassurance-verdict detector needs the user's own words —
    * "you're not crazy" is a tic ONLY when nobody asked. */
   let lastUserText = '';
@@ -2021,6 +2029,7 @@ function coherenceRetryWorthy(tells) {
 }
 
 async function detectAndRewrite(result, upstreamBody) {
+  if (upstreamBody?.response_format && upstreamBody.response_format.type !== 'text') return result;
   if (writingDeskFor(upstreamBody)) {
     console.log('[writing] artifact preserved; conversational scrub and paid prose rewrite skipped');
     return result;
@@ -2138,7 +2147,31 @@ async function detectAndRewrite(result, upstreamBody) {
     jevShadow.listen(content, stripContextReplay(autoThinkPersonText(upstreamBody)), observedMatches, result.id);
   }
 
-  if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
+  if (typeof PHRASE_REPAIR_ON !== 'undefined' && PHRASE_REPAIR_ON &&
+      matches.length > 0 && content.length <= SLOP_REWRITE_MAX_CHARS) {
+    slopStats.record(matches);
+    const repaired = await repairPhrases(content, matches, {
+      complete: callOpenRouterOnce,
+      model: PHRASE_REPAIR_MODEL,
+      userText: stripContextReplay(autoThinkPersonText(upstreamBody)),
+      guidanceFor,
+      judge: jev.enabled('KADE_JEV_PHRASE_REPAIR') ? judgePhraseTargets : undefined,
+      verify: jev.enabled('KADE_JEV_PHRASE_REPAIR') ? verifyPhraseEdits : undefined,
+    });
+    if (repaired.status === 'edited' && (!COHERENCE_ON || !coherenceTells(repaired.text, content.length).length)) {
+      choice.message.content = repaired.text;
+      slopStats.outcome('phrase_edited');
+    } else {
+      if (repaired.status === 'edited') repaired.status = 'incoherent';
+      slopStats.outcome(`phrase_${repaired.status}`);
+    }
+    // A contextual keep is legitimate. No second pass, no whole-reply fallback.
+    // Keep utility receipts separate from the original model's token billing.
+    console.log('[phrase-repair] ' + JSON.stringify({ id: result.id, status: repaired.status,
+      patterns: [...new Set(matches.map(m => m.pattern))], edits: repaired.edits.length,
+      elapsedMs: repaired.elapsedMs, errorType: repaired.errorType, model: PHRASE_REPAIR_MODEL,
+      usage: repaired.usage, judgment: repaired.judgment, verification: repaired.verification }));
+  } else if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
     console.log(
       `[slop] tripped (${matches.length} match(es)) but reply is ${content.length} chars > ${SLOP_REWRITE_MAX_CHARS} — long-form reply keeps its original text (see Aug 10 2026 note above rewritePass)`
     );
