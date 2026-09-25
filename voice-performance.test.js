@@ -5,7 +5,7 @@ const {conversationGuidanceFor, PILOT_MARKER}=require('./conversation-judgment')
 // Exercise the rollback/pilot lane as well as the shipped default below.
 process.env.KADE_CONVERSATION_JUDGMENT='pilot';
 const source=fs.readFileSync(require.resolve('./server.js'),'utf8');
-const context={conversationGuidanceFor,learnLyricBody:()=>{},deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
+const context={conversationGuidanceFor,talkRegisterNoteFor:()=>'',learnLyricBody:()=>{},deepseekHabitNoteFor:()=>'',writingDeskFor:()=>'',WRITING_STYLE_NOTE:'craft',voicePerformanceNoteFor,voiceNoteFor:()=>'',isKianaBody:()=>false,isLyricBody:b=>b.lyric,
  LYRIC_OUTPUT_NOTE:'lyric',COMPACTION_DATE_ON:true,isCompactionShapedBody:b=>b.compaction,
  compactionDateNote:()=>'',KEEPER_CARVEOUT_ON:true,isMemoryKeeperShapedBody:b=>b.keeper,
  isSweptMachineBody:b=>b.machine,isMemorySummaryShapedBody:()=>true,isDiaryRepairShapedBody:()=>false,
