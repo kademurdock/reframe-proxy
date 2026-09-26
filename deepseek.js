@@ -99,7 +99,9 @@ const DEEPSEEK_HABIT_NOTE_CASUAL =
   ' One habit of yours to keep an eye on. You like to set up a point by first knocking down a different one,' +
   " some X that nobody actually said, before you get to your real point Y. If you catch isn't, not just or not about" +
   ' showing up to do that setup job, drop that half of the sentence. Nobody said X. Say Y straight out as your own claim and keep going.';
-// The text this process sends (KADE_CASUAL_HOUSE is read once at start).
+// Exported for tests: fixed at load from the process switch. Nothing sent
+// reads it; deepseekHabitNoteFor() picks its text on every call via
+// casualHouseOn(env), so editing this changes nothing a model sees.
 const DEEPSEEK_HABIT_NOTE = casualHouseOn() ? DEEPSEEK_HABIT_NOTE_CASUAL : DEEPSEEK_HABIT_NOTE_CLASSIC;
 function deepseekHabitNoteFor(body, env = process.env) {
   if (String(env.KADE_DEEPSEEK_HABIT_NOTE ?? '1') === '0') return '';

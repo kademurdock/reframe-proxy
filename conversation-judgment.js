@@ -94,7 +94,9 @@ const PERFORMANCE_NOTE_CASUAL =
   ' Keep directions out of code, drafts and structured output.' +
   ' If someone asks for a particular performance, give them that.';
 
-// The texts this process sends (KADE_CASUAL_HOUSE is read at start).
+// Exported for tests: fixed at load from the process switch. Nothing sent
+// reads these; conversationGuidanceFor() picks its text on every call via
+// casualHouseOn(env), so editing these changes nothing a model sees.
 const CONVERSATION_NOTE = casualHouseOn() ? CONVERSATION_NOTE_CASUAL : CONVERSATION_NOTE_CLASSIC;
 const PERFORMANCE_NOTE = casualHouseOn() ? PERFORMANCE_NOTE_CASUAL : PERFORMANCE_NOTE_CLASSIC;
 

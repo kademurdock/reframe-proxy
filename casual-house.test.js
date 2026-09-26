@@ -60,8 +60,9 @@ class FixedDate extends Date {
     super(...(args.length ? args : [FIXED]));
   }
 }
-// Newer ICU writes a narrow no-break space before PM; the pins use a space.
-const plain = s => String(s).replace(/ /g, ' ');
+// Newer ICU writes a narrow no-break space (U+202F) before PM; the pins use a
+// space. Written as an escape: the raw character looks like an ordinary space.
+const plain = s => String(s).replace(/\u202F/g, ' ');
 
 const SERVER = fs.readFileSync(require.resolve('./server.js'), 'utf8');
 function between(from, to) {
@@ -145,6 +146,15 @@ test('the switch: on by default, 0 turns it off, a partial env follows the proce
   }
 });
 
+test('plain() really swaps U+202F, and this file carries no raw one', () => {
+  assert.equal(plain('5:04\u202FPM'), '5:04 PM');
+  assert.equal(plain('5:04 PM'), '5:04 PM');
+  // whatever this ICU writes before PM, plain() hands the pins a space
+  assert.equal(plain(new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })
+    .format(FIXED)), '10:04 PM');
+  assert.ok(!fs.readFileSync(__filename, 'utf8').includes('\u202F'), 'write it as an escape, not the invisible character');
+});
+
 test('switch off: every module note is the d14b4b1 text, byte for byte', () => {
   const notes = moduleNotes(OFF);
   for (const [name, text] of Object.entries(notes)) assert.equal(sha(text), PINS[name][0], name);
@@ -185,6 +195,33 @@ test('the exported texts follow the process switch, and server.js reads it once'
   assert.equal(tr.TALK_NOTE, casual ? tr.TALK_NOTE_CASUAL : tr.TALK_NOTE_CLASSIC);
   assert.equal(tr.EXPLAIN_NOTE, casual ? tr.EXPLAIN_NOTE_CASUAL : tr.EXPLAIN_NOTE_CLASSIC);
   assert.equal(SERVER.split('const CASUAL_HOUSE_ON = casualHouseOn();').length, 2);
+});
+
+test('the module *For() functions pick their text on every call, not at load', () => {
+  const saved = process.env.KADE_CASUAL_HOUSE;
+  const loadedCasual = tr.TALK_NOTE === tr.TALK_NOTE_CASUAL;
+  try {
+    // {} names no switch, so each call falls back to process.env as it is now
+    const pick = () => ({ ...moduleNotes({}), trust: tr.trustListenerNoteFor(TALK_TURN, {}) });
+    process.env.KADE_CASUAL_HOUSE = '0';
+    const off = pick();
+    process.env.KADE_CASUAL_HOUSE = '1';
+    const on = pick();
+    for (const name of ['deepseek_habit', 'performance', 'conversation', 'talk', 'explain']) {
+      assert.equal(sha(off[name]), PINS[name][0], name + ' after flipping off');
+      assert.equal(sha(on[name]), PINS[name][1], name + ' after flipping on');
+    }
+    assert.equal(off.trust, '');
+    assert.equal(on.trust, tr.TRUST_LISTENER_NOTE);
+    // the exported constants stay as they were at load; nothing sent reads them
+    process.env.KADE_CASUAL_HOUSE = loadedCasual ? '0' : '1';
+    assert.notEqual(tr.talkRegisterNoteFor(TALK_TURN, {}), tr.TALK_NOTE);
+    assert.notEqual(cj.conversationGuidanceFor({ messages: [] }, {}).conversation, cj.CONVERSATION_NOTE);
+    assert.equal(tr.TALK_NOTE, loadedCasual ? tr.TALK_NOTE_CASUAL : tr.TALK_NOTE_CLASSIC);
+  } finally {
+    if (saved === undefined) delete process.env.KADE_CASUAL_HOUSE;
+    else process.env.KADE_CASUAL_HOUSE = saved;
+  }
 });
 
 test('the whole tail: off is byte-identical to d14b4b1, on is arm F', () => {

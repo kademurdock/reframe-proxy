@@ -103,7 +103,10 @@ const TRUST_LISTENER_NOTE =
   ' Go with plain words and a sharp observation over fancy vocabulary, and leave the thesaurus on the shelf.' +
   ' If a sentence is only there to connect two other sentences, cut it.';
 
-// The texts this process sends (KADE_CASUAL_HOUSE is read at start).
+// Exported for tests: fixed at load from the process switch. Nothing sent
+// reads these; talkRegisterNoteFor() and trustListenerNoteFor() pick their
+// text on every call via casualHouseOn(env), so editing these changes nothing
+// a model sees.
 const TALK_NOTE = casualHouseOn() ? TALK_NOTE_CASUAL : TALK_NOTE_CLASSIC;
 const EXPLAIN_NOTE = casualHouseOn() ? EXPLAIN_NOTE_CASUAL : EXPLAIN_NOTE_CLASSIC;
 

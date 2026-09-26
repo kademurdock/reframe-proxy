@@ -1191,8 +1191,12 @@ const STYLE_REMINDER = "Companionship is a full use of this platform. A person c
 
 /* THE CASUAL HOUSE (Part 293, Sep 25 2026; casual-house.js has the story and
  * the measurement). The tail notes below each keep their earlier text beside
- * the casual one. KADE_CASUAL_HOUSE=0 sends the earlier text byte for byte;
- * read once at start, so a flip needs a restart. */
+ * the casual one. KADE_CASUAL_HOUSE=0 sends the earlier text byte for byte.
+ * The notes in this file read the switch once at start, so for them a flip
+ * needs a restart. The module notes (deepseek.js, conversation-judgment.js,
+ * talk-register.js) check process.env on every call, so the whole tail is
+ * all classic or all casual only while process.env stays fixed. Nothing in
+ * the gateway changes it at runtime; keep it that way. */
 const CASUAL_HOUSE_ON = casualHouseOn();
 
 // Aug 21 2026 — THE FORMAT LINE, her wording approved this session. History:
