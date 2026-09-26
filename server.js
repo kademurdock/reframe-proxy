@@ -1864,15 +1864,11 @@ function withProviderExclusion(body) {
   return { ...body, provider };
 }
 
-function sumUsage(a, b) {
-  if (!a) return b || null;
-  if (!b) return a;
-  return {
-    prompt_tokens: (a.prompt_tokens || 0) + (b.prompt_tokens || 0),
-    completion_tokens: (a.completion_tokens || 0) + (b.completion_tokens || 0),
-    total_tokens: (a.total_tokens || 0) + (b.total_tokens || 0),
-  };
-}
+// Sep 26 2026 (Part 295, her Google key going into OpenRouter as BYOK): the
+// merge now carries OpenRouter's cost pair instead of dropping it, and the
+// real-cost rule (is_byok decides whether upstream_inference_cost is extra)
+// lives in one place. See usage-cost.js.
+const { sumUsage, costNote } = require('./usage-cost');
 
 // ── Protect Kiana's TTS-2 sentinel tags through the slop-rewrite pass ────────
 // Kiana writes performance directions wrapped in U+F003/U+F004 (see
@@ -3896,7 +3892,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   console.log(`[req ${reqId}] served by provider=${upstreamProvider || '(not reported)'}`);
   if (usage) {
     const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;
-    console.log(`[req ${reqId}] upstream usage: prompt=${usage.prompt_tokens ?? '?'} cached=${cached} completion=${usage.completion_tokens ?? '?'}${cached ? ` -- CACHE HIT ${Math.round((cached / (usage.prompt_tokens || 1)) * 100)}%` : ' -- no cache hit'}`);
+    console.log(`[req ${reqId}] upstream usage: prompt=${usage.prompt_tokens ?? '?'} cached=${cached} completion=${usage.completion_tokens ?? '?'}${cached ? ` -- CACHE HIT ${Math.round((cached / (usage.prompt_tokens || 1)) * 100)}%` : ' -- no cache hit'}${costNote(usage)}`);
     if (isZaiDirectModel(upstreamBody.model)) zaiMeter.note(upstreamBody.model, usage);
   }
 
@@ -4507,6 +4503,11 @@ app.post('/chat/completions', async (req, res) => {
   }
   await detectAndRewrite(result, upstreamBody);
   scrubSpecialTokensFromTitleReply(result, req.body);
+  // Part 295: the rooms and game seats bill from this usage, so name its real
+  // cost here (the BYOK split shows once her Google key is in OpenRouter).
+  if (result && result.usage) {
+    console.log(`[req ${reqId}] usage handed back: prompt=${result.usage.prompt_tokens ?? '?'} completion=${result.usage.completion_tokens ?? '?'}${costNote(result.usage)}`);
+  }
   // Reverted same as the streaming path above -- do not embed reasoning into
   // message.content. See the long comment in handleStreaming() for why.
   res.json(result);
