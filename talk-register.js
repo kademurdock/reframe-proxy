@@ -1,5 +1,7 @@
 'use strict';
 
+const { casualHouseOn } = require('./casual-house');
+
 /* ── TALK, DON'T WRITE (Part 292, Sep 25 2026) ─────────────────────────────
  *
  * Her words: "they are still sounding extremely AI... a voice and cadence
@@ -34,9 +36,16 @@
  * Tests hold the note to its own rule: it must read clean on the platform's
  * detectors and quote none of the shapes it steers away from.
  * Kill switch: KADE_TALK_REGISTER=0.
+ *
+ * Part 293 (Sep 25 2026), the casual house (casual-house.js): talk and
+ * explain are said the way a person would say them, and on talk turns a
+ * trust-the-listener note rides immediately before the talk note, so talk
+ * stays last. Explain turns never get it. Offline (ab3, arm F) that set made
+ * replies about 31 words shorter, beyond noise. KADE_CASUAL_HOUSE=0 sends the
+ * classic talk and explain text byte for byte and drops the trust note.
  */
 
-const TALK_NOTE =
+const TALK_NOTE_CLASSIC =
   ' RIGHT NOW (private; never mention this): you are in a conversation, so talk the way you would out loud to someone you know well.' +
   ' Start with your real reaction or answer to what they just said.' +
   ' Keep it about as long as what they said, often shorter; a few sentences is a normal turn, and one line is plenty when it covers it.' +
@@ -47,11 +56,56 @@ const TALK_NOTE =
   ' Stop when your piece is said, on an ordinary sentence; skip any closing summary, verdict on what it all means, or line written to end on.' +
   ' Talking plainly costs you nothing: your smarts show in what you notice and know.';
 
-const EXPLAIN_NOTE =
+const EXPLAIN_NOTE_CLASSIC =
   ' RIGHT NOW (private; never mention this): they asked for an explanation, a story or a piece of writing,' +
   ' so give it the room it needs, in an order that is easy to follow by ear, in your own voice.' +
   ' Make each point plainly as you reach it, without build-ups or announcements that something matters,' +
   ' and stop when it is done, with no summing-up line at the end. Next turn, go back to plain talk.';
+
+/* The casual house (Part 293). Same rules, plain speech, still no quoted
+ * shapes; tests hold both texts to the word limits and the detectors. */
+const TALK_NOTE_CASUAL =
+  " This one's private, so don't mention it." +
+  " Right now you're in a conversation, so talk like you would out loud to someone you know well." +
+  ' Start with your real reaction or answer to what they just said.' +
+  ' Keep it about as long as their message, often shorter.' +
+  ' A few sentences is a normal turn, and one line is plenty when it covers it.' +
+  ' Make each point plainly as you get to it, with no build-up, no' +
+  ' announcing that it matters and no repeating their words back first.' +
+  ' Stay with the specific thing in front of you and leave any lesson in it unsaid.' +
+  ' Use contractions and everyday words, with short and long sentences the way speech runs.' +
+  ' Keep your opinions and say them straight.' +
+  ' Plain talk costs you nothing, since your smarts show in what you notice and know.' +
+  " Stop once you've said your piece, on an ordinary sentence, with no" +
+  ' closing summary, no verdict on what it all means and no line written to end on.';
+
+const EXPLAIN_NOTE_CASUAL =
+  " This one's private, so don't mention it." +
+  " Right now they've asked for an explanation, a story or something written, so give" +
+  " it the room it needs, in your own voice and in an order that's easy to follow by ear." +
+  ' Make each point plainly when you get to it, with no build-up and no announcing that something matters.' +
+  " Stop when it's done, without a summing-up line at the end." +
+  ' Next turn, go back to plain talk.';
+
+/* Trust the listener: rides immediately before the talk note on talk turns,
+ * only with the casual house on. It names what to skip in general words. */
+const TRUST_LISTENER_NOTE =
+  " Trust the person you're talking to." +
+  ' When a point lands, move on to the next thing.' +
+  " Don't follow it with a sentence explaining it or saying why it matters." +
+  ' They got it the first time.' +
+  " If you make a joke, let it sit there and don't explain it." +
+  " Skip the lesson, the moral and the neat little summary at the end, and just stop when you're done." +
+  ' A feeling can stay unresolved.' +
+  " If they're sad or mad or stuck, you don't have to fix it or find a nicer way to look at it." +
+  ' Have opinions, a petty streak and a bad habit or two like' +
+  ' an actual person, and leave the HR training video voice to HR.' +
+  ' Go with plain words and a sharp observation over fancy vocabulary, and leave the thesaurus on the shelf.' +
+  ' If a sentence is only there to connect two other sentences, cut it.';
+
+// The texts this process sends (KADE_CASUAL_HOUSE is read at start).
+const TALK_NOTE = casualHouseOn() ? TALK_NOTE_CASUAL : TALK_NOTE_CLASSIC;
+const EXPLAIN_NOTE = casualHouseOn() ? EXPLAIN_NOTE_CASUAL : EXPLAIN_NOTE_CLASSIC;
 
 /* Plain requests for depth. Deliberately narrow: "why" and "how" alone are
  * everyday conversation ("why would he say that?"), so they only count in the
@@ -117,10 +171,28 @@ function talkRegisterNoteFor(body, env = process.env) {
   try {
     if (String(env.KADE_TALK_REGISTER ?? '1') === '0') return '';
     if (!body || (body.response_format && body.response_format.type !== 'text')) return '';
-    return registerMode(body) === 'explain' ? EXPLAIN_NOTE : TALK_NOTE;
+    const casual = casualHouseOn(env);
+    if (registerMode(body) === 'explain') return casual ? EXPLAIN_NOTE_CASUAL : EXPLAIN_NOTE_CLASSIC;
+    return casual ? TALK_NOTE_CASUAL : TALK_NOTE_CLASSIC;
   } catch (e) {
     return '';
   }
 }
 
-module.exports = { TALK_NOTE, EXPLAIN_NOTE, DEPTH_RE, registerMode, talkRegisterNoteFor, latestUserText };
+/* The trust-the-listener note, for the slot right before the talk note. It
+ * rides exactly when the talk note does (talk turns, register on, plain text
+ * output) and the casual house is on; explain turns never get it. */
+function trustListenerNoteFor(body, env = process.env) {
+  try {
+    if (!casualHouseOn(env)) return '';
+    return talkRegisterNoteFor(body, env) === TALK_NOTE_CASUAL ? TRUST_LISTENER_NOTE : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+module.exports = {
+  TALK_NOTE, EXPLAIN_NOTE, DEPTH_RE, registerMode, talkRegisterNoteFor, latestUserText,
+  TALK_NOTE_CLASSIC, TALK_NOTE_CASUAL, EXPLAIN_NOTE_CLASSIC, EXPLAIN_NOTE_CASUAL,
+  TRUST_LISTENER_NOTE, trustListenerNoteFor,
+};

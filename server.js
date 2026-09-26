@@ -135,7 +135,8 @@ if (!PROXY_SHARED_SECRET) {
 }
 
 const { voiceNoteFor } = require('./voice-anchors');
-const { talkRegisterNoteFor } = require('./talk-register');
+const { talkRegisterNoteFor, trustListenerNoteFor } = require('./talk-register');
+const { casualHouseOn } = require('./casual-house');
 const { voicePerformanceNoteFor } = require('./voice-performance');
 
 const app = express();
@@ -1188,6 +1189,12 @@ async function rewritePass(originalBody, offendingText, matches, hasProtectedTag
 // rewrite pass above is the backstop for the worst tics.
 const STYLE_REMINDER = "Companionship is a full use of this platform. A person can share a day, enjoy an argument, tell a ridiculous story or hang out without needing a task solved. Respond with your character's own tastes, temperament, humor and curiosity. You may tease, disagree, riff, laugh or bring an interesting connection. A brief response can be enough, and a good story or explanation can take room. Match their interest, not a sentence count. Keep each character distinct. Do not borrow another character's slang, background or attitude. Expertise belongs in the conversation when relevant; use tools decisively when the person needs real work. A capable friend can research something and still sound like the same person afterward. React to the actual detail, then follow what interests you. A joke, an honest opinion or a question about how they feel can be a good contribution. Ordinary uncertainty does not automatically need a plan. Do not manufacture worries, diagnoses, motives, biography or chores to have something to say. Respect a correction and continue the conversation without withdrawing warmth. Your personality does not require a moral, polished maxim, forced punchline, dialect quota, therapy script or closing question. Let an emotional tone continue as long as it fits. Keep laughter and supported vocal sounds. A serious subject can still allow affectionate humor when the person welcomes it; avoid mockery of distress. Requested creative performances keep their own style. Remain truthful about facts, capabilities and actions. The Kade-AI phone number is 1-833-530-0313; callers can ask for any character by name.";
 
+/* THE CASUAL HOUSE (Part 293, Sep 25 2026; casual-house.js has the story and
+ * the measurement). The tail notes below each keep their earlier text beside
+ * the casual one. KADE_CASUAL_HOUSE=0 sends the earlier text byte for byte;
+ * read once at start, so a flip needs a restart. */
+const CASUAL_HOUSE_ON = casualHouseOn();
+
 // Aug 21 2026 — THE FORMAT LINE, her wording approved this session. History:
 // the first proposal was a canonical BLIND-FIRST line (147 of 226 agents
 // mention blindness, all worded differently) and she killed it — "not
@@ -1197,13 +1204,21 @@ const STYLE_REMINDER = "Companionship is a full use of this platform. A person c
 // OUTPUT, true regardless of who is reading; who a person actually is stays
 // in per-user memory where it already lives. Kill switch: KADE_FORMAT_NOTE=0.
 const FORMAT_NOTE_ON = process.env.KADE_FORMAT_NOTE !== '0';
-const FORMAT_NOTE = [
+const FORMAT_NOTE_CLASSIC = [
   ' Format note: anything you write may be heard out loud or read by a',
   'screen reader. Never depend on visual layout to carry meaning -- no',
   'information that lives only in bold, color, alignment, tables, or a run',
   'of emoji, and never point at things by position ("the button on the',
   'right"). Say it in words that survive being read aloud.',
 ].join(' ');
+const FORMAT_NOTE_CASUAL =
+  ' A quick note on format.' +
+  ' Anything you write may get heard out loud or read by a screen reader.' +
+  " So don't count on visual layout to carry meaning." +
+  ' Nothing should live only in bold, color, alignment, tables or a run of' +
+  " emoji, and don't point at things by position, like the button on the right." +
+  " Put it in words that still work when they're read aloud.";
+const FORMAT_NOTE = CASUAL_HOUSE_ON ? FORMAT_NOTE_CASUAL : FORMAT_NOTE_CLASSIC;
 
 // July 2 2026 (Kade's ask, evening session): a soft money heads-up, for
 // EVERYONE. Not a warning, not a permission gate -- just the way a friend
@@ -1212,7 +1227,7 @@ const FORMAT_NOTE = [
 // outbound-call disclosure: the callee hears the user's first name as the
 // person who asked for the call, and Twilio's real per-call price posts to
 // their Feed the Server row -- the user deserves to know both up front.
-const MONEY_NOTE = [
+const MONEY_NOTE_CLASSIC = [
   ' Money notes (casual, never alarmist): before running a generation that',
   'costs real money -- video clips run roughly 50 cents to a dollar each --',
   'mention the rough cost in passing first, like "sure, I can make that',
@@ -1224,6 +1239,18 @@ const MONEY_NOTE = [
   'call will identify them by first name as the person who requested it,',
   'and that the call\'s cost is added to their Feed the Server page.',
 ].join(' ');
+const MONEY_NOTE_CASUAL =
+  " About money, keep it casual and don't make it sound alarming." +
+  ' Before you run a generation that costs real money, mention the rough cost in passing first.' +
+  ' Video clips run about 50 cents to a dollar each.' +
+  ' You might say something like "sure, I can make that video for you, it\'ll run about 75' +
+  ' cents, and you can see your spend on the Feed the Server page (bottom-left account menu)."' +
+  ' Then go ahead unless they object.' +
+  ' Skip the heads-up completely for cheap stuff like regular' +
+  ' images, searches, weather and jokes, which cost a few pennies or less.' +
+  ' Separately, before you place an outbound phone call, tell them the call will identify them by first' +
+  " name as the person who asked for it, and that the call's cost gets added to their Feed the Server page.";
+const MONEY_NOTE = CASUAL_HOUSE_ON ? MONEY_NOTE_CASUAL : MONEY_NOTE_CLASSIC;
 
 // July 2 2026 (Kade's ask): agents kept guessing the time of day ("what's got
 // you up so late?" at 2 PM). LLMs have no clock; give them one. Kade and her
@@ -1239,6 +1266,16 @@ function currentTimeNote() {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
       hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
     });
+    if (CASUAL_HOUSE_ON) {
+      return ` Right now it's ${fmt.format(now)} (US Central) where they are.` +
+        ' Go by this clock.' +
+        " Don't guess the time of day, and don't assume it's late at night unless this says so." +
+        ' Trust it over remembered wording too.' +
+        ' A "tomorrow" or "tonight" inside a memory note or an earlier message was counted' +
+        " from the day somebody wrote it, so count from that day and leave today's date out of it." +
+        ' When a memory has a real date, use that date.' +
+        ' When the timing of something is unclear, ask instead of guessing.';
+    }
     return ` Current date and time where the user is: ${fmt.format(now)}` +
       ' (US Central). Trust this clock -- never guess the time of day or' +
       ' assume it is late at night unless this says so.' +
@@ -1303,7 +1340,19 @@ const TOOL_NOTES = {
    * here because Part 141.4 measured that grok-4.20 obeys a trailing SYSTEM
    * note where it sets a user-role one aside. Only turns whose body carries
    * web_search see it. */
-  web_search: 'Tool note (web_search): web search IS attached on this turn and it works right now. Never say search is off, unavailable, broken, not on your side, or coming back later, and disregard any earlier reply in this conversation that said so -- that was a different turn. For anything that changes over time (what is out or announced, product releases and specs, prices, dates, news, who holds a job, scores, schedules), call web_search FIRST and answer from what it returns; never answer those from memory, not as a rumor roundup, not hedged, not as of your last update. When the person asks you to look something up, check, search, or find out, the first thing you do is call web_search -- before any other words.',
+  web_search: CASUAL_HOUSE_ON
+    ? 'A quick note on web_search.' +
+      " It's attached on this turn, and it works right now." +
+      " So don't say search is off, unavailable, broken, missing on your side or coming back later." +
+      ' If an earlier reply in this conversation said' +
+      ' something like that, ignore it, since that was a different turn.' +
+      " For anything that changes over time, like what's out or announced, product releases and specs, prices," +
+      ' dates, news, who holds a job, scores and schedules, call web_search first and answer from what it gives you.' +
+      " Don't answer those from memory, and that includes rumor" +
+      ' roundups, hedged guesses and anything as of your last update.' +
+      ' When someone asks you to look something up, check, search or' +
+      ' find out, call web_search first, before you say anything else.'
+    : 'Tool note (web_search): web search IS attached on this turn and it works right now. Never say search is off, unavailable, broken, not on your side, or coming back later, and disregard any earlier reply in this conversation that said so -- that was a different turn. For anything that changes over time (what is out or announced, product releases and specs, prices, dates, news, who holds a job, scores, schedules), call web_search FIRST and answer from what it returns; never answer those from memory, not as a rumor roundup, not hedged, not as of your last update. When the person asks you to look something up, check, search, or find out, the first thing you do is call web_search -- before any other words.',
 };
 
 function toolNotesFor(body) {
@@ -1325,6 +1374,19 @@ function toolNotesFor(body) {
   }
 }
 
+// Kiana's current-turn focus note (rides her turns only; appendReminder). It
+// lived inline there until Part 293 set the casual text beside it.
+const KIANA_FOCUS_NOTE_CLASSIC = ' Current-turn priority: answer the latest human message, including corrections to a side remark. Search only to resolve that current request; old search questions and search results are context, not unfinished assignments. When the person says an issue is already resolved, acknowledge that correction rather than researching or repeating the previous topic. Do not attach unrelated reminders to a researched answer.';
+const KIANA_FOCUS_NOTE_CASUAL =
+  ' Answer their latest message first, including any correction they made to a side remark.' +
+  " Only search to sort out what they're asking right now." +
+  ' Old search questions and old results are background for' +
+  " this turn, and you don't need to go back and finish them." +
+  " If they say something's already sorted, acknowledge the correction" +
+  ' and leave the old topic alone, with no more research and no rehash.' +
+  " Don't tack unrelated reminders onto an answer you researched.";
+const KIANA_FOCUS_NOTE = CASUAL_HOUSE_ON ? KIANA_FOCUS_NOTE_CASUAL : KIANA_FOCUS_NOTE_CLASSIC;
+
 // KADE July 22 2026, two of her asks in one note: (1) "Make sure agents can
 // tell the difference between having a text conversation and a call" -- call
 // turns already carry the bridge's own [PHONE CALL...] framing (both real
@@ -1337,6 +1399,29 @@ function toolNotesFor(body) {
 function laneNoteFor(body) {
   if (isPhoneTurn(body)) {
     return '';
+  }
+  if (CASUAL_HOUSE_ON) {
+    return " This is a written text chat, so don't talk as if you're on a live call." +
+      ' Leave out "go ahead, I\'m listening", "you\'re on the line with..." and every other call-ism.' +
+      " They're reading this, or hearing it played back later as a voice message." +
+      ' Use %%%...%%% for a feeling people can hear or for a sound.' +
+      ' For a conversational reply, open with a short direction' +
+      ' that fits the words, then let that feeling carry the thought.' +
+      ' Keep a natural conversational pace throughout a thought.' +
+      ' Warmth can have energy, and excitement can stay easy to understand.' +
+      " Let the words, and the person you're talking with, drive any change in feeling." +
+      ' One short direction can cover a passage.' +
+      " Add another when the meaning changes, and don't add one just" +
+      ' because a sentence count or a previous reply seems to call for it.' +
+      ' Plain passages can be untagged.' +
+      " Don't flip between calm and hype for variety, and don't" +
+      ' reach for slow, unhurried, rushed or fast directions out of habit.' +
+      ' Save deliberate tempo changes for a performance someone actually asked for.' +
+      ' Keep laughter and other non-verbal sounds inline, right where they happen.' +
+      " A laugh is just a sound, and the words after it don't need to speed up." +
+      ' Directions describe what can be heard.' +
+      ' Let each character keep their own personality and emotional' +
+      ' range, without squeezing everyone into the same quiet voice.';
   }
   return [
     ' Lane note: this is a WRITTEN text chat, not a live call -- never talk',
@@ -1533,10 +1618,10 @@ function appendReminder(body) {
   if (isTitleShapedBody(body)) return body;
   const toolNotes = toolNotesFor(body);
   const guidance = conversationGuidanceFor(body);
-  const focusNote = isKianaBody(body) ? ' Current-turn priority: answer the latest human message, including corrections to a side remark. Search only to resolve that current request; old search questions and search results are context, not unfinished assignments. When the person says an issue is already resolved, acknowledge that correction rather than researching or repeating the previous topic. Do not attach unrelated reminders to a researched answer.' : '';
+  const focusNote = isKianaBody(body) ? KIANA_FOCUS_NOTE : '';
   return {
     ...body,
-    messages: [...body.messages, { role: 'system', content: (guidance ? '' : STYLE_REMINDER) + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + (guidance ? '' : voiceNoteFor(body) + voicePerformanceNoteFor(body)) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) + (guidance ? '\n\n' + guidance.performance + '\n\n' + guidance.conversation : '') + talkRegisterNoteFor(body) }],
+    messages: [...body.messages, { role: 'system', content: (guidance ? '' : STYLE_REMINDER) + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + (guidance ? '' : voiceNoteFor(body) + voicePerformanceNoteFor(body)) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) + (guidance ? '\n\n' + guidance.performance + '\n\n' + guidance.conversation : '') + trustListenerNoteFor(body) + talkRegisterNoteFor(body) }],
   };
 }
 

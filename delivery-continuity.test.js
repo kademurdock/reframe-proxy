@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {driftSteerNote,detectDrift}=require('./cadence-drift');
 const {voiceNoteFor}=require('./voice-anchors');
 const s=fs.readFileSync(require.resolve('./server.js'),'utf8');
-const ctx={isPhoneTurn:b=>b.phone};
+const ctx={isPhoneTurn:b=>b.phone,CASUAL_HOUSE_ON:require('./casual-house').casualHouseOn()};
 vm.runInNewContext(s.slice(s.indexOf('function laneNoteFor(body)'),s.indexOf('/* ⚠️ TITLE / SUMMARIZER CALLS'))+'\nthis.note=laneNoteFor;',ctx);
 test('written lane permits a continuing feeling without mood or tag quotas',()=>{
  const note=ctx.note({});assert.match(note,/natural conversational pace/);

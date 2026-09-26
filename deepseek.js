@@ -1,4 +1,5 @@
 'use strict';
+const { casualHouseOn } = require('./casual-house');
 /*
  * deepseek.js — provider pinning for deepseek/* models on OpenRouter (Sep 19 2026, Part 213).
  *
@@ -85,16 +86,26 @@ function adaptForDeepseek(body, env = process.env) {
  * the person 5-10 more seconds. 10 of 10 replies also opened on a voice
  * direction. DeepSeek follows a note literally when the note is specific and
  * close to the end, so this is short, concrete and rides deepseek turns only.
- * Kill switch: KADE_DEEPSEEK_HABIT_NOTE=0. */
-const DEEPSEEK_HABIT_NOTE =
+ * Kill switch: KADE_DEEPSEEK_HABIT_NOTE=0.
+ *
+ * Part 293 (Sep 25 2026): the casual house (casual-house.js). The casual
+ * wording describes the habit instead of quoting it, since a quoted shape is
+ * the one a model copies. KADE_CASUAL_HOUSE=0 restores the classic text. */
+const DEEPSEEK_HABIT_NOTE_CLASSIC =
   ' Your own habit to watch: setting up a point by first denying a different one ("this isn\'t X. It\'s Y", "the real question isn\'t X, it\'s Y",' +
   ' "it\'s not about X", "not just X but Y"). Nobody said X. Say Y straight out as your own claim and keep going. If you catch the words' +
   ' isn\'t, not just or not about arriving as a setup, drop that half of the sentence.';
+const DEEPSEEK_HABIT_NOTE_CASUAL =
+  ' One habit of yours to keep an eye on. You like to set up a point by first knocking down a different one,' +
+  " some X that nobody actually said, before you get to your real point Y. If you catch isn't, not just or not about" +
+  ' showing up to do that setup job, drop that half of the sentence. Nobody said X. Say Y straight out as your own claim and keep going.';
+// The text this process sends (KADE_CASUAL_HOUSE is read once at start).
+const DEEPSEEK_HABIT_NOTE = casualHouseOn() ? DEEPSEEK_HABIT_NOTE_CASUAL : DEEPSEEK_HABIT_NOTE_CLASSIC;
 function deepseekHabitNoteFor(body, env = process.env) {
   if (String(env.KADE_DEEPSEEK_HABIT_NOTE ?? '1') === '0') return '';
   if (!body || !isDeepseekModel(body.model)) return '';
   if (body.response_format && body.response_format.type !== 'text') return '';
-  return DEEPSEEK_HABIT_NOTE;
+  return casualHouseOn(env) ? DEEPSEEK_HABIT_NOTE_CASUAL : DEEPSEEK_HABIT_NOTE_CLASSIC;
 }
 
-module.exports = { DEEPSEEK_HABIT_NOTE, deepseekHabitNoteFor, DEEPSEEK_FAST_ORDER, DEEPSEEK_SLOW_IGNORE, DEEPSEEK_MODEL_RE, isDeepseekModel, deepseekProviderPrefs, adaptForDeepseek };
+module.exports = { DEEPSEEK_HABIT_NOTE, DEEPSEEK_HABIT_NOTE_CLASSIC, DEEPSEEK_HABIT_NOTE_CASUAL, deepseekHabitNoteFor, DEEPSEEK_FAST_ORDER, DEEPSEEK_SLOW_IGNORE, DEEPSEEK_MODEL_RE, isDeepseekModel, deepseekProviderPrefs, adaptForDeepseek };
