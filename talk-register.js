@@ -105,6 +105,8 @@ const SOL_CHARACTER_NOTE =
 function solCharacterVoiceFor(body, env) {
   if (String(env.KADE_SOL_CHARACTER_VOICE ?? '1') === '0' || !isSolModel(body?.model)) return false;
   if (isKianaBody(body)) return true;
+  if ((body?.messages || []).slice(0, 3).some(message => message?.role === 'system' &&
+    /(?:^|\n)CHARACTER CONTINUITY: Your established identity, values, canon and relationship history belong to your character/.test(textOf(message.content)))) return true;
   const identity = /(?:^|\n)\s*(?:You are Lilly, a 12-year-old girl from the Missouri Ozarks, in sixth grade this year\.|You are Harley Dalton, Harley to everybody, one of the companions of Kade-AI\.|You are Della\. Della Mae Whitfield, if somebody wants the whole thing,)/;
   return (body?.messages || []).slice(0, 3).some(message => message?.role === 'system' &&
     identity.test(textOf(message.content)));

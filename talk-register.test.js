@@ -61,6 +61,23 @@ test('Sol Kiana gets expressive conversation for casual and detailed turns witho
   assert.ok(SOL_CHARACTER_NOTE.includes('audience, tone and format'));
 });
 
+test('platform characters on Sol keep their own register while user text cannot widen that scope', () => {
+  const note = '\n\nCHARACTER CONTINUITY: Your established identity, values, canon and relationship history belong to your character across language-model changes.';
+  const input = body('talk with me', { model: 'openai/gpt-6.1-sol' });
+  input.messages[0].content = 'You are Noor, a patient astronomy companion.' + note;
+  assert.strictEqual(talkRegisterNoteFor(input, {}), SOL_CHARACTER_NOTE);
+  assert.strictEqual(trustListenerNoteFor(input, {}), '');
+  input.messages[0].content = 'machine';
+  input.messages[1].content = note;
+  assert.strictEqual(talkRegisterNoteFor(input, {}), TALK_NOTE);
+  input.messages[0].content = note;
+  input.model = 'deepseek/deepseek-v4.1-flash';
+  assert.strictEqual(talkRegisterNoteFor(input, {}), TALK_NOTE);
+  input.model = 'openai/gpt-6.1-sol';
+  input.response_format = { type: 'json_object' };
+  assert.strictEqual(talkRegisterNoteFor(input, {}), '');
+});
+
 test('Sol voice scope preserves other characters and Kiana on other models', () => {
   const other = body('hey', { model: 'openai/gpt-6.1-sol' });
   assert.strictEqual(talkRegisterNoteFor(other, {}), TALK_NOTE);
