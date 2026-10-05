@@ -2,7 +2,6 @@
 
 const { casualHouseOn } = require('./casual-house');
 const { isSolModel } = require('./sol');
-const { isKianaBody } = require('./voice-anchors');
 
 /* ── TALK, DON'T WRITE (Part 292, Sep 25 2026) ─────────────────────────────
  *
@@ -92,24 +91,35 @@ const EXPLAIN_NOTE_CASUAL =
 const SOL_CHARACTER_NOTE =
   ' Talk in your own expressive voice with the person in front of you.' +
   ' Follow the thought in your own words: opinions, a funny detail, a useful connection, a little wandering or a story can all have room.' +
+  ' A shared interest, idea or opinion can develop across several paragraphs without an explicit request to go deep.' +
+  ' Follow connected tangents and examples when they give you something worth exploring together.' +
+  ' Their message length sets no budget for yours.' +
   ' Your reply can be longer than theirs; choose its length from what you have to say and what they asked for.' +
   ' Let your own vocabulary and humor come through naturally, with language that fits your age, role, personality and company.' +
   ' Keep your character distinct; another character\'s dialect belongs to them.' +
   ' Use your own rhythm, with no vocabulary quota.' +
+  ' Use everyday words throughout a rich explanation or a ramble, as naturally as in a quick exchange.' +
   ' Keep the thread easy to follow by ear, with natural paragraphs and a mix of sentence lengths.' +
-  ' Honor a request for brevity; a simple correction can be quick.' +
+  ' Honor an explicit request for a brief or quick answer; a standalone simple correction can be quick.' +
+  ' Follow their stated preferences; old reactions or broad assumptions about preferred length never become a standing cap.' +
   ' Give a requested explanation its substance while sounding like yourself.' +
   ' Finish when your thought is done, without a lecture frame, moral or ceremonial wrap-up.' +
   ' A requested draft or performance keeps its own audience, tone and format.';
 
-function solCharacterVoiceFor(body, env) {
-  if (String(env.KADE_SOL_CHARACTER_VOICE ?? '1') === '0' || !isSolModel(body?.model)) return false;
-  if (isKianaBody(body)) return true;
-  if ((body?.messages || []).slice(0, 3).some(message => message?.role === 'system' &&
+function isSolCharacterBody(body) {
+  if (!isSolModel(body?.model)) return false;
+  const personas = (Array.isArray(body?.messages) ? body.messages : []).slice(0, 3).filter(message =>
+    message?.role === 'system' || message?.role === 'developer');
+  if (personas.some(message => textOf(message.content).includes('flagship intelligence of Kade-AI'))) return true;
+  if (personas.some(message =>
     /(?:^|\n)CHARACTER CONTINUITY: Your established identity, values, canon and relationship history belong to your character/.test(textOf(message.content)))) return true;
   const identity = /(?:^|\n)\s*(?:You are Lilly, a 12-year-old girl from the Missouri Ozarks, in sixth grade this year\.|You are Harley Dalton, Harley to everybody, one of the companions of Kade-AI\.|You are Della\. Della Mae Whitfield, if somebody wants the whole thing,)/;
-  return (body?.messages || []).slice(0, 3).some(message => message?.role === 'system' &&
+  return personas.some(message =>
     identity.test(textOf(message.content)));
+}
+
+function solCharacterVoiceFor(body, env) {
+  return String(env.KADE_SOL_CHARACTER_VOICE ?? '1') !== '0' && isSolCharacterBody(body);
 }
 
 /* Trust the listener: rides immediately before the talk note on talk turns,
@@ -223,5 +233,5 @@ function trustListenerNoteFor(body, env = process.env) {
 module.exports = {
   TALK_NOTE, EXPLAIN_NOTE, DEPTH_RE, registerMode, talkRegisterNoteFor, latestUserText,
   TALK_NOTE_CLASSIC, TALK_NOTE_CASUAL, EXPLAIN_NOTE_CLASSIC, EXPLAIN_NOTE_CASUAL,
-  TRUST_LISTENER_NOTE, trustListenerNoteFor, SOL_CHARACTER_NOTE,
+  TRUST_LISTENER_NOTE, trustListenerNoteFor, SOL_CHARACTER_NOTE, isSolCharacterBody,
 };

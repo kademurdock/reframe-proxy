@@ -1,11 +1,12 @@
 'use strict';
 
 /* Part 293, the casual house (casual-house.js). Both texts of every gateway
- * house note are pinned by SHA-256: the classic text is d14b4b1's, byte for
- * byte, and the casual text is the one the offline A/B tested as arm F
+ * house note are pinned by SHA-256: most retain d14b4b1's classic text
+ * and the casual text the offline A/B tested as arm F. Conversation judgment
+ * includes the owner's later correction that style feedback does not request brevity.
  * (ab3/casual_*.txt and ab3/trust_listener.txt). The whole tail is then put
  * together from the real server.js source with the switch off and on, and
- * compared with d14b4b1's tail and with arm F's. */
+ * compared with the reviewed classic and casual tails. */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -27,7 +28,7 @@ const ON = { KADE_CASUAL_HOUSE: '1' };
 const PINS = {
   deepseek_habit: ['2b32557bf3dbbbd9af0527a503b1b72c6f92a941e480fc3f913bf581c83ec463', 'cac8f6ee8fa2816052c4ff484522b517edacfdc39fd75eda05ca845ce4442528'],
   performance: ['6eac75879fb0a206d70d399d589e739a5730a05d8ea0d30f6ecbf46491c63b39', '61150665a0dbb46f61bcc838dca3c1861eb6d2f92246133f7a1580f0531f7583'],
-  conversation: ['315cecb9179955c68510abff186334ecb7b6a47bc7efd919297da384c3dbb7b0', '8cd92b1fbe0fb110549bd603ad5e45d247db8a22cfd7ca2945d957be2949b166'],
+  conversation: ['fdfd212421413eb03a5fd5374b08b9cde2f708f94b88ecd8919a81f16989f41c', 'ed67a4a5fc9bc66066f7fcfd3d8fb2015338e50f1f55a461e6bdd47827eb4bc9'],
   talk: ['6c5045630800fe486cb3485ef97334adfdb647a26437955c0b481f52af83d5af', '9e86804e5da81164d79142f1e36841bff9243b83c829a0e2b34f42ee2d9b5911'],
   explain: ['71dfcbc6467819db9a0bd19d0341a00e6289494440bf6fc1db5ba8ce03119056', '4378bd94e7b927ad0da01c1221b101c380cd85aa8f370aaa6357b8299e064593'],
   format: ['af6b61497ae346875c32d5ce2cdbbf3aa223a01a5d6988291ccfa17e4cb0c019', 'd7257c10f8d63a260764cc421cbef35f64ecdcc20d9ffb5064d948dbb1de33fd'],
@@ -39,17 +40,17 @@ const PINS = {
 };
 const TRUST_PIN = '074d0f50b5aed2d477ab35921002f8f6a80e2ba1a5c3778e2ce50d768e1514e5';
 /* Whole tails for a Kiana turn on DeepSeek, text lane, conversation judgment
- * on: classic = arm B (d14b4b1), casual = arm F. */
+ * on, including the owner's updated conversation judgment. */
 const TAIL_PINS = {
   classic: {
-    talk: '77644aa8529cada718dea2ce2e9ab8c78e0222b4460d397f7204c6b84e15028d',
-    explain: '1570032ee623f6baa2661a105b078df60999475062e24f4d898501bcc7902da0',
-    talkSearch: '083961bbdf49709752f69ba113f9d7f2c2af1ebd95060ac6db85e684e8c347e2',
+    talk: 'b3158cc8f7b2dbc02c8be0d120bf354f5c505c370ff8a233f12c265400454feb',
+    explain: '47b071a06894197f9a7ba9781b1fbade91d167a71c64bc2aa09a311aab45189f',
+    talkSearch: '418d92e6e73268f104a56c62cb1ba06f84792b71238e7d323b84f4d455418715',
   },
   casual: {
-    talk: 'dd5198376671131a6acf1c85e002323c067283239ef523af87f35d3bb3c7ca14',
-    explain: 'dda0a22a369473df2f6ac6e0208249a42fbbdc891612d78c1d99f869f49bb1ec',
-    talkSearch: 'a2eebf5634998fb43eb62b6231dd25cf7c55f2596edd71a156fc25b6af8a46d1',
+    talk: '94880c0f432ff689ef06349a9fa3ee3e68776a89ee4c837f9620170f1321a18e',
+    explain: '03c9e6f0d467381f8de473bc996b257b1c38159a23c001ec11209d3308f012a4',
+    talkSearch: 'fc0259e3d3c0895cb3b5b978b98dd4b45110092d0d04648cfecd31838239508a',
   },
 };
 
@@ -152,10 +153,10 @@ test('plain() really swaps U+202F, and this file carries no raw one', () => {
   // whatever this ICU writes before PM, plain() hands the pins a space
   assert.equal(plain(new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })
     .format(FIXED)), '10:04 PM');
-  assert.ok(!fs.readFileSync(__filename, 'utf8').includes('\u202F'), 'write it as an escape, not the invisible character');
+  assert.ok(!fs.readFileSync(require.resolve('./casual-house.test.js'), 'utf8').includes('\u202F'), 'write it as an escape, not the invisible character');
 });
 
-test('switch off: every module note is the d14b4b1 text, byte for byte', () => {
+test('switch off: every module note keeps its reviewed classic bytes', () => {
   const notes = moduleNotes(OFF);
   for (const [name, text] of Object.entries(notes)) assert.equal(sha(text), PINS[name][0], name);
   assert.equal(notes.deepseek_habit, ds.DEEPSEEK_HABIT_NOTE_CLASSIC);
@@ -165,7 +166,7 @@ test('switch off: every module note is the d14b4b1 text, byte for byte', () => {
   assert.equal(notes.explain, tr.EXPLAIN_NOTE_CLASSIC);
 });
 
-test('switch on: every module note is the casual text the A/B tested', () => {
+test('switch on: every module note keeps its reviewed casual bytes', () => {
   const notes = moduleNotes(ON);
   for (const [name, text] of Object.entries(notes)) assert.equal(sha(text), PINS[name][1], name);
   assert.equal(notes.deepseek_habit, ds.DEEPSEEK_HABIT_NOTE_CASUAL);
@@ -224,7 +225,7 @@ test('the module *For() functions pick their text on every call, not at load', (
   }
 });
 
-test('the whole tail: off is byte-identical to d14b4b1, on is arm F', () => {
+test('the whole tail keeps its reviewed classic and casual bytes', () => {
   for (const [mode, casual] of [['classic', false], ['casual', true]]) {
     const { tail } = server(casual);
     assert.equal(sha(tail(TALK_TURN)), TAIL_PINS[mode].talk, mode + ' talk');

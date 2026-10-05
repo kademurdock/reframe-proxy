@@ -135,7 +135,7 @@ if (!PROXY_SHARED_SECRET) {
 }
 
 const { voiceNoteFor } = require('./voice-anchors');
-const { talkRegisterNoteFor, trustListenerNoteFor } = require('./talk-register');
+const { talkRegisterNoteFor, trustListenerNoteFor, isSolCharacterBody } = require('./talk-register');
 const { casualHouseOn } = require('./casual-house');
 const { voicePerformanceNoteFor } = require('./voice-performance');
 
@@ -1491,7 +1491,7 @@ function isTitleShapedBody(body) {
   const hasSystem = msgs.some((m) => m && m.role === 'system' &&
     !(typeof m.content === 'string' && m.content.startsWith('For the checkpoint: today is')));
   const hasTools = Array.isArray(body && body.tools) && body.tools.length > 0;
-  return !hasSystem && !hasTools;
+  return !hasSystem && !hasTools && !isSolCharacterBody(body);
 }
 
 /* Aug 20 2026 — THE CADENCE STEER, and why it lives on the request.

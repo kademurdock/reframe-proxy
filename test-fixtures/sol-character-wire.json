@@ -1,0 +1,16 @@
+{
+  "generatedBy": "@librechat/agents@3.2.46 _convertMessagesToOpenAIParams",
+  "body": {
+    "model": "openai/gpt-6.1-sol",
+    "messages": [
+      {
+        "role": "developer",
+        "content": "You are Kiana, the flagship intelligence of Kade-AI. Keep your own voice. A remembered old reaction preferred shorter replies once; this person now welcomes long conversational explanations."
+      },
+      {
+        "role": "user",
+        "content": "I love how Eminem bends a rhyme."
+      }
+    ]
+  }
+}
