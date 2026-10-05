@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { adaptForSol, isSolModel } = require('./sol');
-const { isReasoningModel, alwaysThinks, adaptForGlm, isWordlessTurn } = require('./modelbudget');
+const { isReasoningModel, alwaysThinks, thinkTierFor, adaptForGlm, isWordlessTurn } = require('./modelbudget');
 
 test('Sol reaches Auto thinking and the empty-output rescue under both model spellings', () => {
   for (const model of ['openai/gpt-6.1-sol', 'gpt-6.1-sol', 'openai/gpt-6.1-sol-20260929']) {
@@ -35,6 +35,24 @@ test('Explicit reasoning and larger caller budgets survive; only authoring Auto 
   const capped = adaptForSol({ ...input, kade_think_max_effort: 'medium' });
   assert.equal(capped.reasoning.effort, 'medium');
   assert.equal(Object.hasOwn(capped, 'kade_think_max_effort'), false);
+});
+
+test('Authoring effort is capped before the token floor is selected', () => {
+  for (const effort of ['high', 'xhigh', 'max']) {
+    const input = { model: 'openai/gpt-6.1-sol', max_tokens: 2200,
+      reasoning: { effort, enabled: true }, kade_think_max_effort: 'medium' };
+    assert.equal(thinkTierFor(input), 'think');
+    const out = adaptForSol(adaptForGlm(input));
+    assert.equal(out.reasoning.effort, 'medium');
+    assert.equal(out.max_completion_tokens, 16000);
+    assert.deepEqual(adaptForSol(adaptForGlm(out)), out);
+    assert.equal(input.reasoning.effort, effort);
+  }
+  const explicit = { model: 'openai/gpt-6.1-sol', max_completion_tokens: 70000,
+    reasoning_effort: 'high', kade_think_max_effort: 'medium' };
+  const out = adaptForSol(adaptForGlm(explicit));
+  assert.equal(out.reasoning.effort, 'medium');
+  assert.equal(out.max_completion_tokens, 70000);
 });
 
 test('Retention is required even when callers supply provider preferences', () => {

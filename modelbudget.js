@@ -1,5 +1,5 @@
 'use strict';
-const { isSolModel } = require('./sol.js');
+const { isSolModel, solEffortFor } = require('./sol.js');
 /**
  * modelbudget.js — WHO CAN THINK, AND HOW MUCH ROOM THEY GET TO SPEAK.
  *
@@ -142,7 +142,8 @@ const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 64000
 function thinkTierFor(body) {
   if (!body || !(isGlmModel(body.model) || isXaiModel(body.model) || isDeepseekModel(body.model) || isSolModel(body.model))) return false;
   const r = body.reasoning || {};
-  const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
+  const effort = isSolModel(body.model) ? solEffortFor(body)
+    : typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
   const asked = r.enabled === true || ['low', 'medium', 'high', 'xhigh'].includes(effort);
   // The model's nature outranks the caller's request.
   if (!asked && !alwaysThinks(body.model)) return false;

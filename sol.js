@@ -6,6 +6,13 @@ function isSolModel(model) {
   return SOL_MODEL_RE.test(String(model || ''));
 }
 
+function solEffortFor(body) {
+  const requested = body.reasoning?.effort || body.reasoning_effort;
+  const effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(requested) ? requested : 'low';
+  return body.kade_think_max_effort === 'medium' && ['high', 'xhigh', 'max'].includes(effort)
+    ? 'medium' : effort;
+}
+
 function adaptForSol(body) {
   if (!body) return body;
   if (!isSolModel(body.model)) {
@@ -16,11 +23,7 @@ function adaptForSol(body) {
   }
   const next = { ...body };
   const reasoning = { ...(body.reasoning || {}) };
-  const requested = reasoning.effort || body.reasoning_effort;
-  reasoning.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(requested) ? requested : 'low';
-  if (body.kade_think_max_effort === 'medium' && ['high', 'xhigh', 'max'].includes(reasoning.effort)) {
-    reasoning.effort = 'medium';
-  }
+  reasoning.effort = solEffortFor(body);
   delete reasoning.enabled;
   delete reasoning.max_tokens;
   next.reasoning = reasoning;
@@ -43,4 +46,4 @@ function adaptForSol(body) {
   return next;
 }
 
-module.exports = { SOL_MODEL_RE, isSolModel, adaptForSol };
+module.exports = { SOL_MODEL_RE, isSolModel, solEffortFor, adaptForSol };
