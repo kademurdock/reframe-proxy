@@ -2417,9 +2417,15 @@ function buildFakeSSE(finalResponse) {
     ...base,
     choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason || 'stop' }],
   };
+  // Buffered replies replace the upstream stream, so preserve its real usage
+  // in the canonical terminal usage frame that clients read before [DONE].
+  const usageEvent = finalResponse.usage
+    ? `data: ${JSON.stringify({ ...base, choices: [], usage: finalResponse.usage })}\n\n`
+    : '';
   return (
     `data: ${JSON.stringify(chunk1)}\n\n` +
     `data: ${JSON.stringify(chunk2)}\n\n` +
+    usageEvent +
     `data: [DONE]\n\n`
   );
 }
