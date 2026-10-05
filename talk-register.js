@@ -1,6 +1,8 @@
 'use strict';
 
 const { casualHouseOn } = require('./casual-house');
+const { isSolModel } = require('./sol');
+const { isKianaBody } = require('./voice-anchors');
 
 /* ── TALK, DON'T WRITE (Part 292, Sep 25 2026) ─────────────────────────────
  *
@@ -86,6 +88,27 @@ const EXPLAIN_NOTE_CASUAL =
   ' Make each point plainly when you get to it, with no build-up and no announcing that something matters.' +
   " Stop when it's done, without a summing-up line at the end." +
   ' Next turn, go back to plain talk.';
+
+const SOL_CHARACTER_NOTE =
+  ' Talk in your own expressive voice with the person in front of you.' +
+  ' Follow the thought in your own words: opinions, a funny detail, a useful connection, a little wandering or a story can all have room.' +
+  ' Your reply can be longer than theirs; choose its length from what you have to say and what they asked for.' +
+  ' Let your own vocabulary and humor come through naturally, with language that fits your age, role, personality and company.' +
+  ' Keep your character distinct; another character\'s dialect belongs to them.' +
+  ' Use your own rhythm, with no vocabulary quota.' +
+  ' Keep the thread easy to follow by ear, with natural paragraphs and a mix of sentence lengths.' +
+  ' Honor a request for brevity; a simple correction can be quick.' +
+  ' Give a requested explanation its substance while sounding like yourself.' +
+  ' Finish when your thought is done, without a lecture frame, moral or ceremonial wrap-up.' +
+  ' A requested draft or performance keeps its own audience, tone and format.';
+
+function solCharacterVoiceFor(body, env) {
+  if (String(env.KADE_SOL_CHARACTER_VOICE ?? '1') === '0' || !isSolModel(body?.model)) return false;
+  if (isKianaBody(body)) return true;
+  const identity = /(?:^|\n)\s*(?:You are Lilly, a 12-year-old girl from the Missouri Ozarks, in sixth grade this year\.|You are Harley Dalton, Harley to everybody, one of the companions of Kade-AI\.|You are Della\. Della Mae Whitfield, if somebody wants the whole thing,)/;
+  return (body?.messages || []).slice(0, 3).some(message => message?.role === 'system' &&
+    identity.test(textOf(message.content)));
+}
 
 /* Trust the listener: rides immediately before the talk note on talk turns,
  * only with the casual house on. It names what to skip in general words. */
@@ -174,6 +197,7 @@ function talkRegisterNoteFor(body, env = process.env) {
   try {
     if (String(env.KADE_TALK_REGISTER ?? '1') === '0') return '';
     if (!body || (body.response_format && body.response_format.type !== 'text')) return '';
+    if (solCharacterVoiceFor(body, env)) return SOL_CHARACTER_NOTE;
     const casual = casualHouseOn(env);
     if (registerMode(body) === 'explain') return casual ? EXPLAIN_NOTE_CASUAL : EXPLAIN_NOTE_CLASSIC;
     return casual ? TALK_NOTE_CASUAL : TALK_NOTE_CLASSIC;
@@ -197,5 +221,5 @@ function trustListenerNoteFor(body, env = process.env) {
 module.exports = {
   TALK_NOTE, EXPLAIN_NOTE, DEPTH_RE, registerMode, talkRegisterNoteFor, latestUserText,
   TALK_NOTE_CLASSIC, TALK_NOTE_CASUAL, EXPLAIN_NOTE_CLASSIC, EXPLAIN_NOTE_CASUAL,
-  TRUST_LISTENER_NOTE, trustListenerNoteFor,
+  TRUST_LISTENER_NOTE, trustListenerNoteFor, SOL_CHARACTER_NOTE,
 };
