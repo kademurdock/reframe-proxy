@@ -1,4 +1,5 @@
 'use strict';
+const { isSolModel } = require('./sol.js');
 /**
  * modelbudget.js — WHO CAN THINK, AND HOW MUCH ROOM THEY GET TO SPEAK.
  *
@@ -123,11 +124,11 @@ function isDeepseekModel(model) {
   return DEEPSEEK_MODEL_RE.test(String(model || ''));
 }
 function isReasoningModel(model) {
-  return isKimiModel(model) || isGlmModel(model) || isXaiModel(model) || isDeepseekModel(model);
+  return isKimiModel(model) || isGlmModel(model) || isXaiModel(model) || isDeepseekModel(model) || isSolModel(model);
 }
 /** True when the model thinks whatever the caller asked for. */
 function alwaysThinks(model) {
-  return GLM_ALWAYS_THINK_RE.test(String(model || ''));
+  return GLM_ALWAYS_THINK_RE.test(String(model || '')) || isSolModel(model);
 }
 
 /* ── THE FLOORS ─────────────────────────────────────────────────────────── */
@@ -139,13 +140,13 @@ const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 64000
  * @returns {'deep'|'think'|false}
  */
 function thinkTierFor(body) {
-  if (!body || !(isGlmModel(body.model) || isXaiModel(body.model) || isDeepseekModel(body.model))) return false;
+  if (!body || !(isGlmModel(body.model) || isXaiModel(body.model) || isDeepseekModel(body.model) || isSolModel(body.model))) return false;
   const r = body.reasoning || {};
   const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
   const asked = r.enabled === true || ['low', 'medium', 'high', 'xhigh'].includes(effort);
   // The model's nature outranks the caller's request.
   if (!asked && !alwaysThinks(body.model)) return false;
-  const deep = ['high', 'xhigh'].includes(effort) || (r.enabled === true && !effort);
+  const deep = ['high', 'xhigh', 'max'].includes(effort) || (r.enabled === true && !effort);
   return deep ? 'deep' : 'think';
 }
 
@@ -157,8 +158,9 @@ function adaptForGlm(body) {
   const tier = thinkTierFor(body);
   if (!tier) return body;
   const floor = tier === 'deep' ? GLM_DEEP_MIN_TOKENS : GLM_THINK_MIN_TOKENS;
-  const mt = Number(body.max_tokens);
+  const mt = Number(body.max_completion_tokens ?? body.max_tokens);
   if (Number.isFinite(mt) && mt >= floor) return body;
+  if (isSolModel(body.model)) return { ...body, max_completion_tokens: floor };
   return { ...body, max_tokens: floor };
 }
 
