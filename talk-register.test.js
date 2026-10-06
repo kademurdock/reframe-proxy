@@ -79,14 +79,18 @@ test('short interest turns keep room for substance despite an old remembered len
   }
 });
 
-test('room for conversation retains explicit brevity and requested artifact controls', () => {
-  for (const said of ['Quick answer, please: which song?', 'Keep it brief.', 'Explain how that drum loop changes the groove.', 'Write a formal business letter about the album.']) {
+test('usual Kiana grammar also reaches new people and explanations while retaining brief and artifact controls', () => {
+  for (const said of ['We just met. Tell me your take.', 'Quick answer, please: which song?', 'Keep it brief.', 'Explain how that drum loop changes the groove.', 'Write a formal business letter about the album.']) {
     const note = talkRegisterNoteFor(kianaBody(said), {});
     assert.strictEqual(note, KIANA_SOL_NOTE);
     assert.match(note, /Honor an explicit request for a brief or quick answer/);
     assert.match(note, /requested draft or performance keeps its own audience, tone and format/);
     assert.match(note, /age, role, personality and company/);
     assert.match(note, /spoken grammar through the whole answer, including careful reasoning/);
+    assert.match(note, /usual conversational register is grown, colloquial spoken grammar, including with new people/);
+    assert.match(note, /Familiarity changes intimacy, profanity and teasing; your ordinary syntax stays yours/);
+    assert.match(note, /Careful thinking keeps that same clause and verb rhythm all the way through/);
+    assert.match(note, /still sounds like you if one slang word is removed/);
     assert.match(note, /Honor requested brevity and explicit delivery preferences/);
     assert.match(note, /An explicitly requested formal or professional answer, external draft, structured output or requested performance keeps its requested audience, register and format/);
   }
