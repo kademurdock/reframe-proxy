@@ -106,11 +106,36 @@ const SOL_CHARACTER_NOTE =
   ' Finish when your thought is done, without a lecture frame, moral or ceremonial wrap-up.' +
   ' A requested draft or performance keeps its own audience, tone and format.';
 
+// Kiana's conversation register is selected from trusted persona instructions,
+// including the developer role emitted by the reasoning-model SDK. It stays
+// last without loading the legacy rotating anchors or remote self shelf.
+const KIANA_SOL_REGISTER_NOTE =
+  ' Kiana: carry your own spoken grammar through the whole answer, including careful reasoning, disagreement and several paragraphs.' +
+  ' Your hip-hop, Kansas City and Ozarks influences belong to one mature, playful voice.' +
+  " Ain't, tryna, finna, trippin', y'all, dropped endings and little repetitions can fit naturally when they fit the thought and this relationship." +
+  ' Let that syntax carry the clauses and the explanation beyond the opening line.' +
+  ' The mix can be bold, amused, quiet or matter-of-fact; slang and swearing are choices, with no quota or caricature.' +
+  ' React to the actual thing they said and say your own read in fresh words.' +
+  ' Let ordinary punctuation handle a pause; a spoken double-back can help you think something through. Keep those natural turns distinct from narrating tool work.' +
+  ' Two fictional rhythm sketches, for syntax only:' +
+  ' "I hear what you saying. I just ain\'t with you on that last jump. Gimme the reason you think those two things go together."' +
+  ' "Lemme back up, \'cause I skipped something. You can like the idea and still wanna know if it actually works."' +
+  ' Make a fresh response; these sketches are never memories, reusable openers or closing catchphrases.' +
+  ' Honor requested brevity and explicit delivery preferences.' +
+  ' An explicitly requested formal or professional answer, external draft, structured output or requested performance keeps its requested audience, register and format.';
+
+function isKianaSolInstructionBody(body) {
+  if (!isSolModel(body?.model)) return false;
+  return (Array.isArray(body?.messages) ? body.messages : []).slice(0, 3).some(message =>
+    (message?.role === 'system' || message?.role === 'developer') &&
+    textOf(message.content).includes('flagship intelligence of Kade-AI'));
+}
+
 function isSolCharacterBody(body) {
   if (!isSolModel(body?.model)) return false;
   const personas = (Array.isArray(body?.messages) ? body.messages : []).slice(0, 3).filter(message =>
     message?.role === 'system' || message?.role === 'developer');
-  if (personas.some(message => textOf(message.content).includes('flagship intelligence of Kade-AI'))) return true;
+  if (isKianaSolInstructionBody(body)) return true;
   if (personas.some(message =>
     /(?:^|\n)CHARACTER CONTINUITY: Your established identity, values, canon and relationship history belong to your character/.test(textOf(message.content)))) return true;
   const identity = /(?:^|\n)\s*(?:You are Lilly, a 12-year-old girl from the Missouri Ozarks, in sixth grade this year\.|You are Harley Dalton, Harley to everybody, one of the companions of Kade-AI\.|You are Della\. Della Mae Whitfield, if somebody wants the whole thing,)/;
@@ -209,7 +234,7 @@ function talkRegisterNoteFor(body, env = process.env) {
   try {
     if (String(env.KADE_TALK_REGISTER ?? '1') === '0') return '';
     if (!body || (body.response_format && body.response_format.type !== 'text')) return '';
-    if (solCharacterVoiceFor(body, env)) return SOL_CHARACTER_NOTE;
+    if (solCharacterVoiceFor(body, env)) return SOL_CHARACTER_NOTE + (isKianaSolInstructionBody(body) ? KIANA_SOL_REGISTER_NOTE : '');
     const casual = casualHouseOn(env);
     if (registerMode(body) === 'explain') return casual ? EXPLAIN_NOTE_CASUAL : EXPLAIN_NOTE_CLASSIC;
     return casual ? TALK_NOTE_CASUAL : TALK_NOTE_CLASSIC;
@@ -234,4 +259,5 @@ module.exports = {
   TALK_NOTE, EXPLAIN_NOTE, DEPTH_RE, registerMode, talkRegisterNoteFor, latestUserText,
   TALK_NOTE_CLASSIC, TALK_NOTE_CASUAL, EXPLAIN_NOTE_CLASSIC, EXPLAIN_NOTE_CASUAL,
   TRUST_LISTENER_NOTE, trustListenerNoteFor, SOL_CHARACTER_NOTE, isSolCharacterBody,
+  KIANA_SOL_REGISTER_NOTE, isKianaSolInstructionBody,
 };

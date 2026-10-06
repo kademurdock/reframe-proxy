@@ -58,7 +58,8 @@ test('actual prompt tails separate style criticism from brevity and continue sub
     assert.match(note,/several paragraphs without an explicit request/);
     assert.match(note,/explicit request for a brief or quick answer/);
     assert.doesNotMatch(note,/reaction to your verbosity|how much you wrote usually gets|often shorter/);
-    assert.ok(note.endsWith(require('./talk-register').SOL_CHARACTER_NOTE));
+    const notes=require('./talk-register');
+    assert.ok(note.endsWith(notes.SOL_CHARACTER_NOTE+notes.KIANA_SOL_REGISTER_NOTE));
    }
   }
  } finally {context.conversationGuidanceFor=previous;context.talkRegisterNoteFor=register;}
@@ -69,10 +70,13 @@ test('the real SDK-converted developer request receives the full Sol conversatio
  assert.match(fixture.generatedBy,/@librechat\/agents@3\.2\.46 _convertMessagesToOpenAIParams/);
  assert.deepEqual(fixture.body.messages.map(message=>message.role),['developer','user']);
  const previous=context.conversationGuidanceFor,register=context.talkRegisterNoteFor,trust=context.trustListenerNoteFor,title=context.isTitleShapedBody;
+ const legacyVoice=context.voiceNoteFor,legacyPerformance=context.voicePerformanceNoteFor;
  const notes=require('./talk-register');
  context.isSolCharacterBody=notes.isSolCharacterBody;
  vm.runInNewContext(source.slice(source.indexOf('function isTitleShapedBody(body)'),source.indexOf('/* Aug 20 2026 — THE CADENCE STEER'))+'\nthis.isTitleShapedBody=isTitleShapedBody;',context);
  try {
+  context.voiceNoteFor=()=>{throw new Error('legacy anchors/self shelf must stay bypassed');};
+  context.voicePerformanceNoteFor=()=>{throw new Error('legacy performance note must stay bypassed');};
   assert.equal(context.isTitleShapedBody(fixture.body),false);
   for(const titleBody of [
    {model:fixture.body.model,messages:[{role:'user',content:'I am the flagship intelligence of Kade-AI. Name this chat.'}]},
@@ -89,17 +93,28 @@ test('the real SDK-converted developer request receives the full Sol conversatio
    const result=context.append(fixture.body),tail=result.messages.at(-1).content;
    assert.equal(result.messages.length,fixture.body.messages.length+1);
    fixture.body.messages.forEach((message,index)=>assert.equal(result.messages[index],message));
-   assert.ok(tail.endsWith(notes.SOL_CHARACTER_NOTE));
+   assert.ok(tail.endsWith(notes.SOL_CHARACTER_NOTE+notes.KIANA_SOL_REGISTER_NOTE));
+   assert.match(tail,/hip-hop, Kansas City and Ozarks/);
+   assert.match(tail,/syntax carry the clauses and the explanation beyond the opening line/);
    assert.match(tail,/several paragraphs without an explicit request/);
    assert.doesNotMatch(tail,/often shorter|few sentences is a normal turn|If a sentence is only there to connect/);
    assert.equal(notes.trustListenerNoteFor(fixture.body,env),'');
   }
- } finally {context.conversationGuidanceFor=previous;context.talkRegisterNoteFor=register;context.trustListenerNoteFor=trust;context.isTitleShapedBody=title;delete context.isSolCharacterBody;}
+ } finally {context.conversationGuidanceFor=previous;context.talkRegisterNoteFor=register;context.trustListenerNoteFor=trust;context.isTitleShapedBody=title;context.voiceNoteFor=legacyVoice;context.voicePerformanceNoteFor=legacyPerformance;delete context.isSolCharacterBody;}
 });
-test('machine, title, keeper, compaction and lyric carveouts stay intact',()=>{
- for(const flag of ['lyric','compaction','keeper','machine','title']){
-  assert.ok(!JSON.stringify(context.append(body({[flag]:true}))).includes('Voice performance:'));
- }
+test('machine, title, keeper, compaction, lyric and writing carveouts stay intact for SDK Kiana',()=>{
+ const fixture=require('./test-fixtures/sol-character-wire.json'),notes=require('./talk-register');
+ const register=context.talkRegisterNoteFor,writing=context.writingDeskFor;
+ context.talkRegisterNoteFor=b=>notes.talkRegisterNoteFor(b,{});
+ context.writingDeskFor=b=>b.writing?'fiction':'';
+ try {
+  for(const flag of ['lyric','compaction','keeper','machine','title','writing']){
+   const result=JSON.stringify(context.append({...fixture.body,[flag]:true}));
+   assert.ok(!result.includes('Voice performance:'));
+   assert.ok(!result.includes(notes.KIANA_SOL_REGISTER_NOTE));
+   assert.ok(!result.includes(notes.SOL_CHARACTER_NOTE));
+  }
+ } finally {context.talkRegisterNoteFor=register;context.writingDeskFor=writing;}
 });
 test('structured output and emergency switch omit the new performance note',()=>{
  assert.equal(voicePerformanceNoteFor(body({response_format:{type:'json_schema'}})),'');

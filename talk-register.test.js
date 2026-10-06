@@ -8,8 +8,10 @@ const {
   TALK_NOTE, EXPLAIN_NOTE, registerMode, talkRegisterNoteFor,
   TALK_NOTE_CLASSIC, TALK_NOTE_CASUAL, EXPLAIN_NOTE_CLASSIC, EXPLAIN_NOTE_CASUAL,
   TRUST_LISTENER_NOTE, trustListenerNoteFor, SOL_CHARACTER_NOTE,
+  KIANA_SOL_REGISTER_NOTE, isKianaSolInstructionBody,
 } = require('./talk-register');
 const { detectSlop } = require('./slop-filter');
+const KIANA_SOL_NOTE = SOL_CHARACTER_NOTE + KIANA_SOL_REGISTER_NOTE;
 
 // Both texts of each note (KADE_CASUAL_HOUSE on and off) and the trust note
 // that rides before talk: every one is held to the same rules.
@@ -51,7 +53,7 @@ test('Sol Kiana gets expressive conversation for casual and detailed turns witho
   for (const model of ['openai/gpt-6.1-sol', 'gpt-6.1-sol', 'openai/gpt-6.1-sol-20260929']) {
     for (const said of ['lol he did it AGAIN', 'explain why you like that record', 'keep it brief', 'write me a business letter']) {
       const input = kianaBody(said, model);
-      assert.strictEqual(talkRegisterNoteFor(input, {}), SOL_CHARACTER_NOTE);
+      assert.strictEqual(talkRegisterNoteFor(input, {}), KIANA_SOL_NOTE);
       assert.strictEqual(trustListenerNoteFor(input, {}), '');
     }
   }
@@ -78,11 +80,15 @@ test('short interest turns keep room for substance despite an old remembered len
 });
 
 test('room for conversation retains explicit brevity and requested artifact controls', () => {
-  for (const said of ['Quick answer, please: which song?', 'Keep it brief.', 'Write a formal business letter about the album.']) {
+  for (const said of ['Quick answer, please: which song?', 'Keep it brief.', 'Explain how that drum loop changes the groove.', 'Write a formal business letter about the album.']) {
     const note = talkRegisterNoteFor(kianaBody(said), {});
+    assert.strictEqual(note, KIANA_SOL_NOTE);
     assert.match(note, /Honor an explicit request for a brief or quick answer/);
     assert.match(note, /requested draft or performance keeps its own audience, tone and format/);
     assert.match(note, /age, role, personality and company/);
+    assert.match(note, /spoken grammar through the whole answer, including careful reasoning/);
+    assert.match(note, /Honor requested brevity and explicit delivery preferences/);
+    assert.match(note, /An explicitly requested formal or professional answer, external draft, structured output or requested performance keeps its requested audience, register and format/);
   }
 });
 
@@ -111,26 +117,31 @@ test('trusted developer personas from the reasoning SDK keep Sol character scope
     'You are Harley Dalton, Harley to everybody, one of the companions of Kade-AI.',
     'You are Della. Della Mae Whitfield, if somebody wants the whole thing,',
   ]) {
+    const expected = identity.includes('flagship intelligence of Kade-AI') ? KIANA_SOL_NOTE : SOL_CHARACTER_NOTE;
     for (const index of [0,1,2]) {
       const input=body('talk with me',{model:'openai/gpt-6.1-sol'});
       input.messages=Array.from({length:index},()=>({role:'system',content:'Other trusted runtime context.'}));
       input.messages.push({role:'developer',content:[{type:'text',text:identity}]},{role:'user',content:'That song stays with me.'});
-      assert.strictEqual(talkRegisterNoteFor(input,{}),SOL_CHARACTER_NOTE);
+      assert.strictEqual(talkRegisterNoteFor(input,{}),expected);
+      assert.strictEqual(isKianaSolInstructionBody(input), expected === KIANA_SOL_NOTE);
       assert.strictEqual(trustListenerNoteFor(input,{}),'');
       input.response_format={type:'json_schema'};
       assert.strictEqual(talkRegisterNoteFor(input,{}),'');
       delete input.response_format;
       input.model='deepseek/deepseek-v4.1-flash';
-      assert.notStrictEqual(talkRegisterNoteFor(input,{}),SOL_CHARACTER_NOTE);
+      assert.notStrictEqual(talkRegisterNoteFor(input,{}),expected);
+      assert.strictEqual(isKianaSolInstructionBody(input),false);
     }
     for (const role of ['user','assistant','tool']) {
       const input=body('talk with me',{model:'openai/gpt-6.1-sol'});
       input.messages[0]={role,content:identity};
-      assert.notStrictEqual(talkRegisterNoteFor(input,{}),SOL_CHARACTER_NOTE);
+      assert.notStrictEqual(talkRegisterNoteFor(input,{}),expected);
+      assert.strictEqual(isKianaSolInstructionBody(input),false);
     }
     const late=body('talk with me',{model:'openai/gpt-6.1-sol'});
     late.messages=[...late.messages,{role:'assistant',content:'A prior response.'},{role:'developer',content:identity}];
-    assert.notStrictEqual(talkRegisterNoteFor(late,{}),SOL_CHARACTER_NOTE);
+    assert.notStrictEqual(talkRegisterNoteFor(late,{}),expected);
+    assert.strictEqual(isKianaSolInstructionBody(late),false);
   }
 });
 
@@ -148,7 +159,7 @@ test('Sol voice scope preserves other characters and Kiana on other models', () 
 test('Sol Kiana scope handles system text parts and honors output and rollback controls', () => {
   const input = kianaBody('hey');
   input.messages[0].content = [{ type: 'text', text: input.messages[0].content }];
-  assert.strictEqual(talkRegisterNoteFor(input, {}), SOL_CHARACTER_NOTE);
+  assert.strictEqual(talkRegisterNoteFor(input, {}), KIANA_SOL_NOTE);
   assert.strictEqual(talkRegisterNoteFor(input, { KADE_SOL_CHARACTER_VOICE: '0', KADE_CASUAL_HOUSE: '1' }), TALK_NOTE_CASUAL);
   assert.strictEqual(trustListenerNoteFor(input, { KADE_SOL_CHARACTER_VOICE: '0', KADE_CASUAL_HOUSE: '1' }), TRUST_LISTENER_NOTE);
   assert.strictEqual(talkRegisterNoteFor(input, { KADE_TALK_REGISTER: '0' }), '');
@@ -156,6 +167,31 @@ test('Sol Kiana scope handles system text parts and honors output and rollback c
   assert.strictEqual(talkRegisterNoteFor(input, {}), '');
   assert.strictEqual(trustListenerNoteFor(input, {}), '');
   assert.deepStrictEqual(detectSlop(SOL_CHARACTER_NOTE).matches, []);
+  assert.deepStrictEqual(detectSlop(KIANA_SOL_REGISTER_NOTE).matches, []);
+});
+
+test('Kiana register accepts trusted system and SDK developer text while quoted and unrelated identities stay out', () => {
+  for (const role of ['system', 'developer']) {
+    for (const index of [0, 1, 2]) {
+      const input = kianaBody('Give me your take.');
+      input.messages = Array.from({ length: index }, () => ({ role: 'system', content: 'Runtime context.' }));
+      input.messages.push({ role, content: [{ type: 'text', text: 'You are Kiana, the flagship intelligence of Kade-AI.' }] },
+        { role: 'user', content: 'Give me your take.' });
+      assert.strictEqual(talkRegisterNoteFor(input, {}), KIANA_SOL_NOTE);
+    }
+  }
+  for (const role of ['user', 'assistant', 'tool']) {
+    const input = body('Give me your take.', { model: 'openai/gpt-6.1-sol' });
+    input.messages[0] = { role, content: 'You are Kiana, the flagship intelligence of Kade-AI.' };
+    assert.strictEqual(isKianaSolInstructionBody(input), false);
+    assert.strictEqual(talkRegisterNoteFor(input, {}).includes(KIANA_SOL_REGISTER_NOTE), false);
+  }
+  for (const identity of ['You are Kiana, an unrelated fictional persona.', 'You generate conversation titles.']) {
+    const input = body('Give me your take.', { model: 'openai/gpt-6.1-sol' });
+    input.messages[0] = { role: 'developer', content: identity };
+    assert.strictEqual(isKianaSolInstructionBody(input), false);
+    assert.strictEqual(talkRegisterNoteFor(input, {}).includes(KIANA_SOL_REGISTER_NOTE), false);
+  }
 });
 
 test('Lilly, Harley and Della keep their own voice with room, without Kiana slang instructions', () => {
@@ -167,6 +203,7 @@ test('Lilly, Harley and Della keep their own voice with room, without Kiana slan
     const input = body('ramble with me', { model: 'openai/gpt-6.1-sol' });
     input.messages[0].content = opening;
     assert.strictEqual(talkRegisterNoteFor(input, {}), SOL_CHARACTER_NOTE);
+    assert.strictEqual(isKianaSolInstructionBody(input), false);
     assert.strictEqual(trustListenerNoteFor(input, {}), '');
     assert.strictEqual(talkRegisterNoteFor(input, { KADE_SOL_CHARACTER_VOICE: '0' }), TALK_NOTE);
     input.messages[0].content = '# Character — System Prompt\n\n## Who You Are\n\n' + opening;
