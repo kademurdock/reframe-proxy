@@ -61,8 +61,10 @@
  * Kill switch: KADE_KEEPER_CARVEOUT=0 restores the old behaviour.
  */
 
-/** The three tools `createMemoryProcessor` binds, and nothing else. */
-const KEEPER_TOOLS = new Set(['set_memory', 'delete_memory', 'log_diary']);
+/** Memory tools and optional character-recognition tools bound by `createMemoryProcessor`. */
+const KEEPER_TOOLS = new Set([
+  'set_memory', 'delete_memory', 'log_diary', 'record_person', 'forget_relationship_impressions',
+]);
 
 function toolNamesOf(body) {
   const tools = Array.isArray(body && body.tools) ? body.tools : [];

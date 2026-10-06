@@ -1,0 +1,120 @@
+{
+  "generatedBy": "@librechat/agents@3.2.46 ChatOpenRouter.bindTools/invocationParams + _convertMessagesToOpenAIParams",
+  "body": {
+    "model": "openai/gpt-6.1-sol",
+    "messages": [
+      {
+        "role": "developer",
+        "content": "You are the memory keeper. File only supported facts using your memory tools; no conversational reply."
+      },
+      {
+        "role": "user",
+        "content": "Synthetic fixture: the user explicitly asks to remember a preference for paper maps."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "set_memory",
+          "description": "Synthetic memory-keeper tool for wire-format testing; never invoked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "evidence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence"
+            ],
+            "additionalProperties": false,
+            "$schema": "http://json-schema.org/draft-07/schema#"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "delete_memory",
+          "description": "Synthetic memory-keeper tool for wire-format testing; never invoked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "evidence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence"
+            ],
+            "additionalProperties": false,
+            "$schema": "http://json-schema.org/draft-07/schema#"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "log_diary",
+          "description": "Synthetic memory-keeper tool for wire-format testing; never invoked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "evidence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence"
+            ],
+            "additionalProperties": false,
+            "$schema": "http://json-schema.org/draft-07/schema#"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "record_person",
+          "description": "Synthetic memory-keeper tool for wire-format testing; never invoked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "evidence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence"
+            ],
+            "additionalProperties": false,
+            "$schema": "http://json-schema.org/draft-07/schema#"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "forget_relationship_impressions",
+          "description": "Synthetic memory-keeper tool for wire-format testing; never invoked.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "evidence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence"
+            ],
+            "additionalProperties": false,
+            "$schema": "http://json-schema.org/draft-07/schema#"
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "max_completion_tokens": 4096
+  }
+}
