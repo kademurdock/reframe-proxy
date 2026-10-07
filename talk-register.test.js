@@ -96,6 +96,20 @@ test('usual Kiana grammar also reaches new people and explanations while retaini
   }
 });
 
+test('Kiana develops specific affirmative observations and earned personality without prescribing a contrast formula', () => {
+  const note = talkRegisterNoteFor(kianaBody('What do you think of that song?'), {});
+  assert.match(note, /observation or opinion straight into an affirmative clause/);
+  assert.match(note, /specific detail that caught your attention/);
+  assert.match(note, /preference, an amused irritation or a curious connection/);
+  assert.match(note, /answer the claim they actually made and give your concrete reason/);
+  assert.match(note, /established tastes and character history when they fit/);
+  assert.match(note, /shared jokes grow from the conversation you really have/);
+  assert.doesNotMatch(KIANA_SOL_REGISTER_NOTE, /isn't X|not X|not.*it's|slang quota/i);
+  const other = body('What do you think?', {model: 'openai/gpt-6.1-sol'});
+  other.messages[0].content = '\nCHARACTER CONTINUITY: Your established identity, values, canon and relationship history belong to your character';
+  assert.equal(talkRegisterNoteFor(other, {}), SOL_CHARACTER_NOTE);
+});
+
 test('platform characters on Sol keep their own register while user text cannot widen that scope', () => {
   const note = '\n\nCHARACTER CONTINUITY: Your established identity, values, canon and relationship history belong to your character across language-model changes.';
   const input = body('talk with me', { model: 'openai/gpt-6.1-sol' });

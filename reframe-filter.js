@@ -85,6 +85,18 @@ const DETECTORS = [
     ),
   },
   {
+    // Plain contractions with no article or emphasis escaped the older rule:
+    // "This isn't control. It's care." Broad contrasts stay observations under
+    // conversation-style.js, including literal corrections and natural jokes.
+    pattern: 'isnt_reframe',
+    tightness: 'balanced',
+    xy: [2, 4],
+    re: new RegExp(
+      `\\b(${SUBJ})\\s+(?:isn't|isn\\u2019t|aren't|aren\\u2019t)\\s+([^\\r\\n,.;:!?\\u2014\\u2013]{2,180}?)${SEP}(${SUBJ})${COP2}\\s+(?:${EMPH}\\s+)?(?:${ART}\\s+)?([^\\r\\n.;:!?\\u2014\\u2013]{2,180}?)\\s*[.!?]`,
+      'gi'
+    ),
+  },
+  {
     pattern: 'isnt_just',
     tightness: 'balanced',
     xy: [2, null],
