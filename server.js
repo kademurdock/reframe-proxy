@@ -4410,7 +4410,7 @@ function scrubSpecialTokensFromTitleReply(result, originalBody) {
 const TOOL_ESCALATE_ENABLED = process.env.KADE_TOOL_ESCALATE !== '0';
 const TOOL_ESCALATE_REPEATS = Math.max(2, parseInt(process.env.KADE_TOOL_ESCALATE_REPEATS || '2', 10));
 const TOOL_ESCALATE_FROM = (process.env.KADE_TOOL_ESCALATE_FROM || 'z-ai/glm-5.3-flash').trim();
-const TOOL_ESCALATE_TO = (process.env.KADE_TOOL_ESCALATE_TO || 'z-ai/glm-5.3').trim();
+const TOOL_ESCALATE_TO = (process.env.KADE_TOOL_ESCALATE_TO || 'xiaomi/mimo-v2.6-pro').trim();
 
 function stuckToolSignature(messages) {
   if (!Array.isArray(messages) || !messages.length) return null;
