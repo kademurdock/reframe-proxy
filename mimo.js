@@ -1,6 +1,6 @@
 'use strict';
 
-const isMimoModel = (model) => /^(?:xiaomi\/)?mimo-v2\.6-pro$/i.test(String(model || ''));
+const isMimoModel = (model) => /^(?:xiaomi\/)?mimo-v2\.6-(?:pro|flash)$/i.test(String(model || ''));
 
 function withMimoProvider(body) {
   if (!isMimoModel(body?.model) || body.provider?.order) return body;

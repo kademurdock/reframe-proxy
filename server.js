@@ -2911,11 +2911,11 @@ async function classifyThinkTier(excerpt, reqId) {
       console.log(`[auto-think][req ${reqId}] jev -> ${got.tier} (conf ${got.confidence}, ${Date.now() - t}ms)`);
       return got.tier;
     } catch (e) {
-      console.log(`[auto-think][req ${reqId}] jev failed, asking flash-lite (${e.message}, ${Date.now() - t}ms)`);
+      console.log(`[auto-think][req ${reqId}] jev failed, asking MiMo Flash (${e.message}, ${Date.now() - t}ms)`);
     }
   }
   const body = {
-    model: 'google/gemini-2.5-flash-lite',
+    model: 'xiaomi/mimo-v2.6-flash',
     messages: [
       { role: 'system', content: 'You route incoming chat messages to a thinking budget. Reply with exactly one word and nothing else. instant = greetings, small talk, reactions, roleplay banter, simple facts, requests a good friend answers without pausing. quick = benefits from a moment of real thought: everyday advice, explanations, small math, comparisons, feelings that deserve care. deep = genuinely hard: multi-step reasoning or planning, tricky math or logic, code, big or contested decisions.' },
       { role: 'user', content: excerpt },
@@ -2929,7 +2929,7 @@ async function classifyThinkTier(excerpt, reqId) {
   try {
     const r = await fetchWithTimeout(
       chatCompletionsUrl(body.model),
-      { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(adaptForDeepseek(adaptForXai(adaptForGlm(adaptForKimi(body))))) },
+      { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(adaptForMimo(adaptForDeepseek(adaptForXai(adaptForGlm(adaptForKimi(body)))))) },
       AUTO_CLASSIFY_TIMEOUT_MS
     );
     if (!r.ok) throw new Error('HTTP ' + r.status);

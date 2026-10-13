@@ -1,12 +1,15 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
 const { isMimoModel, withMimoProvider, adaptForMimo } = require('./mimo');
 const { isReasoningModel, isWordlessTurn, rescueWordlessTurn } = require('./modelbudget');
 
 test('the fleet model participates in automatic reasoning and empty-answer recovery', () => {
   assert.equal(isMimoModel('xiaomi/mimo-v2.6-pro'), true);
   assert.equal(isMimoModel('mimo-v2.6-pro'), true);
+  assert.equal(isMimoModel('xiaomi/mimo-v2.6-flash'), true);
   assert.equal(isMimoModel('xiaomi/mimo-v2.6-pro-ultraspeed'), false);
   assert.equal(isReasoningModel('xiaomi/mimo-v2.6-pro'), true);
   assert.equal(isWordlessTurn({ model: 'xiaomi/mimo-v2.6-pro', finishReason: 'length', contentLength: 0 }), true);
@@ -33,6 +36,10 @@ test('ordinary and phone turns disable reasoning without increasing the output c
   assert.equal(phone.reasoning.enabled, false);
   assert.equal(phone.max_tokens, 600);
   assert.equal(plain.provider.order[0], 'Xiaomi');
+  const flash = adaptForMimo({ model: 'xiaomi/mimo-v2.6-flash', max_tokens: 4, reasoning_effort: 'none' });
+  assert.equal(flash.reasoning.enabled, false);
+  assert.equal(flash.max_tokens, 4);
+  assert.equal(flash.provider.order[0], 'Xiaomi');
   const legacy = adaptForMimo({ model: 'xiaomi/mimo-v2.6-pro', reasoning_effort: 'none', max_tokens: 600 });
   assert.equal(legacy.reasoning.enabled, false);
   assert.equal(Object.hasOwn(legacy, 'reasoning_effort'), false);
@@ -64,4 +71,32 @@ test('the same-model empty-answer rescue explicitly disables thinking', async ()
   assert.equal(sent.reasoning.effort, 'none');
   assert.equal(sent.reasoning.enabled, false);
   assert.equal(result.text, 'Recovered.');
+});
+
+test('the real auto-think classifier keeps Jev first and sends only MiMo Flash when Jev fails', async () => {
+  const source = fs.readFileSync(require.resolve('./server'), 'utf8');
+  const start = source.indexOf('async function classifyThinkTier(');
+  const end = source.indexOf('async function maybeAutoThink(', start);
+  const requests = [];
+  let fail = false;
+  const context = vm.createContext({
+    console: { log() {} }, Date,
+    jev: { enabled: () => true, thinkTier: async () => { if (fail) throw Error('offline'); return { tier: 'quick', confidence: 0.9 }; } },
+    jevTierPrefetch: new Map(), JEV_THINK_TIMEOUT_MS: 100, AUTO_CLASSIFY_TIMEOUT_MS: 100,
+    adaptForMimo, adaptForDeepseek: x => x, adaptForXai: x => x, adaptForGlm: x => x, adaptForKimi: x => x,
+    chatCompletionsUrl: () => 'https://model.test/chat/completions', chatHeaders: () => ({}),
+    fetchWithTimeout: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ choices: [{ message: { content: 'deep' } }] }) };
+    },
+  });
+  vm.runInContext(source.slice(start, end) + '\nthis.classify = classifyThinkTier;', context);
+  assert.equal(await context.classify('Test question', 'a'), 'quick');
+  assert.equal(requests.length, 0);
+  fail = true;
+  assert.equal(await context.classify('Test question', 'b'), 'deep');
+  assert.equal(requests[0].model, 'xiaomi/mimo-v2.6-flash');
+  assert.equal(requests[0].reasoning.enabled, false);
+  assert.equal(requests[0].max_tokens, 4);
+  assert.equal(requests[0].provider.order[0], 'Xiaomi');
 });
