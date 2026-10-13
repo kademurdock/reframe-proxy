@@ -39,12 +39,14 @@ test('ordinary and phone turns disable reasoning without increasing the output c
 });
 
 test('requested thinking retains reasoning visibility and has room for a visible answer', () => {
-  const body = { model: 'xiaomi/mimo-v2.6-pro', max_tokens: 600, reasoning: { effort: 'high', enabled: true, exclude: false } };
+  const body = { model: 'xiaomi/mimo-v2.6-pro', max_tokens: 600, temperature: 0.85, top_p: 0.95, reasoning: { effort: 'high', enabled: true, exclude: false } };
   const next = adaptForMimo(body);
   assert.equal(next.reasoning.enabled, true);
   assert.equal(next.reasoning.exclude, false);
   assert.equal(next.max_tokens, 32000);
   assert.equal(body.max_tokens, 600);
+  assert.equal(Object.hasOwn(next, 'temperature'), false);
+  assert.equal(Object.hasOwn(next, 'top_p'), false);
   assert.deepEqual(adaptForMimo(next), next);
   assert.equal(adaptForMimo({ ...body, max_tokens: 40000 }).max_tokens, 40000);
 });

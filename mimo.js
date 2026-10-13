@@ -24,6 +24,9 @@ function adaptForMimo(body) {
   };
   delete next.reasoning_effort;
   if (!enabled) return withMimoProvider(next);
+  // Xiaomi's thinking mode fixes its sampling; inherited character sliders are unsupported.
+  delete next.temperature;
+  delete next.top_p;
   const ceiling = Number(body.max_tokens ?? body.max_completion_tokens);
   const floor = ['high', 'xhigh', 'max'].includes(effort) ? 32000 : 16000;
   if (!Number.isFinite(ceiling) || ceiling < floor) {
