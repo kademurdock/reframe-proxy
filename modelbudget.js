@@ -1,5 +1,6 @@
 'use strict';
 const { isSolModel, solEffortFor } = require('./sol.js');
+const { isMimoModel } = require('./mimo.js');
 /**
  * modelbudget.js — WHO CAN THINK, AND HOW MUCH ROOM THEY GET TO SPEAK.
  *
@@ -124,7 +125,7 @@ function isDeepseekModel(model) {
   return DEEPSEEK_MODEL_RE.test(String(model || ''));
 }
 function isReasoningModel(model) {
-  return isKimiModel(model) || isGlmModel(model) || isXaiModel(model) || isDeepseekModel(model) || isSolModel(model);
+  return isKimiModel(model) || isGlmModel(model) || isXaiModel(model) || isDeepseekModel(model) || isSolModel(model) || isMimoModel(model);
 }
 /** True when the model thinks whatever the caller asked for. */
 function alwaysThinks(model) {
@@ -140,7 +141,7 @@ const GLM_DEEP_MIN_TOKENS = Number(process.env.KADE_GLM_DEEP_MIN_TOKENS || 64000
  * @returns {'deep'|'think'|false}
  */
 function thinkTierFor(body) {
-  if (!body || !(isGlmModel(body.model) || isXaiModel(body.model) || isDeepseekModel(body.model) || isSolModel(body.model))) return false;
+  if (!body || !(isGlmModel(body.model) || isXaiModel(body.model) || isDeepseekModel(body.model) || isSolModel(body.model) || isMimoModel(body.model))) return false;
   const r = body.reasoning || {};
   const effort = isSolModel(body.model) ? solEffortFor(body)
     : typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
@@ -205,7 +206,7 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
     delete fallbackBody.reasoning_effort;
     /* Part 141.3: on x-ai "reasoning off" must be SAID -- a bare body lets
      * Grok pick, and Grok picks thinking. */
-    if (isXaiModel(fallbackBody.model)) fallbackBody.reasoning = { effort: 'none', enabled: false, exclude: false };
+    if (isXaiModel(fallbackBody.model) || isMimoModel(fallbackBody.model)) fallbackBody.reasoning = { effort: 'none', enabled: false, exclude: false };
     let call = callOpenRouter(fallbackBody);
     if (timeoutMs > 0) {
       call = Promise.race([
