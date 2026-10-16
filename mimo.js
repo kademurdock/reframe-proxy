@@ -1,27 +1,45 @@
 'use strict';
 
-const isMimoModel = (model) => /^(?:xiaomi\/)?mimo-v2\.6-(?:pro|flash)$/i.test(String(model || ''));
+/* Oct 16 2026: -ultraspeed is the same checkpoint served faster (Xiaomi only,
+ * about 10x the price). It counts as MiMo so the wordless guard, the explicit
+ * reasoning switch and the retention rule below still hold if an agent is ever
+ * pointed at it. Nothing here routes to it, and under zdr OpenRouter has no
+ * host for it today, so such a turn errors instead of being kept by Xiaomi. */
+const isMimoModel = (model) => /^(?:xiaomi\/)?mimo-v2\.6-(?:pro|flash)(?:-ultraspeed)?$/i.test(String(model || ''));
 const isMimoProModel = (model) => /^(?:xiaomi\/)?mimo-v2\.6-pro$/i.test(String(model || ''));
+const isMimoFlashModel = (model) => /^(?:xiaomi\/)?mimo-v2\.6-flash$/i.test(String(model || ''));
 
 /* Oct 16 2026 speed test, direct to OpenRouter, same price on every machine.
  * Thinking OFF: DeepInfra's first word came in 0.7 s warm / 2.1 s cold on a
  * 22k-token prompt; Xiaomi took 5 s warm / 16 s cold. Output speed was about
- * the same (15-30 tokens a second on both). Thinking ON: DeepInfra stalled
- * (one 47 s gap), so thinking turns keep Xiaomi first. Both lists fall back.
- * Tune: KADE_MIMO_PROVIDER_ORDER / KADE_MIMO_THINK_PROVIDER_ORDER (comma lists). */
+ * the same (15-30 tokens a second on both). Thinking ON: DeepInfra stalled once
+ * (a 47 s gap), but Xiaomi keeps prompts, so it is out either way (below).
+ *
+ * Her retention rule (Part 214: "slightly more worried about 0dr") holds here as
+ * in deepseek.js, xai.js and sol.js: every MiMo body leaves with zdr and
+ * data_collection deny, whatever the caller sent. OpenRouter's zdr list (Oct 15)
+ * has Pro on DeepInfra and Novita only, and Novita is in EXCLUDED_PROVIDERS, so
+ * Pro runs on DeepInfra alone: a DeepInfra outage fails the turn rather than
+ * spilling onto Xiaomi or GMICloud. Flash has more zdr hosts (Makora, Io Net,
+ * Venice), so DeepInfra goes first and fallback stays inside the filter.
+ * Tune the order, never the filter: KADE_MIMO_PROVIDER_ORDER /
+ * KADE_MIMO_THINK_PROVIDER_ORDER (comma lists, Pro only). */
 const orderFrom = (name, fallback) =>
   String(process.env[name] ?? fallback).split(',').map((s) => s.trim()).filter(Boolean);
-const PRO_ORDER_INSTANT = orderFrom('KADE_MIMO_PROVIDER_ORDER', 'DeepInfra,Xiaomi');
-const PRO_ORDER_THINKING = orderFrom('KADE_MIMO_THINK_PROVIDER_ORDER', 'Xiaomi,DeepInfra');
+const PRO_ORDER_INSTANT = orderFrom('KADE_MIMO_PROVIDER_ORDER', 'DeepInfra');
+const PRO_ORDER_THINKING = orderFrom('KADE_MIMO_THINK_PROVIDER_ORDER', 'DeepInfra');
+const FLASH_ORDER = ['DeepInfra'];
 
 function withMimoProvider(body, thinking = false) {
-  if (!isMimoModel(body?.model) || body.provider?.order) return body;
-  const order = !isMimoProModel(body.model) ? ['Xiaomi'] : thinking ? PRO_ORDER_THINKING : PRO_ORDER_INSTANT;
-  if (!order.length) return body;
-  return {
-    ...body,
-    provider: { ...body.provider, order, allow_fallbacks: true },
-  };
+  if (!isMimoModel(body?.model)) return body;
+  // An upstream order is kept; the retention rule is not negotiable.
+  const existing = body.provider || {};
+  const order = existing.order
+    || (isMimoProModel(body.model) ? (thinking ? PRO_ORDER_THINKING : PRO_ORDER_INSTANT)
+      : isMimoFlashModel(body.model) ? FLASH_ORDER : []);
+  const provider = { ...existing, ...(order.length ? { order } : {}), allow_fallbacks: true, zdr: true, data_collection: 'deny' };
+  if (provider.order) delete provider.sort; // OpenRouter rejects sort together with order
+  return { ...body, provider };
 }
 
 function adaptForMimo(body) {

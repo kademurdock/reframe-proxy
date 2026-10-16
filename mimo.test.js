@@ -10,22 +10,74 @@ test('the fleet model participates in automatic reasoning and empty-answer recov
   assert.equal(isMimoModel('xiaomi/mimo-v2.6-pro'), true);
   assert.equal(isMimoModel('mimo-v2.6-pro'), true);
   assert.equal(isMimoModel('xiaomi/mimo-v2.6-flash'), true);
-  assert.equal(isMimoModel('xiaomi/mimo-v2.6-pro-ultraspeed'), false);
   assert.equal(isReasoningModel('xiaomi/mimo-v2.6-pro'), true);
   assert.equal(isWordlessTurn({ model: 'xiaomi/mimo-v2.6-pro', finishReason: 'length', contentLength: 0 }), true);
 });
 
-test('provider selection preserves caller choices and privacy filters', () => {
-  const body = { model: 'xiaomi/mimo-v2.6-pro', provider: { ignore: ['NovitaAI'], data_collection: 'deny' } };
+test('the ultraspeed slug keeps every MiMo guard but is never given a host order', () => {
+  const fast = 'xiaomi/mimo-v2.6-pro-ultraspeed';
+  assert.equal(isMimoModel(fast), true);
+  assert.equal(isMimoModel('xiaomi/mimo-v2.6-pro-turbo'), false);
+  assert.equal(isReasoningModel(fast), true);
+  assert.equal(isWordlessTurn({ model: fast, finishReason: 'length', contentLength: 0 }), true);
+  const next = adaptForMimo({ model: fast, max_tokens: 600 });
+  assert.equal(next.reasoning.enabled, false);
+  assert.equal(next.reasoning.effort, 'none');
+  assert.deepEqual(next.provider, { allow_fallbacks: true, zdr: true, data_collection: 'deny' });
+});
+
+test('provider selection keeps caller choices but always adds the retention rule', () => {
+  const retention = { allow_fallbacks: true, zdr: true, data_collection: 'deny' };
+  const body = { model: 'xiaomi/mimo-v2.6-pro', provider: { ignore: ['NovitaAI'] } };
   const next = withMimoProvider(body);
-  assert.deepEqual(next.provider, { ...body.provider, order: ['DeepInfra', 'Xiaomi'], allow_fallbacks: true });
-  assert.deepEqual(withMimoProvider(body, true).provider.order, ['Xiaomi', 'DeepInfra']);
-  assert.deepEqual(body.provider, { ignore: ['NovitaAI'], data_collection: 'deny' });
+  assert.deepEqual(next.provider, { ignore: ['NovitaAI'], order: ['DeepInfra'], ...retention });
+  assert.deepEqual(withMimoProvider(body, true).provider.order, ['DeepInfra']);
+  assert.deepEqual(body.provider, { ignore: ['NovitaAI'] });
   const chosen = { ...body, provider: { ...body.provider, order: ['GMICloud'] } };
-  assert.equal(withMimoProvider(chosen), chosen);
+  assert.deepEqual(withMimoProvider(chosen).provider, { ignore: ['NovitaAI'], order: ['GMICloud'], ...retention });
+  const flash = withMimoProvider({ model: 'xiaomi/mimo-v2.6-flash' });
+  assert.deepEqual(flash.provider, { order: ['DeepInfra'], ...retention });
   const other = { model: 'z-ai/glm-5.3-flash' };
   assert.equal(withMimoProvider(other), other);
   assert.equal(adaptForMimo(other), other);
+});
+
+test('a caller cannot switch the retention rule off', () => {
+  const sneaky = { zdr: false, data_collection: 'allow', allow_fallbacks: false, sort: 'throughput' };
+  for (const model of ['xiaomi/mimo-v2.6-pro', 'xiaomi/mimo-v2.6-flash', 'xiaomi/mimo-v2.6-pro-ultraspeed']) {
+    for (const reasoning of [{ effort: 'none' }, { effort: 'high', enabled: true }]) {
+      const out = adaptForMimo({ model, reasoning, provider: { ...sneaky } });
+      assert.equal(out.provider.zdr, true, model);
+      assert.equal(out.provider.data_collection, 'deny', model);
+      assert.equal(out.provider.allow_fallbacks, true, model);
+    }
+  }
+  const ordered = withMimoProvider({ model: 'xiaomi/mimo-v2.6-pro', provider: { ...sneaky, order: ['Xiaomi'] } });
+  assert.deepEqual(ordered.provider, { order: ['Xiaomi'], allow_fallbacks: true, zdr: true, data_collection: 'deny' });
+  // With no order to set, a caller's sort survives and still rides inside the filter.
+  const sorted = withMimoProvider({ model: 'xiaomi/mimo-v2.6-pro-ultraspeed', provider: { ...sneaky } });
+  assert.deepEqual(sorted.provider, { sort: 'throughput', allow_fallbacks: true, zdr: true, data_collection: 'deny' });
+});
+
+test('the env order overrides tune the host order but never the filter', () => {
+  const saved = { a: process.env.KADE_MIMO_PROVIDER_ORDER, b: process.env.KADE_MIMO_THINK_PROVIDER_ORDER };
+  const path = require.resolve('./mimo');
+  try {
+    process.env.KADE_MIMO_PROVIDER_ORDER = 'Xiaomi, DeepInfra';
+    process.env.KADE_MIMO_THINK_PROVIDER_ORDER = '';
+    delete require.cache[path];
+    const fresh = require('./mimo');
+    const instant = fresh.adaptForMimo({ model: 'xiaomi/mimo-v2.6-pro', reasoning: { effort: 'none' } });
+    assert.deepEqual(instant.provider, { order: ['Xiaomi', 'DeepInfra'], allow_fallbacks: true, zdr: true, data_collection: 'deny' });
+    const thinking = fresh.adaptForMimo({ model: 'xiaomi/mimo-v2.6-pro', reasoning: { effort: 'high' } });
+    assert.deepEqual(thinking.provider, { allow_fallbacks: true, zdr: true, data_collection: 'deny' });
+    assert.deepEqual(fresh.adaptForMimo({ model: 'xiaomi/mimo-v2.6-flash' }).provider.order, ['DeepInfra']);
+  } finally {
+    for (const [key, value] of [['KADE_MIMO_PROVIDER_ORDER', saved.a], ['KADE_MIMO_THINK_PROVIDER_ORDER', saved.b]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    delete require.cache[path];
+  }
 });
 
 test('ordinary and phone turns disable reasoning without increasing the output cap', () => {
@@ -37,10 +89,12 @@ test('ordinary and phone turns disable reasoning without increasing the output c
   assert.equal(phone.reasoning.enabled, false);
   assert.equal(phone.max_tokens, 600);
   assert.equal(plain.provider.order[0], 'DeepInfra');
+  assert.equal(plain.provider.zdr, true);
   const flash = adaptForMimo({ model: 'xiaomi/mimo-v2.6-flash', max_tokens: 4, reasoning_effort: 'none' });
   assert.equal(flash.reasoning.enabled, false);
   assert.equal(flash.max_tokens, 4);
-  assert.equal(flash.provider.order[0], 'Xiaomi');
+  assert.equal(flash.provider.order[0], 'DeepInfra');
+  assert.equal(flash.provider.zdr, true);
   const legacy = adaptForMimo({ model: 'xiaomi/mimo-v2.6-pro', reasoning_effort: 'none', max_tokens: 600 });
   assert.equal(legacy.reasoning.enabled, false);
   assert.equal(Object.hasOwn(legacy, 'reasoning_effort'), false);
@@ -52,7 +106,7 @@ test('requested thinking retains reasoning visibility and has room for a visible
   assert.equal(next.reasoning.enabled, true);
   assert.equal(next.reasoning.exclude, false);
   assert.equal(next.max_tokens, 32000);
-  assert.equal(next.provider.order[0], 'Xiaomi');
+  assert.deepEqual(next.provider, { order: ['DeepInfra'], allow_fallbacks: true, zdr: true, data_collection: 'deny' });
   assert.equal(body.max_tokens, 600);
   assert.equal(Object.hasOwn(next, 'temperature'), false);
   assert.equal(Object.hasOwn(next, 'top_p'), false);
@@ -100,5 +154,7 @@ test('the real auto-think classifier keeps Jev first and sends only MiMo Flash w
   assert.equal(requests[0].model, 'xiaomi/mimo-v2.6-flash');
   assert.equal(requests[0].reasoning.enabled, false);
   assert.equal(requests[0].max_tokens, 4);
-  assert.equal(requests[0].provider.order[0], 'Xiaomi');
+  assert.equal(requests[0].provider.order[0], 'DeepInfra');
+  assert.equal(requests[0].provider.zdr, true);
+  assert.equal(requests[0].provider.data_collection, 'deny');
 });
