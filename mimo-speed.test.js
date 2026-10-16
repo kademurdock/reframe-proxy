@@ -30,7 +30,7 @@ test('the voice-message header is removed before the think classifier reads a me
   assert.ok(sliceFn('function autoThinkExcerpt(', '\n}\n').includes('.replace(SPEECH_SOURCE_RE'));
 });
 
-function runAutoThink({ tier, model = 'xiaomi/mimo-v2.6-pro', env = {} }) {
+function runAutoThink({ tier, model = 'xiaomi/mimo-v2.6-pro', env = {}, reasoning }) {
   const fn = sliceFn('async function maybeAutoThink(', '\nasync function ') ;
   const logs = [];
   const ctx = vm.createContext({
@@ -54,7 +54,7 @@ function runAutoThink({ tier, model = 'xiaomi/mimo-v2.6-pro', env = {} }) {
     excerptReceipt: (s) => s,
   });
   vm.runInContext(fn + '\nthis.run = maybeAutoThink;', ctx);
-  const body = { model, messages: [{ role: 'system', content: 'x' }, { role: 'user', content: 'y' }] };
+  const body = { model, messages: [{ role: 'system', content: 'x' }, { role: 'user', content: 'y' }], ...(reasoning ? { reasoning } : {}) };
   return ctx.run(body, 'test').then((out) => ({ out, logs }));
 }
 
@@ -76,4 +76,12 @@ test('deep votes on MiMo still think, and other models keep quick', async () => 
   assert.equal(deep.out.reasoning.enabled, true);
   const other = await runAutoThink({ tier: 'quick', model: 'deepseek/deepseek-v4.1-flash' });
   assert.equal(other.out.reasoning.effort, 'low');
+});
+
+test('an explicit thinking-off pair is a choice: a deep vote cannot turn it back on', async () => {
+  const off = await runAutoThink({ tier: 'deep', reasoning: { enabled: false, effort: 'none' } });
+  assert.deepEqual(off.out.reasoning, { enabled: false, effort: 'none' });
+  assert.ok(off.logs.some((l) => l.includes('explicit choice already made')));
+  const half = await runAutoThink({ tier: 'deep', reasoning: { effort: 'none' } });
+  assert.equal(half.out.reasoning.enabled, true);
 });

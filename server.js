@@ -3002,7 +3002,12 @@ async function maybeAutoThink(body, reqId = '??????') {
     const r = body.reasoning || {};
     const effort = typeof r.effort === 'string' ? r.effort.toLowerCase() : '';
     // Someone already chose: deep marker/setting (enabled or a real effort).
-    if (r.enabled === true || ['low', 'medium', 'high'].includes(effort)) {
+    /* Oct 16 2026: an explicit OFF (enabled:false AND effort:'none', the pair the
+     * fork's Sound Booth edit passes send) is a choice too; before this, a deep
+     * vote could turn thinking back on for a long audit prompt. Either half
+     * alone still rides the router. */
+    const explicitOff = r.enabled === false && effort === 'none';
+    if (r.enabled === true || ['low', 'medium', 'high'].includes(effort) || explicitOff) {
       console.log(`[auto-think][req ${reqId}] skip: explicit choice already made (enabled=${r.enabled === true}, effort=${effort || '(none)'})`);
       return body;
     }
