@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const { isMimoModel, withMimoProvider, adaptForMimo } = require('./mimo');
+const { isMimoModel, carriesMedia, withMimoProvider, adaptForMimo } = require('./mimo');
 const { isReasoningModel, isWordlessTurn, rescueWordlessTurn } = require('./modelbudget');
 
 test('the fleet model participates in automatic reasoning and empty-answer recovery', () => {
@@ -174,5 +174,92 @@ test('Pro turns carry MiMo Flash as the model backup, under the same retention f
     assert.equal(withMimoProvider({ model: 'xiaomi/mimo-v2.6-pro' }).models, undefined);
   } finally {
     delete process.env.KADE_MIMO_FLASH_BACKUP;
+  }
+});
+
+const PRO = 'xiaomi/mimo-v2.6-pro';
+const FLASH = 'xiaomi/mimo-v2.6-flash';
+const RETENTION = { allow_fallbacks: true, zdr: true, data_collection: 'deny' };
+const text = [{ role: 'system', content: 'Be kind.' }, { role: 'user', content: [{ type: 'text', text: 'Hi there' }] }];
+const voiced = [
+  { role: 'system', content: 'Be kind.' },
+  { role: 'user', content: [{ type: 'text', text: 'What is this song?' }, { type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } }] },
+];
+
+test('every audio and video part shape counts as media, and text or pictures never do', () => {
+  const holding = (part) => carriesMedia({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Listen' }, part] }] });
+  assert.equal(carriesMedia({ messages: voiced }), true);
+  assert.equal(holding({ type: 'input_video', input_video: { url: 'https://x.test/a.mp4' } }), true);
+  assert.equal(holding({ type: 'video_url', video_url: { url: 'https://x.test/a.mp4' } }), true);
+  assert.equal(holding({ type: 'audio_url', audio_url: { url: 'https://x.test/a.mp3' } }), true);
+  assert.equal(holding({ input_audio: { data: 'UklGRg==', format: 'mp3' } }), true);
+  assert.equal(holding({ type: 'file', file: { filename: 'note.m4a', file_data: 'https://x.test/blob' } }), true);
+  assert.equal(holding({ type: 'file', file: { filename: 'blob', file_data: 'data:audio/ogg;base64,T2dnUw==' } }), true);
+  assert.equal(holding({ type: 'file', file: { filename: 'scan.pdf', file_data: 'data:application/pdf;base64,JVBE' } }), false);
+  assert.equal(holding({ type: 'image_url', image_url: { url: 'data:image/png;base64,iVBO' } }), false);
+  assert.equal(carriesMedia({ messages: text }), false);
+  assert.equal(carriesMedia({ messages: [{ role: 'user', content: 'plain words' }, null] }), false);
+  assert.equal(carriesMedia({}), false);
+  assert.equal(carriesMedia(undefined), false);
+});
+
+test('a Pro text turn keeps the Flash backup exactly as before', () => {
+  for (const reasoning of [{ effort: 'none' }, { effort: 'high' }]) {
+    const out = adaptForMimo({ model: PRO, messages: text, reasoning });
+    assert.deepEqual(out.models, [PRO, FLASH]);
+    assert.deepEqual(out.provider, { order: ['DeepInfra'], ...RETENTION });
+  }
+  const pictured = [{ role: 'user', content: [{ type: 'text', text: 'Look' }, { type: 'image_url', image_url: { url: 'https://x.test/a.png' } }] }];
+  assert.deepEqual(withMimoProvider({ model: PRO, messages: pictured }).models, [PRO, FLASH]);
+});
+
+test('a Pro turn that carries audio or video gets no Flash backup', () => {
+  for (const reasoning of [{ effort: 'none' }, { effort: 'high' }]) {
+    const out = adaptForMimo({ model: PRO, messages: voiced, reasoning });
+    assert.equal(Object.hasOwn(out, 'models'), false);
+    assert.deepEqual(out.provider, { order: ['DeepInfra'], ...RETENTION });
+    assert.deepEqual(adaptForMimo(out), out);
+  }
+  const filmed = [{ role: 'user', content: [{ type: 'video_url', video_url: { url: 'https://x.test/a.mp4' } }] }];
+  assert.equal(Object.hasOwn(withMimoProvider({ model: PRO, messages: filmed }), 'models'), false);
+  // An earlier user turn's audio still rides in history, so it still counts.
+  const later = [...voiced, { role: 'assistant', content: 'It is a hymn.' }, { role: 'user', content: 'Who sang it?' }];
+  assert.equal(Object.hasOwn(withMimoProvider({ model: PRO, messages: later }), 'models'), false);
+});
+
+test('a Flash turn that carries audio goes to Makora and never to the hosts that drop it', () => {
+  for (const reasoning of [{ effort: 'none' }, { effort: 'high' }]) {
+    const out = adaptForMimo({ model: FLASH, messages: voiced, reasoning });
+    assert.deepEqual(out.provider, { order: ['Makora'], ignore: ['DeepInfra', 'Venice'], ...RETENTION });
+    assert.equal(Object.hasOwn(out, 'models'), false);
+    assert.deepEqual(adaptForMimo(out), out);
+  }
+  // The gateway's own exclusions stay, and a caller's order still cannot reach a deaf host.
+  const excluded = withMimoProvider({ model: FLASH, messages: voiced, provider: { ignore: ['novita', 'Sail Research'] } });
+  assert.deepEqual(excluded.provider, { order: ['Makora'], ignore: ['novita', 'Sail Research', 'DeepInfra', 'Venice'], ...RETENTION });
+  const pinned = withMimoProvider({ model: FLASH, messages: voiced, provider: { order: ['DeepInfra'], sort: 'price' } });
+  assert.deepEqual(pinned.provider, { order: ['DeepInfra'], ignore: ['DeepInfra', 'Venice'], ...RETENTION });
+});
+
+test('a Flash text turn stays on DeepInfra with no ignore list added', () => {
+  const out = adaptForMimo({ model: FLASH, messages: text, max_tokens: 4, reasoning_effort: 'none' });
+  assert.deepEqual(out.provider, { order: ['DeepInfra'], ...RETENTION });
+  const excluded = withMimoProvider({ model: FLASH, messages: text, provider: { ignore: ['novita'] } });
+  assert.deepEqual(excluded.provider, { ignore: ['novita'], order: ['DeepInfra'], ...RETENTION });
+});
+
+test('the retention fields ride on every MiMo turn, with or without audio', () => {
+  const sneaky = { zdr: false, data_collection: 'allow', allow_fallbacks: false };
+  for (const model of [PRO, FLASH, 'xiaomi/mimo-v2.6-pro-ultraspeed']) {
+    for (const messages of [text, voiced, undefined]) {
+      for (const reasoning of [{ effort: 'none' }, { effort: 'high' }]) {
+        for (const provider of [undefined, { ...sneaky }]) {
+          const out = adaptForMimo({ model, messages, reasoning, ...(provider ? { provider } : {}) });
+          assert.equal(out.provider.zdr, true, model);
+          assert.equal(out.provider.data_collection, 'deny', model);
+          assert.equal(out.provider.allow_fallbacks, true, model);
+        }
+      }
+    }
   }
 });

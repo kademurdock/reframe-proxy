@@ -36,16 +36,50 @@ const FLASH_ORDER = ['DeepInfra'];
  * same filter. Off: KADE_MIMO_FLASH_BACKUP=0. */
 const FLASH_BACKUP = 'xiaomi/mimo-v2.6-flash';
 
+/* Oct 16 2026 audio check, Flash under zdr: DeepInfra and Venice silently DROP
+ * an audio part (the reply is a 200, prompt tokens count only the text, and the
+ * model makes up what it "heard"); Io Net refuses it; Makora and Novita hear
+ * it, and Novita is in EXCLUDED_PROVIDERS. So a Flash turn that carries audio
+ * or video goes to Makora, with DeepInfra and Venice ignored so a Makora outage
+ * fails the turn instead of inventing an answer. A Pro turn that carries it
+ * gets no Flash backup: the provider object rides along to the backup model,
+ * so Flash would land on DeepInfra and lose the audio. Text-only turns are
+ * untouched. */
+const FLASH_MEDIA_ORDER = ['Makora'];
+const MEDIA_DEAF_HOSTS = ['DeepInfra', 'Venice'];
+const MEDIA_PART_TYPE = /^(?:input_)?(?:audio|video)(?:_url)?$/i;
+const MEDIA_DATA_URL = /^data:(?:audio|video)\//i;
+const MEDIA_FILE_NAME = /\.(?:mp3|wav|m4a|aac|ogg|oga|opus|flac|weba|webm|mp4|m4v|mov|mkv|avi)$/i;
+
+function isMediaPart(part) {
+  if (!part || typeof part !== 'object') return false;
+  if (MEDIA_PART_TYPE.test(String(part.type || ''))) return true;
+  if (part.input_audio || part.input_video || part.audio_url || part.video_url) return true;
+  const file = part.type === 'file' && part.file && typeof part.file === 'object' ? part.file : null;
+  if (!file) return false;
+  return (typeof file.file_data === 'string' && MEDIA_DATA_URL.test(file.file_data))
+    || (typeof file.filename === 'string' && MEDIA_FILE_NAME.test(file.filename));
+}
+
+const carriesMedia = (body) => Array.isArray(body?.messages)
+  && body.messages.some((message) => Array.isArray(message?.content) && message.content.some(isMediaPart));
+
 function withMimoProvider(body, thinking = false) {
   if (!isMimoModel(body?.model)) return body;
+  const media = carriesMedia(body);
+  const flash = isMimoFlashModel(body.model);
   // An upstream order is kept; the retention rule is not negotiable.
   const existing = body.provider || {};
   const order = existing.order
     || (isMimoProModel(body.model) ? (thinking ? PRO_ORDER_THINKING : PRO_ORDER_INSTANT)
-      : isMimoFlashModel(body.model) ? FLASH_ORDER : []);
+      : flash ? (media ? FLASH_MEDIA_ORDER : FLASH_ORDER) : []);
   const provider = { ...existing, ...(order.length ? { order } : {}), allow_fallbacks: true, zdr: true, data_collection: 'deny' };
   if (provider.order) delete provider.sort; // OpenRouter rejects sort together with order
-  const backup = isMimoProModel(body.model) && !Array.isArray(body.models) && process.env.KADE_MIMO_FLASH_BACKUP !== '0';
+  if (flash && media) {
+    const ignore = Array.isArray(existing.ignore) ? existing.ignore : [];
+    provider.ignore = [...new Set([...ignore, ...MEDIA_DEAF_HOSTS])];
+  }
+  const backup = isMimoProModel(body.model) && !media && !Array.isArray(body.models) && process.env.KADE_MIMO_FLASH_BACKUP !== '0';
   return backup ? { ...body, models: [body.model, FLASH_BACKUP], provider } : { ...body, provider };
 }
 
@@ -75,4 +109,4 @@ function adaptForMimo(body) {
   return withMimoProvider(next, true);
 }
 
-module.exports = { isMimoModel, withMimoProvider, adaptForMimo };
+module.exports = { isMimoModel, carriesMedia, withMimoProvider, adaptForMimo };
