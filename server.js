@@ -466,7 +466,7 @@ const { adaptForXai } = require('./xai.js');
 // -- DEEPSEEK PROVIDER PIN (Sep 19 2026, Part 213): US zero-retention hosts only, see deepseek.js --
 const { adaptForDeepseek, deepseekHabitNoteFor } = require('./deepseek.js');
 const { adaptForSol } = require('./sol.js');
-const { adaptForMimo, withMimoProvider } = require('./mimo.js');
+const { adaptForMimo, isMimoModel } = require('./mimo.js');
 
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
@@ -1863,7 +1863,9 @@ function withProviderExclusion(body) {
     provider.order = GLM_PROVIDER_ORDER;
     provider.allow_fallbacks = true;
   }
-  return withMimoProvider({ ...body, provider });
+  // MiMo's provider order is picked later, in adaptForMimo, once auto-think has
+  // decided whether this turn thinks (thinking and instant turns use different orders).
+  return { ...body, provider };
 }
 
 // Sep 26 2026 (Part 295, her Google key going into OpenRouter as BYOK): the
@@ -2761,8 +2763,15 @@ function stripContextReplay(text) {
   return cut.length >= 2 ? cut : String(text || '');
 }
 
+/* Oct 16 2026: the app's voice-message header (fork packages/api/src/utils/speech.ts,
+ * ~370 characters) sits in front of her words. It pushed every voice message past
+ * the 350-character gate straight to the router, which then read machine text:
+ * 23 of 28 voice messages on MiMo were voted quick (median reply 81 s vs 8 s). */
+const SPEECH_SOURCE_RE = /\[Message source: voice message transcribed to text[^\]]*\]/gi;
+
 function autoThinkExcerpt(body) {
   return stripContextReplay(autoThinkPersonText(body))
+    .replace(SPEECH_SOURCE_RE, ' ')
     .replace(DEEP_THINK_RE, '')
     .replace(INSTANT_RE, '')
     .replace(/\[PHONE CALL[^\]]*\]/gi, '')
@@ -3028,6 +3037,15 @@ async function maybeAutoThink(body, reqId = '??????') {
     if (isCall && tier === 'deep') {
       console.log(`[auto-think][req ${reqId}] call turn: deep capped to quick (dead-air rule)`);
       tier = 'quick';
+    }
+    /* Oct 16 2026: on MiMo, effort 'low' is not quick. Live quick turns Oct 14-16
+     * spent a median 2,400 output tokens (up to 8,500) and took a median 77 s against
+     * 20 s for instant; reasoning.max_tokens was ignored on both machines tested (Xiaomi, DeepInfra).
+     * So the router's quick vote rides instant on MiMo. Deep, a fresh [DEEP THINK]
+     * and agent settings are untouched. Revert: KADE_MIMO_QUICK=low. */
+    if (tier === 'quick' && isMimoModel(cleaned.model) && process.env.KADE_MIMO_QUICK !== 'low') {
+      console.log(`[auto-think][req ${reqId}] MiMo: quick ridden as instant (KADE_MIMO_QUICK=low to think)`);
+      tier = 'instant';
     }
     if (tier === 'instant') {
       /* Part 67, the last silent path: heuristic-instant used to return with

@@ -18,7 +18,8 @@ test('the fleet model participates in automatic reasoning and empty-answer recov
 test('provider selection preserves caller choices and privacy filters', () => {
   const body = { model: 'xiaomi/mimo-v2.6-pro', provider: { ignore: ['NovitaAI'], data_collection: 'deny' } };
   const next = withMimoProvider(body);
-  assert.deepEqual(next.provider, { ...body.provider, order: ['Xiaomi'], allow_fallbacks: true });
+  assert.deepEqual(next.provider, { ...body.provider, order: ['DeepInfra', 'Xiaomi'], allow_fallbacks: true });
+  assert.deepEqual(withMimoProvider(body, true).provider.order, ['Xiaomi', 'DeepInfra']);
   assert.deepEqual(body.provider, { ignore: ['NovitaAI'], data_collection: 'deny' });
   const chosen = { ...body, provider: { ...body.provider, order: ['GMICloud'] } };
   assert.equal(withMimoProvider(chosen), chosen);
@@ -35,7 +36,7 @@ test('ordinary and phone turns disable reasoning without increasing the output c
   const phone = adaptForMimo({ model: 'xiaomi/mimo-v2.6-pro', max_tokens: 600, reasoning: { effort: 'none', enabled: true } });
   assert.equal(phone.reasoning.enabled, false);
   assert.equal(phone.max_tokens, 600);
-  assert.equal(plain.provider.order[0], 'Xiaomi');
+  assert.equal(plain.provider.order[0], 'DeepInfra');
   const flash = adaptForMimo({ model: 'xiaomi/mimo-v2.6-flash', max_tokens: 4, reasoning_effort: 'none' });
   assert.equal(flash.reasoning.enabled, false);
   assert.equal(flash.max_tokens, 4);
@@ -51,6 +52,7 @@ test('requested thinking retains reasoning visibility and has room for a visible
   assert.equal(next.reasoning.enabled, true);
   assert.equal(next.reasoning.exclude, false);
   assert.equal(next.max_tokens, 32000);
+  assert.equal(next.provider.order[0], 'Xiaomi');
   assert.equal(body.max_tokens, 600);
   assert.equal(Object.hasOwn(next, 'temperature'), false);
   assert.equal(Object.hasOwn(next, 'top_p'), false);
