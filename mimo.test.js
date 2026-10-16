@@ -20,6 +20,7 @@ test('the ultraspeed slug keeps every MiMo guard but is never given a host order
   assert.equal(isMimoModel('xiaomi/mimo-v2.6-pro-turbo'), false);
   assert.equal(isReasoningModel(fast), true);
   assert.equal(isWordlessTurn({ model: fast, finishReason: 'length', contentLength: 0 }), true);
+  assert.equal(isWordlessTurn({ model: fast, finishReason: 'stop', contentLength: 0, reasoningLength: 900 }), true);
   const next = adaptForMimo({ model: fast, max_tokens: 600 });
   assert.equal(next.reasoning.enabled, false);
   assert.equal(next.reasoning.effort, 'none');

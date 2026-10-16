@@ -217,19 +217,53 @@ function longPost(url, options, timeoutMs) {
     const timer = setTimeout(() => { const e = new Error('This operation was aborted'); e.name = 'AbortError'; reject(e); req.destroy(e); }, timeoutMs);
     req.on('close', () => clearTimeout(timer));
     req.on('error', reject);
-    req.end(payload);
+    whenAborted(options.signal, () => { const e = new Error('client hung up'); e.name = 'AbortError'; reject(e); req.destroy(e); });
+    if (!req.destroyed) req.end(payload);
   });
+}
+
+/* Oct 16 2026: run `onAbort` once when a caller's signal fires (now, if it
+ * already has). The signal is the client's hang-up, see clientHangupSignal. */
+function whenAborted(signal, onAbort) {
+  if (!signal) return;
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
   if (timeoutMs > LONG_FETCH_MS && typeof options.body === 'string') return longPost(url, options, timeoutMs);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // The timer only covers the wait for headers; a caller's signal also reaches the body read.
+  whenAborted(options.signal, () => controller.abort());
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
+}
+
+/* Oct 16 2026 (reqs q8lh33, zb7p1i, yixg31, q5h4d7): when LibreChat hung up
+ * (Stop, a Sound Booth budget, the fork's 300 s wall) the upstream call ran on
+ * to the end anyway, 59 s to 3 min of paid MiMo generation for nobody, and once
+ * a wordless rescue for nobody too. The hang-up is `res` closing before this
+ * proxy finished it. req 'close' is not used: Node fires that once the request
+ * BODY has been read, long before any reply. The signal goes into every upstream
+ * call a person-facing turn makes. Kill: KADE_CLIENT_ABORT=0. */
+const CLIENT_ABORT = process.env.KADE_CLIENT_ABORT !== '0';
+function clientHangupSignal(res, reqId) {
+  const controller = new AbortController();
+  // Each upstream attempt and re-ask listens once; a 429 storm can pass Node's default of 10.
+  require('events').setMaxListeners(32, controller.signal);
+  const started = Date.now();
+  if (CLIENT_ABORT && res && typeof res.on === 'function') {
+    res.on('close', () => {
+      if (res.writableFinished || controller.signal.aborted) return;
+      console.warn(`[req ${reqId}] client hung up after ${Date.now() - started}ms -- cancelling the upstream call`);
+      controller.abort();
+    });
+  }
+  return controller.signal;
 }
 
 
@@ -733,7 +767,7 @@ function adaptForKimi(body) {
   return next;
 }
 
-async function callOpenRouterOnce(body, timeoutMs) {
+async function callOpenRouterOnce(body, timeoutMs, signal) {
   // Aug 14 2026 (Part 63, the ?????? receipts): auto-think used to live HERE,
   // which meant every INTERNAL model call routed too -- the slop rewritePass
   // (system prompt + no reasoning field) got classified off the REPLY text it
@@ -746,7 +780,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
   body = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(body)))))));
   let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
-    { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body) },
+    { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body), signal },
     timeoutMs
   );
   /* Same predicate chatCompletionsUrl just routed on — deliberately not a
@@ -762,7 +796,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
       console.error(`MOONSHOT FALLBACK ACTIVE (non-stream, status ${upstream.status}) -- retrying ${fbBody.model} via OpenRouter. TOP UP THE MOONSHOT BALANCE.`);
       upstream = await fetchWithTimeout(
         `${OPENROUTER_BASE}/chat/completions`,
-        { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+        { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody), signal },
         timeoutMs
       );
     }
@@ -776,7 +810,7 @@ async function callOpenRouterOnce(body, timeoutMs) {
     alertZaiFallback(upstream.status);
     upstream = await fetchWithTimeout(
       `${OPENROUTER_BASE}/chat/completions`,
-      { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+      { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody), signal },
       timeoutMs
     );
   }
@@ -801,16 +835,17 @@ async function callOpenRouterOnce(body, timeoutMs) {
   return json;
 }
 
-async function callOpenRouterTimeoutGuarded(body, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function callOpenRouterTimeoutGuarded(body, timeoutMs = REQUEST_TIMEOUT_MS, signal) {
   try {
-    return await callOpenRouterOnce(body, timeoutMs);
+    return await callOpenRouterOnce(body, timeoutMs, signal);
   } catch (err) {
-    if (err.name === 'AbortError') {
+    // A client hang-up is an AbortError too, and is never retried.
+    if (err.name === 'AbortError' && !signal?.aborted) {
       console.warn(`OpenRouter call timed out after ${timeoutMs}ms, retrying once...`);
       try {
-        return await callOpenRouterOnce(body, timeoutMs);
+        return await callOpenRouterOnce(body, timeoutMs, signal);
       } catch (retryErr) {
-        if (retryErr.name === 'AbortError') {
+        if (retryErr.name === 'AbortError' && !signal?.aborted) {
           const timeoutErr = new Error(
             `OpenRouter did not respond within ${timeoutMs}ms (after 1 retry) — the upstream provider likely stalled.`
           );
@@ -845,7 +880,7 @@ const transientRetryDelayMs = (attempt, retryAfterHeader) => {
 };
 const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS, signal) {
   // Aug 1 2026 (the 504→fallback chain quietly eating deep room turns): a
   // reasoning-on 16K-budget turn legitimately runs past 90s, and hanging
   // up HERE converted the good turns into thoughtless fallbacks
@@ -870,9 +905,9 @@ async function callOpenRouter(body, timeoutMs = REQUEST_TIMEOUT_MS) {
   if (isDeepBody && timeoutMs === REQUEST_TIMEOUT_MS) timeoutMs = DEEP_TIMEOUT_MS;
   for (let attempt = 0; ; attempt++) {
     try {
-      return await callOpenRouterTimeoutGuarded(body, timeoutMs);
+      return await callOpenRouterTimeoutGuarded(body, timeoutMs, signal);
     } catch (err) {
-      if (attempt < 2 && TRANSIENT_UPSTREAM_STATUSES.has(err.status)) {
+      if (attempt < 2 && TRANSIENT_UPSTREAM_STATUSES.has(err.status) && !signal?.aborted) {
         const wait = transientRetryDelayMs(attempt, err.retryAfter);
         console.warn(`upstream ${err.status} (attempt ${attempt + 1} of 3) -- retrying in ${wait}ms`);
         await sleepMs(wait);
@@ -3240,6 +3275,7 @@ const STREAM_IDLE_TIMEOUT_MS = 90_000;
 async function handleStreaming(req, res, upstreamBody, shimActive = false, shimDeepThink = false) {
   const reqId = req._reqId || '??????';
   const t0 = Date.now();
+  const hangup = req._hangup || clientHangupSignal(res, reqId);
   // PHONE STREAMING FIX (July 1 2026): phone-marked turns stream content
   // through LIVE instead of buffering for slop detection. The Media Streams
   // bridge speaks sentence-by-sentence as tokens arrive, so buffering the
@@ -3343,10 +3379,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     try {
       upstream = await fetchWithTimeout(
         chatCompletionsUrl(upstreamBody.model),
-        { method: 'POST', headers: chatHeaders(upstreamBody.model), body: JSON.stringify(upstreamBody) },
+        { method: 'POST', headers: chatHeaders(upstreamBody.model), body: JSON.stringify(upstreamBody), signal: hangup },
         STREAM_IDLE_TIMEOUT_MS
       );
     } catch (err) {
+      if (hangup.aborted) return; // nobody left to answer; the hang-up line names it
       const status = err.name === 'AbortError' ? 504 : 502;
       console.error(`[req ${reqId}] initial fetch failed after ${Date.now() - t0}ms: ${err.name} ${err.message}`);
       return res.status(status).set('Content-Type', 'application/json').send(
@@ -3377,10 +3414,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       try {
         upstream = await fetchWithTimeout(
           `${OPENROUTER_BASE}/chat/completions`,
-          { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+          { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody), signal: hangup },
           STREAM_IDLE_TIMEOUT_MS
         );
       } catch (fbErr) {
+        if (hangup.aborted) return;
         console.error(`[req ${reqId}] fallback fetch failed: ${fbErr.message}`);
       }
     }
@@ -3396,15 +3434,19 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     try {
       upstream = await fetchWithTimeout(
         `${OPENROUTER_BASE}/chat/completions`,
-        { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody) },
+        { method: 'POST', headers: openRouterHeaders(), body: JSON.stringify(fbBody), signal: hangup },
         STREAM_IDLE_TIMEOUT_MS
       );
     } catch (fbErr) {
+      if (hangup.aborted) return;
       console.error(`[req ${reqId}] zai fallback fetch failed: ${fbErr.message}`);
     }
   }
+  // A hang-up mid-body rejects the read; nobody is left to answer, so return quietly.
+  const readBody = () => upstream.text().catch((e) => { if (hangup.aborted) return null; throw e; });
   if (!upstream.ok) {
-    const text = await upstream.text();
+    const text = await readBody();
+    if (text === null) return;
     console.error(`[req ${reqId}] upstream not ok: ${upstream.status} ${text.slice(0,300)}`);
     const friendly = friendlyErrorBody(upstream.status, text);
     return res.status(upstream.status).set('Content-Type', 'application/json').send(friendly || text);
@@ -3413,7 +3455,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   // Some providers ignore stream:true and return plain JSON. Handle that.
   const ctype = upstream.headers.get('content-type') || '';
   if (!ctype.includes('text/event-stream')) {
-    const text = await upstream.text();
+    const text = await readBody();
+    if (text === null) return;
     let json;
     try {
       json = JSON.parse(text);
@@ -3499,6 +3542,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   }
 
   const reader = upstream.body.getReader();
+  // A hang-up also cancels the body read, so the loop below ends at once.
+  whenAborted(hangup, () => { try { reader.cancel().catch(() => {}); } catch (e) {} });
   const decoder = new TextDecoder();
   let sseBuffer = '';
   let rawPending = ''; // raw SSE text buffered until mode is decided
@@ -3922,6 +3967,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     if (isZaiDirectModel(upstreamBody.model)) zaiMeter.note(upstreamBody.model, usage);
   }
 
+  /* Oct 16 2026: the client left mid-turn. Upstream is already cancelled, and
+   * no wordless rescue, retry or rewrite runs for a caller who is gone. */
+  if (hangup.aborted) {
+    console.warn(`[req ${reqId}] turn abandoned by the client -- upstream cancelled, nothing more sent`);
+    try { res.end(); } catch (e) {}
+    return;
+  }
+
   if (toolMode) {
     // live passthrough already wrote everything incl. upstream's [DONE]
     console.log(`[req ${reqId}] tool-mode response ended at ${Date.now() - t0}ms`);
@@ -3969,9 +4022,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       model: upstreamBody.model,
       finishReason,
       contentLength: contentAccum.length,
+      reasoningLength: reasoningAccum.length,
     })) {
       console.warn(`[req ${reqId}] WORDLESS TURN on shim-live (finish=${finishReason}, 0 bytes out, ${reasoningAccum.length} reasoning chars) -- rescuing`);
-      const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'shim-live' });
+      const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'shim-live', signal: hangup });
       if (rescued) {
         emitShimContent(rescued.text);
         finishReason = rescued.finishReason;
@@ -3989,7 +4043,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
             console.warn(`[req ${reqId}] SENSITIVE-BLOCKED on shim-live with ${strippedRes.stripped} prior image(s) -- retrying once without them`);
             const retryBody = { ...upstreamBody, messages: strippedRes.messages, stream: false };
             delete retryBody.stream_options;
-            const rt = await callOpenRouter(retryBody);
+            const rt = await callOpenRouter(retryBody, undefined, hangup);
             const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
             if (typeof rtText === 'string' && rtText.trim().length > 0) {
               emitShimContent(rtText);
@@ -4041,12 +4095,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       phoneFirstWrite === 0 &&
       !sawDone &&
       !res.writableEnded &&
-      isWordlessTurn({ model: upstreamBody.model, finishReason, contentLength: contentAccum.length })
+      isWordlessTurn({ model: upstreamBody.model, finishReason, contentLength: contentAccum.length, reasoningLength: reasoningAccum.length })
     ) {
       console.warn(`[req ${reqId}] WORDLESS TURN on phone-live (finish=${finishReason}, 0 bytes out, ${reasoningAccum.length} reasoning chars) -- rescuing inside the phone window`);
       const phoneRescueMs = parseInt(process.env.KADE_PHONE_RESCUE_MS, 10) || 8000;
       const rescued = await rescueWordlessTurn({
-        upstreamBody, reqId, callOpenRouter, timeoutMs: phoneRescueMs, lane: 'phone-live',
+        upstreamBody, reqId, callOpenRouter, timeoutMs: phoneRescueMs, lane: 'phone-live', signal: hangup,
       });
       if (rescued && !res.writableEnded) {
         const base = {
@@ -4130,13 +4184,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     model: upstreamBody.model,
     finishReason,
     contentLength: contentAccum.length,
+    reasoningLength: reasoningAccum.length,
   })) {
-    console.warn(`[req ${reqId}] WORDLESS TURN CAUGHT (finish=length, 0 content, ${reasoningAccum.length} reasoning chars, model=${upstreamBody.model}) -- re-asking once with reasoning off`);
+    console.warn(`[req ${reqId}] WORDLESS TURN CAUGHT (finish=${finishReason}, 0 content, ${reasoningAccum.length} reasoning chars, model=${upstreamBody.model}) -- re-asking once with reasoning off`);
     /* Aug 28 2026: the re-ask itself moved to modelbudget.rescueWordlessTurn
      * so the shim and phone lanes share ONE rescue instead of copies (the
      * spec's extract-never-duplicate rule — a second copy is the same shape
      * as the predicate that sat in two places and disarmed the guard). */
-    const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered' });
+    const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered', signal: hangup });
     if (rescued) {
       contentAccum = rescued.text;
       finishReason = rescued.finishReason;
@@ -4167,7 +4222,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           console.warn(`[req ${reqId}] SENSITIVE-BLOCKED with ${strippedRes.stripped} prior-turn image(s) in the replayed history -- retrying once without them`);
           const retryBody = { ...upstreamBody, messages: strippedRes.messages, stream: false };
           delete retryBody.stream_options;
-          const rt = await callOpenRouter(retryBody);
+          const rt = await callOpenRouter(retryBody, undefined, hangup);
           const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
           if (typeof rtText === 'string' && rtText.trim().length > 0) {
             console.log(`[req ${reqId}] sensitive retry landed ${rtText.length} chars -- an earlier image was the poison, the newest one is innocent`);
@@ -4229,7 +4284,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     try {
       const retryBody = { ...upstreamBody, stream: false };
       delete retryBody.stream_options;
-      const rt = await callOpenRouter(retryBody);
+      const rt = await callOpenRouter(retryBody, undefined, hangup);
       const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
       if (typeof rtText === 'string' && rtText.trim().length >= contentAccum.length) {
         console.log(`[req ${reqId}] truncation retry landed ${rtText.length} chars (was ${contentAccum.length}) at ${Date.now() - t0}ms`);
@@ -4244,6 +4299,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     } catch (rtErr) {
       console.warn(`[req ${reqId}] truncation retry failed: ${rtErr.message} -- keeping the original partial`);
     }
+  }
+
+  // A hang-up during one of the re-asks above: no rewrite for nobody either.
+  if (hangup.aborted) {
+    try { res.end(); } catch (e) {}
+    return;
   }
 
   // pure CONTENT turn: build a buffered result, detect/rewrite, emit fake SSE
@@ -4470,6 +4531,9 @@ app.post('/chat/completions', async (req, res) => {
   const _toolNames = Array.isArray(req.body.tools) ? req.body.tools.map(t => (t.function && t.function.name) || t.name).filter(Boolean) : [];
   if (_toolNames.length) console.log(`[req ${reqId}] tools=[${_toolNames.join(',')}]`);
   req._reqId = reqId;
+  // Armed first, so a hang-up during the Jev pre-pass or auto-think still counts.
+  const hangup = clientHangupSignal(res, reqId);
+  req._hangup = hangup;
 
   /* Part 97: the tool-fumble escalator — must sit BEFORE the tool shim so the
    * shim's model-specific decision sees the model this call will actually run. */
@@ -4515,17 +4579,42 @@ app.post('/chat/completions', async (req, res) => {
   upstreamBody = await maybeAutoThink(upstreamBody, reqId);
   let result;
   try {
-    result = await callOpenRouter(upstreamBody);
+    result = await callOpenRouter(upstreamBody, undefined, hangup);
   } catch (err) {
+    if (hangup.aborted) return; // nobody left to answer; the hang-up line names it
     console.error('upstream chat/completions error:', err.message);
     const friendly = friendlyErrorBody(err.status, err.body || err.message);
     return res.status(err.status || 502).set('Content-Type', 'application/json').send(
       friendly || err.body || JSON.stringify({ error: { message: 'Upstream request failed' } })
     );
   }
+  if (hangup.aborted) return;
   if (shim.active && parseShimToolCalls(result)) {
     // Shimmed tool-call turn: hand LibreChat the OpenAI shape untouched.
     return res.json(result);
+  }
+  /* Oct 16 2026: the wordless guard reaches the non-stream route. It had none,
+   * so a reasoning turn that spent its budget (q5h4d7: completion=16384, the
+   * cap) came back empty as-is. Tool-call replies have no prose by design. */
+  const choice = result && result.choices && result.choices[0];
+  const message = (choice && choice.message) || {};
+  if (
+    choice &&
+    !(Array.isArray(message.tool_calls) && message.tool_calls.length) &&
+    isWordlessTurn({
+      model: upstreamBody.model,
+      finishReason: choice.finish_reason || 'stop',
+      contentLength: typeof message.content === 'string' ? message.content.length : 0,
+      reasoningLength: String(message.reasoning || message.reasoning_content || '').length,
+    })
+  ) {
+    console.warn(`[req ${reqId}] WORDLESS TURN CAUGHT on non-stream (finish=${choice.finish_reason}, 0 content, model=${upstreamBody.model}) -- re-asking once with reasoning off`);
+    const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'non-stream', signal: hangup });
+    if (hangup.aborted) return;
+    if (rescued) {
+      choice.message = { ...message, content: rescued.text };
+      choice.finish_reason = rescued.finishReason;
+    }
   }
   await detectAndRewrite(result, upstreamBody);
   scrubSpecialTokensFromTitleReply(result, req.body);

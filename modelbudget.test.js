@@ -134,6 +134,22 @@ test('a tool-call round with no prose is NOT a wordless turn', () => {
   assert.strictEqual(M.isWordlessTurn({ model: 'glm-5.3', finishReason: 'stop', contentLength: 0 }), false);
 });
 
+test('a reasoning turn that stops after thinking with no words IS a wordless turn', () => {
+  // Oct 16 2026, req yixg31: MiMo, 143 s, 21,549 reasoning chars, finish=stop, served empty.
+  assert.strictEqual(M.isWordlessTurn({ model: 'xiaomi/mimo-v2.6-pro', finishReason: 'stop', contentLength: 0, reasoningLength: 21549 }), true);
+  assert.strictEqual(M.isWordlessTurn({ model: 'glm-5.3', finishReason: 'stop', contentLength: 0, reasoningLength: 300 }), true);
+  assert.strictEqual(M.isWordlessTurn({ model: 'xiaomi/mimo-v2.6-pro', finishReason: 'stop', contentLength: 12, reasoningLength: 21549 }), false, 'has words');
+  assert.strictEqual(M.isWordlessTurn({ model: 'openai/gpt-4o', finishReason: 'stop', contentLength: 0, reasoningLength: 50 }), false, 'not a reasoning model');
+  assert.strictEqual(M.isWordlessTurn({ model: 'glm-5.3', finishReason: 'sensitive', contentLength: 0, reasoningLength: 50 }), false, 'the sensitive net owns this silence');
+  process.env.KADE_STOP_WORDLESS_RESCUE = '0';
+  try {
+    assert.strictEqual(M.isWordlessTurn({ model: 'xiaomi/mimo-v2.6-pro', finishReason: 'stop', contentLength: 0, reasoningLength: 21549 }), false, 'kill switch');
+    assert.strictEqual(M.isWordlessTurn({ model: 'xiaomi/mimo-v2.6-pro', finishReason: 'length', contentLength: 0 }), true, 'the length guard has no kill switch');
+  } finally {
+    delete process.env.KADE_STOP_WORDLESS_RESCUE;
+  }
+});
+
 /* ════════════════════════════════════════════════════════════════════════
  * THE RESCUE, EXTRACTED (Aug 28 2026) — one re-ask, three lanes
  * ════════════════════════════════════════════════════════════════════════ */
@@ -184,6 +200,26 @@ test('rescue fail-soft: a throwing re-ask yields null and no throw escapes', asy
     callOpenRouter: async () => { throw new Error('provider died'); },
   });
   assert.strictEqual(out, null);
+});
+
+test('no rescue for a caller who hung up, and the hang-up signal reaches the re-ask', async () => {
+  const gone = new AbortController();
+  gone.abort();
+  let called = false;
+  const skipped = await M.rescueWordlessTurn({
+    upstreamBody: wordlessBody, reqId: 't5', signal: gone.signal,
+    callOpenRouter: async () => { called = true; return { choices: [{ message: { content: 'words' } }] }; },
+  });
+  assert.strictEqual(skipped, null);
+  assert.strictEqual(called, false, 'a re-ask for nobody is a paid call for nobody');
+  const live = new AbortController();
+  let seenSignal;
+  const out = await M.rescueWordlessTurn({
+    upstreamBody: wordlessBody, reqId: 't6', signal: live.signal,
+    callOpenRouter: async (_b, _timeout, signal) => { seenSignal = signal; return { choices: [{ message: { content: 'words' }, finish_reason: 'stop' }] }; },
+  });
+  assert.strictEqual(out.text, 'words');
+  assert.strictEqual(seenSignal, live.signal);
 });
 
 test("the phone window is real: a rescue that outlives timeoutMs yields null (dead air capped, caller's turn proceeds)", async () => {

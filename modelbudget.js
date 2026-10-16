@@ -174,9 +174,18 @@ function adaptForGlm(body) {
  * did (`reasoningAccum.length > 0`), which meant a turn that burned its budget
  * with reasoning EXCLUDED from the stream sailed straight through and served
  * silence. The person cannot see reasoning. They can only see words.
+ *
+ * Oct 16 2026 (req yixg31): MiMo also ends finish=stop after thinking and saying
+ * nothing (143 s, 21,549 reasoning chars, an empty reply served with no rescue).
+ * Same failed turn. Here reasoning IS required, because a tool-call round also
+ * ends stop with no prose (req 4dhr8h); every caller runs this after tool rounds
+ * have returned, and the non-stream route skips replies carrying tool_calls.
+ * Kill: KADE_STOP_WORDLESS_RESCUE=0.
  */
-function isWordlessTurn({ model, finishReason, contentLength }) {
-  return isReasoningModel(model) && finishReason === 'length' && Number(contentLength) === 0;
+function isWordlessTurn({ model, finishReason, contentLength, reasoningLength = 0 }) {
+  if (!isReasoningModel(model) || Number(contentLength) !== 0) return false;
+  if (finishReason === 'length') return true;
+  return finishReason === 'stop' && Number(reasoningLength) > 0 && process.env.KADE_STOP_WORDLESS_RESCUE !== '0';
 }
 
 
@@ -196,8 +205,16 @@ function isWordlessTurn({ model, finishReason, contentLength }) {
  * empty yields null, and the caller proceeds exactly as it did before the
  * rescue existed. It can make a silent turn speak; it must never make a
  * working turn worse.
+ *
+ * Oct 16 2026: `signal` is the client's hang-up (server.js clientHangupSignal).
+ * A caller who already left gets no paid re-ask, and one who leaves mid-rescue
+ * cancels it.
  */
-async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeoutMs = 0, lane = 'buffered' }) {
+async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeoutMs = 0, lane = 'buffered', signal }) {
+  if (signal && signal.aborted) {
+    console.warn(`[req ${reqId}] wordless rescue (${lane}) skipped -- the client already hung up`);
+    return null;
+  }
   try {
     const fallbackBody = { ...upstreamBody, stream: false };
     delete fallbackBody.stream_options;
@@ -207,7 +224,7 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
     /* Part 141.3: on x-ai "reasoning off" must be SAID -- a bare body lets
      * Grok pick, and Grok picks thinking. */
     if (isXaiModel(fallbackBody.model) || isMimoModel(fallbackBody.model)) fallbackBody.reasoning = { effort: 'none', enabled: false, exclude: false };
-    let call = callOpenRouter(fallbackBody);
+    let call = callOpenRouter(fallbackBody, undefined, signal);
     if (timeoutMs > 0) {
       call = Promise.race([
         call,
