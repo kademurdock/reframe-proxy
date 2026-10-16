@@ -159,3 +159,20 @@ test('the real auto-think classifier keeps Jev first and sends only MiMo Flash w
   assert.equal(requests[0].provider.zdr, true);
   assert.equal(requests[0].provider.data_collection, 'deny');
 });
+
+test('Pro turns carry MiMo Flash as the model backup, under the same retention filter', () => {
+  const pro = withMimoProvider({ model: 'xiaomi/mimo-v2.6-pro' });
+  assert.deepEqual(pro.models, ['xiaomi/mimo-v2.6-pro', 'xiaomi/mimo-v2.6-flash']);
+  assert.equal(pro.provider.zdr, true);
+  assert.deepEqual(adaptForMimo({ model: 'xiaomi/mimo-v2.6-pro', reasoning: { effort: 'high' } }).models, ['xiaomi/mimo-v2.6-pro', 'xiaomi/mimo-v2.6-flash']);
+  assert.equal(withMimoProvider({ model: 'xiaomi/mimo-v2.6-flash' }).models, undefined);
+  assert.equal(withMimoProvider({ model: 'xiaomi/mimo-v2.6-pro-ultraspeed' }).models, undefined);
+  const chosen = withMimoProvider({ model: 'xiaomi/mimo-v2.6-pro', models: ['xiaomi/mimo-v2.6-pro'] });
+  assert.deepEqual(chosen.models, ['xiaomi/mimo-v2.6-pro']);
+  process.env.KADE_MIMO_FLASH_BACKUP = '0';
+  try {
+    assert.equal(withMimoProvider({ model: 'xiaomi/mimo-v2.6-pro' }).models, undefined);
+  } finally {
+    delete process.env.KADE_MIMO_FLASH_BACKUP;
+  }
+});

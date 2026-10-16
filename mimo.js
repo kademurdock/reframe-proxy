@@ -29,6 +29,12 @@ const orderFrom = (name, fallback) =>
 const PRO_ORDER_INSTANT = orderFrom('KADE_MIMO_PROVIDER_ORDER', 'DeepInfra');
 const PRO_ORDER_THINKING = orderFrom('KADE_MIMO_THINK_PROVIDER_ORDER', 'DeepInfra');
 const FLASH_ORDER = ['DeepInfra'];
+/* A DeepInfra outage would fail every Pro turn under the rule above, so Pro
+ * carries OpenRouter's model fallback: if no zdr host can serve Pro, the same
+ * turn goes to MiMo Flash, which has four zdr hosts (proved Oct 16 with
+ * provider.only Io Net: Pro had no host, Flash answered on Io Net). Same family,
+ * same filter. Off: KADE_MIMO_FLASH_BACKUP=0. */
+const FLASH_BACKUP = 'xiaomi/mimo-v2.6-flash';
 
 function withMimoProvider(body, thinking = false) {
   if (!isMimoModel(body?.model)) return body;
@@ -39,7 +45,8 @@ function withMimoProvider(body, thinking = false) {
       : isMimoFlashModel(body.model) ? FLASH_ORDER : []);
   const provider = { ...existing, ...(order.length ? { order } : {}), allow_fallbacks: true, zdr: true, data_collection: 'deny' };
   if (provider.order) delete provider.sort; // OpenRouter rejects sort together with order
-  return { ...body, provider };
+  const backup = isMimoProModel(body.model) && !Array.isArray(body.models) && process.env.KADE_MIMO_FLASH_BACKUP !== '0';
+  return backup ? { ...body, models: [body.model, FLASH_BACKUP], provider } : { ...body, provider };
 }
 
 function adaptForMimo(body) {
