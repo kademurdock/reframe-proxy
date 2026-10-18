@@ -28,6 +28,13 @@ running this server offline, MiMo Pro on DeepInfra. Two blind judges in separate
 | **this editor, one pass (shipped)** | **about 25-30% fewer** | **held or rose** |
 | this editor, two passes | no better with the guards, twice the time | same |
 
+Live check after the deploy (48 probes before, 48 after, Kiana, Della, Earl, Nonna Maria, Denny,
+Mrs. Witherspoon, the test seat, judged blind by Sol; different generations, so noisier than the
+same-reply test): 4.5 -> 3.7 judged shapes per reply (2.2 -> 1.9 per 100 words). Reframes 0.56 ->
+0.25, set-ups 1.44 -> 0.96, restates 0.62 -> 0.50; quotable closers and repeats unchanged.
+Character 7.5 -> 7.5, talk 7.7 -> 7.8. Fewer for Kiana, Della, Nonna Maria and Mrs. Witherspoon;
+Denny and Earl about even.
+
 A separate meaning check (original vs edited) found most "losses" were the knocked-down half of
 the reframes, which is the point; the guards below exist because unguarded runs also dropped
 hedges, pet names and jokes.
