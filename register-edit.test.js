@@ -84,6 +84,16 @@ test('applyEdits makes exact local edits and leaves every other byte alone', () 
   assert.equal(out.text, "%%%chuckling%%% Well.\n\nTheir ears go on the high notes first, usually. That dog ain't deaf, hon, he's negotiatin'. Ruthie used to laugh at that.");
 });
 
+test('a sentence whose closing clause was cut keeps its end mark', () => {
+  const t = "Folks ain't gonna care much what your intentions were, and that's about the size of it. Ask yourself if you'd say it to your boss." + ' More porch talk here.'.repeat(14);
+  const out = applyEdits(t, [{ kind: 'padding', before: "Folks ain't gonna care much what your intentions were, and that's about the size of it.", after: "Folks ain't gonna care much what your intentions were," }]);
+  assert.equal(out.accepted.length, 1);
+  assert.ok(out.text.startsWith("Folks ain't gonna care much what your intentions were. Ask yourself"));
+  const cut = applyEdits(t, [{ kind: 'padding', before: "and that's about the size of it.", after: '' }]);
+  assert.equal(cut.accepted.length, 1);
+  assert.ok(cut.text.startsWith("Folks ain't gonna care much what your intentions were. Ask yourself"), cut.text.slice(0, 80));
+});
+
 test('protected spans (links, inline code) cannot be edited', () => {
   const t = 'Check `npm test` first. Here is the link: https://example.com/a and that is that, okay friend.' + ' More words here.'.repeat(20);
   const out = applyEdits(t, [{ kind: 'setup', before: 'Here is the link: https://example.com/a', after: 'https://example.com/a' }]);

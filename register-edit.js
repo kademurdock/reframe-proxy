@@ -216,7 +216,10 @@ function applyEdits(text, edits, debugEdits = false) {
   const accepted = [], rejected = [];
   for (const e of Array.isArray(edits) ? edits.slice(0, MAX_EDITS) : []) {
     const before = typeof e?.before === 'string' ? e.before : '';
-    const after = typeof e?.after === 'string' ? e.after.trim() : null;
+    let after = typeof e?.after === 'string' ? e.after.trim() : null;
+    // A clause cut from the end of a sentence must not leave it ending on a comma.
+    const end = before.trim().match(/[.!?…]["”’']?$/);
+    if (after && end && /[,;:—–-]$/.test(after)) after = after.replace(/\s*[,;:—–-]$/, end[0]);
     const kind = String(e?.kind || '').toLowerCase();
     if (!before || after === null || before === after || before.trim() === after) continue;
     const at = text.indexOf(before);
@@ -234,6 +237,13 @@ function applyEdits(text, edits, debugEdits = false) {
     // A deletion takes the space before it too, so no double spaces or blank-led lines remain.
     let start = a.start;
     if (after === '') while (start > 0 && /[ \t]/.test(out[start - 1])) start--;
+    // Deleting the closing clause of a sentence ("..., and that's about the size of it.") must
+    // not leave the sentence ending on the comma before it.
+    const end = a.before.trim().match(/[.!?…]["”’']?$/);
+    if (after === '' && end && start > 0 && /[,;:—–-]/.test(out[start - 1])) {
+      start--;
+      after = end[0];
+    }
     out = out.slice(0, start) + after + out.slice(a.end);
   }
   out = out.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
