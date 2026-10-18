@@ -65,6 +65,9 @@ test('guards: tags, numbers, hedges, pet names and names must survive; deletions
   assert.equal(checkEdit("There's real reasons for it.", '', 'setup'), '');
   assert.equal(checkEdit('It works.', 'It works haha.', 'maxim'), 'laugh added');
   assert.equal(checkEdit('Short.', 'A much much longer replacement sentence that keeps on going and going past its place.', 'maxim'), 'grew');
+  // A rewrite may swap a word or two; a handful of new content words means it added something.
+  assert.equal(checkEdit("It's hot bean water, friend. Drink it how you like it.", "It's hot bean water, friend. I drink mine black and I don't think less of you for cream in it.", 'maxim'), 'new words');
+  assert.equal(checkEdit("It isn't laziness, it's his joints.", "It's his joints, I reckon.", 'contrast'), '');
   // A name still said elsewhere in the reply was only a repeat.
   assert.equal(checkEdit('So Ruthie was right.', '', 'padding', 'Ruthie used to laugh.'), '');
 });

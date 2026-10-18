@@ -191,7 +191,24 @@ function checkEdit(before, after, kind, rest = '') {
   if ((after.match(LAUGH_RE) || []).length > (before.match(LAUGH_RE) || []).length) return 'laugh added';
   if (/[\r\n]/.test(after) && !/[\r\n]/.test(before)) return 'new line break';
   if (after.length > before.length * 1.5 + 40) return 'grew';
+  if (newWords(after, before + ' ' + rest) > MAX_NEW_WORDS) return 'new words';
   return '';
+}
+
+/* A rewrite says the same thing in other words, so a few new words are normal ("ain't" for "isn't",
+ * "reckon"); a handful of new content words means it added something ("and honestly? Respect"). */
+const MAX_NEW_WORDS = 2;
+const COMMON = new Set(('that this with from have just like they them then than what when where which while your about would could should there their really also only even still very much more most some because been being into over such kind sort thing things stuff gets getting going gonna wanna gotta know think yeah okay well honestly actually basically pretty little whole part point mean means said says make makes made take takes good real right sure maybe probably usually often other another every each both same different first last next back down here time times people folks somebody someone something anything nothing everything').split(' '));
+function newWords(after, source) {
+  const have = new Set((String(source).toLowerCase().match(/[a-z][a-z'’]+/g) || []).map((w) => w.replace(/['’]/g, '')));
+  const stems = new Set([...have].map((w) => w.slice(0, 5)));
+  let n = 0;
+  for (const raw of String(after).replace(TAG_RE, ' ').toLowerCase().match(/[a-z][a-z'’]+/g) || []) {
+    const w = raw.replace(/['’]/g, '');
+    if (w.length < 4 || COMMON.has(w) || have.has(w) || stems.has(w.slice(0, 5))) continue;
+    n++;
+  }
+  return n;
 }
 
 function applyEdits(text, edits, debugEdits = false) {
