@@ -70,6 +70,9 @@ const crypto = require('crypto');
 const { detect } = require('./reframe-filter');
 const { detectSlop } = require('./slop-filter');
 const { detectStockPhrasing, repairPhrases } = require('./phrase-repair');
+/* Oct 18 2026: the register edit (register-edit.js). Kill: KADE_REGISTER_EDIT=0. */
+const { registerEdit } = require('./register-edit');
+const registerEditCounts = {};
 const PHRASE_REPAIR_ON = process.env.KADE_PHRASE_REPAIR !== '0';
 const PHRASE_REPAIR_MODEL = (process.env.KADE_PHRASE_REPAIR_MODEL || 'deepseek/deepseek-v4.1-flash').trim();
 const { detectDrift, driftSteerNote, steerRequest, steerOpinions } = require('./cadence-drift');
@@ -162,6 +165,8 @@ app.get('/health', (req, res) => {
   if ((req.headers['authorization'] || '') === `Bearer ${PROXY_SHARED_SECRET}`) {
     out.zai = zaiPulse.snapshot();
     out.replyFocus = { enabled: REPLY_FOCUS_ON, counts: { ...replyFocusCounts } };
+    out.registerEdit = { enabled: process.env.KADE_REGISTER_EDIT !== '0', passes: process.env.KADE_REGISTER_PASSES || '1',
+      model: process.env.KADE_REGISTER_EDIT_MODEL || 'xiaomi/mimo-v2.6-flash', counts: { ...registerEditCounts } };
     out.jev = { enabled: jev.enabled(), model: jev.MODEL, counts: { ...jev.counts } };
   }
   res.json(out);
@@ -2395,6 +2400,27 @@ async function detectAndRewrite(result, upstreamBody) {
     } catch (err) {
       console.error('[slop] rewrite pass failed, keeping original reply:', err.message);
       slopStats.outcome('rewrite_failed');
+    }
+  }
+  /* Oct 18 2026 — THE REGISTER EDIT (register-edit.js). Kade: "What I care about is rigidity, like
+   * saying the same thing in so many words just because it sounds nice on the page." Prompt notes
+   * did not move it on MiMo or DeepSeek; an editor after the reply did (judged shapes about 30%
+   * fewer across six characters, character and talk scores held). Exact local edits only, the
+   * sentences it does not name stay byte-for-byte, any failure keeps the text. Phone-live turns,
+   * desks, lyrics, machine lanes and JSON never reach this point. Kill: KADE_REGISTER_EDIT=0. */
+  if (typeof registerEdit === 'function' && process.env.KADE_REGISTER_EDIT !== '0' &&
+      typeof choice.message.content === 'string') {
+    const before = choice.message.content;
+    const edited = await registerEdit(before, upstreamBody, { complete: callOpenRouterOnce });
+    let status = edited.status;
+    if (status === 'edited' && COHERENCE_ON && coherenceTells(edited.text, before.length).length) status = 'incoherent';
+    if (status === 'edited') choice.message.content = edited.text;
+    registerEditCounts[status] = (registerEditCounts[status] || 0) + 1;
+    if (status !== 'skipped' && status !== 'off') {
+      console.log('[register-edit] ' + JSON.stringify({ id: result.id, status, reason: edited.reason, character: edited.name,
+        elapsedMs: edited.elapsedMs, chars: [before.length, choice.message.content.length],
+        passes: (edited.passes || []).map((p) => ({ status: p.status, ms: p.ms, host: p.host, kinds: p.kinds, rejected: p.rejected, errorType: p.errorType })),
+        usage: edited.usage && { prompt: edited.usage.prompt_tokens, completion: edited.usage.completion_tokens, cost: edited.usage.cost } }));
     }
   }
   // Review the final prose, after cleanup. Nothing rewrites an accepted
