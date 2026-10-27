@@ -331,6 +331,8 @@ const {
   adaptForGlm,
   isWordlessTurn,
   rescueWordlessTurn,
+  takeThinkDeadline,
+  THINK_RESCUE_WAIT_MS,
   isSensitiveBlockedTurn,
   sensitiveBlockedNotice,
   stripPriorImages,
@@ -3749,6 +3751,28 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     ]);
   }
 
+  /* Oct 27 2026 — THE THINK DEADLINE (modelbudget.js). At the caller's mark,
+   * a turn that has only thought so far is cut; the wordless guard below then
+   * asks for the answer with thinking off and the model's notes. Screen lane
+   * only: phone turns never think long, and the shim keeps its own buffering. */
+  const thinkDeadlineMs = !phoneLive && !shimActive && isReasoningModel(upstreamBody.model) ? req._thinkDeadlineMs : null;
+  let thinkDeadlineHit = false;
+  let thinkTimer = thinkDeadlineMs
+    ? setTimeout(() => {
+        thinkTimer = null;
+        if (contentAccum.length || toolMode || hangup.aborted) return;
+        thinkDeadlineHit = true;
+        console.warn(`[req ${reqId}] THINK DEADLINE: ${thinkDeadlineMs}ms and no words yet (${reasoningAccum.length} reasoning chars) -- cutting the thought and asking for the answer`);
+        try { reader.cancel().catch(() => {}); } catch (e) {}
+      }, Math.max(0, thinkDeadlineMs - (Date.now() - t0)))
+    : null;
+  function stopThinkTimer() {
+    if (thinkTimer) {
+      clearTimeout(thinkTimer);
+      thinkTimer = null;
+    }
+  }
+
   try {
     while (true) {
       const { done, value } = await readWithIdleTimeout();
@@ -3980,6 +4004,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   } catch (err) {
     console.error(`[req ${reqId}] streaming read error at ${Date.now() - t0}ms: ${err.name} ${err.message}, contentAccum.length=${contentAccum.length}, toolMode=${toolMode}`);
     stopHeartbeat();
+    stopThinkTimer();
     streamAborted = true;
     if (toolMode) {
       // already streaming live; best we can do is end the response
@@ -3990,6 +4015,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   }
 
   stopHeartbeat();
+  stopThinkTimer();
+  /* The deadline's own cut is a thought that ran out of time, the same as a thought that ran out
+   * of tokens: the wordless guard takes it as finish=length, and it is no dead connection, so the
+   * truncation retry (which would think again from the start) never sees it. */
+  if (thinkDeadlineHit) {
+    finishReason = 'length';
+    streamAborted = false;
+  }
   console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, reasoningAccum.length=${reasoningAccum.length}, finishReason=${finishReason}`);
   console.log(`[req ${reqId}] served by provider=${upstreamProvider || '(not reported)'}`);
   if (usage) {
@@ -4222,7 +4255,19 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
      * so the shim and phone lanes share ONE rescue instead of copies (the
      * spec's extract-never-duplicate rule — a second copy is the same shape
      * as the predicate that sat in two places and disarmed the guard). */
-    const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered', signal: hangup });
+    /* Oct 27 2026: a caller with a think deadline gets the thought carried into the re-ask,
+     * whether the deadline or the token budget ended it, and the line stays warm while the
+     * answer is written (a song takes 30-90 s with thinking off). */
+    const rescueBeat = thinkDeadlineMs
+      ? setInterval(() => { if (!res.writableEnded) { try { res.write(': keep-alive\n\n'); } catch (e) {} } }, HEARTBEAT_MS)
+      : null;
+    let rescued;
+    try {
+      rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered', signal: hangup,
+        notes: thinkDeadlineMs ? reasoningAccum : '', callTimeoutMs: thinkDeadlineMs ? THINK_RESCUE_WAIT_MS : undefined });
+    } finally {
+      if (rescueBeat) clearInterval(rescueBeat);
+    }
     if (rescued) {
       contentAccum = rescued.text;
       finishReason = rescued.finishReason;
@@ -4400,6 +4445,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     // deltas into the SAME stored think part the injection used to
     // create, so persistence/auto-title/TTS behavior is unchanged.
     console.log(`[req ${reqId}] reasoning streamed live (${reasoningAccum.length} chars) -- <think> injection skipped`);
+  } else if (thinkDeadlineMs) {
+    /* Oct 27 2026: a caller with a think deadline (the Sound Booth desk) reads only the words, and a
+     * <think> block in them would land in the song. Its thought went into the rescue as notes. */
+    console.log(`[req ${reqId}] think deadline lane: ${reasoningAccum.length} reasoning chars kept out of the content`);
   } else if (reasoningAccum.length > 0 && result.choices[0].message.content.length > 0) {
     const seed = {
       id: result.id,
@@ -4565,6 +4614,11 @@ app.post('/chat/completions', async (req, res) => {
   // Armed first, so a hang-up during the Jev pre-pass or auto-think still counts.
   const hangup = clientHangupSignal(res, reqId);
   req._hangup = hangup;
+  /* Oct 27 2026: a caller's think deadline (THE THINK DEADLINE, modelbudget.js).
+   * Taken off the body here so no provider ever sees it; only handleStreaming uses it. */
+  const thinkDeadline = takeThinkDeadline(req.body);
+  req.body = thinkDeadline.body;
+  req._thinkDeadlineMs = thinkDeadline.deadlineMs;
 
   /* Part 97: the tool-fumble escalator — must sit BEFORE the tool shim so the
    * shim's model-specific decision sees the model this call will actually run. */

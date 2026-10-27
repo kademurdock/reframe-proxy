@@ -209,8 +209,12 @@ function isWordlessTurn({ model, finishReason, contentLength, reasoningLength = 
  * Oct 16 2026: `signal` is the client's hang-up (server.js clientHangupSignal).
  * A caller who already left gets no paid re-ask, and one who leaves mid-rescue
  * cancels it.
+ *
+ * Oct 27 2026: `notes` is the model's own reasoning from the turn being
+ * rescued, carried into the re-ask so the thinking it already did is used (see
+ * THE THINK DEADLINE below). Only a caller that set a think deadline gets them.
  */
-async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeoutMs = 0, lane = 'buffered', signal }) {
+async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeoutMs = 0, callTimeoutMs, lane = 'buffered', signal, notes = '' }) {
   if (signal && signal.aborted) {
     console.warn(`[req ${reqId}] wordless rescue (${lane}) skipped -- the client already hung up`);
     return null;
@@ -224,7 +228,14 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
     /* Part 141.3: on x-ai "reasoning off" must be SAID -- a bare body lets
      * Grok pick, and Grok picks thinking. */
     if (isXaiModel(fallbackBody.model) || isMimoModel(fallbackBody.model)) fallbackBody.reasoning = { effort: 'none', enabled: false, exclude: false };
-    let call = callOpenRouter(fallbackBody, undefined, signal);
+    const notesMessage = thinkNotesMessage(notes);
+    if (notesMessage && Array.isArray(fallbackBody.messages)) {
+      fallbackBody.messages = [...fallbackBody.messages, { role: 'user', content: notesMessage }];
+      console.log(`[req ${reqId}] wordless rescue (${lane}) carries ${notesMessage.length} chars of the model's own notes`);
+    }
+    /* `callTimeoutMs` widens the one non-stream wait (default 90 s, then a retry from
+     * scratch): a whole song with thinking off can take longer on a slow night. */
+    let call = callOpenRouter(fallbackBody, callTimeoutMs, signal);
     if (timeoutMs > 0) {
       call = Promise.race([
         call,
@@ -245,6 +256,55 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
     console.warn(`[req ${reqId}] wordless rescue (${lane}) failed: ${e.message} -- leaving the turn as it was`);
     return null;
   }
+}
+
+/* ⭐ OCT 27 2026 — THE THINK DEADLINE. Kade: the Sound Booth "works for like
+ * fifteen minutes and ends up with nothing at the end, no matter what setting
+ * it's on." MiMo's thinking has no length of its own: reasoning.max_tokens is
+ * ignored, effort 'low' is not short, and on the song desk's 42k-char prompt
+ * the draft thought until something stopped it. Medium spent 16,384 tokens in
+ * 486 s and wrote no words (req l6rfz9); Auto was voted deep and thought 510 s
+ * until the fork gave up (req 5udqua). A caller that cannot wait forever sends
+ * `kade_think_deadline_ms`: at that mark, if no words have come yet, the
+ * stream is cut and the wordless rescue asks for the answer with thinking off,
+ * handing the model its own notes so the thought is used, not thrown away.
+ * Only the screen lane honours it (handleStreaming); the field never reaches a
+ * provider. Kill: KADE_THINK_DEADLINE=0 ignores the field (it is still removed).
+ */
+const THINK_DEADLINE_MIN_MS = 5000;
+const THINK_DEADLINE_MAX_MS = 1800000;
+/* The rescue after a deadline writes the whole answer in one non-stream call. A song with
+ * thinking off took 17-29 s in testing; on a slow night it can pass the usual 90 s wait,
+ * whose retry would start the song over. The caller's own hang-up is the real wall. */
+const THINK_RESCUE_WAIT_MS = Math.max(30000, Number(process.env.KADE_THINK_RESCUE_MS || 240000) || 240000);
+function takeThinkDeadline(body) {
+  if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'kade_think_deadline_ms')) return { body, deadlineMs: null };
+  const { kade_think_deadline_ms: asked, ...rest } = body;
+  const ms = Number(asked);
+  const usable = process.env.KADE_THINK_DEADLINE !== '0' && Number.isFinite(ms) && ms >= THINK_DEADLINE_MIN_MS && ms <= THINK_DEADLINE_MAX_MS;
+  return { body: rest, deadlineMs: usable ? Math.round(ms) : null };
+}
+
+/* The notes are the model's own reasoning from the cut turn. A long thought
+ * keeps its opening (how it read the request) and its latest stretch (where
+ * it got to); the middle goes. Nobody but the model reads this message. */
+const THINK_NOTES_HEAD_CHARS = 4000;
+const THINK_NOTES_TAIL_CHARS = 28000;
+function thinkNotesMessage(notes) {
+  const text = String(notes || '').trim();
+  if (!text) return '';
+  /* Never cut between the two halves of an emoji or other surrogate pair. */
+  const lowHalf = (i) => i > 0 && i < text.length && /[\uDC00-\uDFFF]/.test(text[i]);
+  let head = THINK_NOTES_HEAD_CHARS;
+  if (lowHalf(head)) head -= 1;
+  let tail = text.length - THINK_NOTES_TAIL_CHARS;
+  if (lowHalf(tail)) tail += 1;
+  const kept = text.length <= THINK_NOTES_HEAD_CHARS + THINK_NOTES_TAIL_CHARS
+    ? text
+    : `${text.slice(0, head)}\n[...]\n${text.slice(tail)}`;
+  return 'Your time for thinking about this request is over. These are your own private notes from thinking about it. They are unfinished, and nobody else will see them.\n\n'
+    + `<notes>\n${kept}\n</notes>\n\n`
+    + 'Now write your complete reply to the request above, in exactly the format it asks for. Use whatever in the notes is good. Do not mention the notes or your thinking.';
 }
 
 /* ⭐ AUG 28 2026 — THE SENSITIVE BLOCK GETS A VOICE. Her first two native-
@@ -347,6 +407,9 @@ module.exports = {
   adaptForGlm,
   isWordlessTurn,
   rescueWordlessTurn,
+  takeThinkDeadline,
+  thinkNotesMessage,
+  THINK_RESCUE_WAIT_MS,
   isSensitiveBlockedTurn,
   sensitiveBlockedNotice,
   stripPriorImages,
