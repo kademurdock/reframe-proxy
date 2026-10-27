@@ -3753,7 +3753,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
 
   /* Oct 27 2026 — THE THINK DEADLINE (modelbudget.js). At the caller's mark,
    * a turn that has only thought so far is cut; the wordless guard below then
-   * asks for the answer with thinking off and the model's notes. Screen lane
+   * asks for the answer with thinking off, from a plan made of its notes. Screen lane
    * only: phone turns never think long, and the shim keeps its own buffering. */
   const thinkDeadlineMs = !phoneLive && !shimActive && isReasoningModel(upstreamBody.model) ? req._thinkDeadlineMs : null;
   let thinkDeadlineHit = false;
@@ -4255,9 +4255,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
      * so the shim and phone lanes share ONE rescue instead of copies (the
      * spec's extract-never-duplicate rule — a second copy is the same shape
      * as the predicate that sat in two places and disarmed the guard). */
-    /* Oct 27 2026: a caller with a think deadline gets the thought carried into the re-ask,
-     * whether the deadline or the token budget ended it, and the line stays warm while the
-     * answer is written (a song takes 30-90 s with thinking off). */
+    /* Oct 27 2026: a caller with a think deadline gets the thought carried into the re-ask as a
+     * plan, whether the deadline or the token budget ended it, and the line stays warm while the
+     * plan and the answer are written (a song took 17-53 s with thinking off). */
     const rescueBeat = thinkDeadlineMs
       ? setInterval(() => { if (!res.writableEnded) { try { res.write(': keep-alive\n\n'); } catch (e) {} } }, HEARTBEAT_MS)
       : null;

@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
-const { takeThinkDeadline, thinkNotesMessage, rescueWordlessTurn } = require('./modelbudget');
+const { takeThinkDeadline, thinkNotesMessage, thinkPlanMessage, rescueWordlessTurn } = require('./modelbudget');
 
 const SOURCE = fs.readFileSync(require.resolve('./server.js'), 'utf8');
 
@@ -71,6 +71,8 @@ const json = (value) => () => ({ ok: true, status: 200,
   headers: { get: (key) => key === 'content-type' ? 'application/json' : null }, text: async () => JSON.stringify(value) });
 const RESCUE = { choices: [{ index: 0, message: { role: 'assistant', content: 'TITLE: Recovered\nLyrics:\n[Verse 1]\nA line.' }, finish_reason: 'stop' }] };
 const OFF = { effort: 'none', enabled: false, exclude: false };
+const PLAN = { choices: [{ index: 0, message: { role: 'assistant', content: 'Plan: a dog song, hook in the chorus. Keep: "he steals the light".' }, finish_reason: 'stop' }] };
+const RAN_ON = { choices: [{ index: 0, message: { role: 'assistant', content: 'Wait, let me fix that verse. 1: try this. 2: no.' }, finish_reason: 'length' }] };
 const song = (extra = {}) => ({ model: 'xiaomi/mimo-v2.6-pro', stream: true, reasoning: { enabled: true, effort: 'medium', exclude: true },
   max_tokens: 16384, messages: [{ role: 'system', content: 'Write the song in the delivery format.' }, { role: 'user', content: 'A song about a dog.' }], ...extra });
 
@@ -127,7 +129,8 @@ test('thinkNotesMessage: empty notes add nothing; a long thought keeps its openi
   assert.equal(thinkNotesMessage('   '), '');
   const short = thinkNotesMessage(NOTE);
   assert.match(short, /<notes>\nThe chorus should land/);
-  assert.match(short, /Now write your complete reply/);
+  assert.match(short, /Write a short plan from them/);
+  assert.match(thinkPlanMessage('Plan here.'), /<plan>\nPlan here\.\n<\/plan>[\s\S]*Show no working/);
   const long = 'A'.repeat(4000) + 'M'.repeat(50000) + 'Z'.repeat(28000);
   const capped = thinkNotesMessage(long);
   assert.ok(capped.includes('A'.repeat(4000) + '\n[...]\n' + 'Z'.repeat(28000)));
@@ -135,35 +138,72 @@ test('thinkNotesMessage: empty notes add nothing; a long thought keeps its openi
   assert.ok(capped.length < 33000);
 });
 
-test('rescueWordlessTurn: notes ride as a last user message, thinking off', async () => {
+test('rescueWordlessTurn: notes become a short plan, the answer is written from the plan with thinking off and a cap', async () => {
   const sent = [];
-  const callOpenRouter = async (body) => { sent.push(body); return RESCUE; };
+  const replies = [PLAN, RESCUE, RESCUE];
+  const callOpenRouter = async (body, wait) => { sent.push({ body, wait }); return replies.shift(); };
   const upstreamBody = song();
-  const quiet = { log() {}, warn() {} };
   const keep = { log: console.log, warn: console.warn };
-  Object.assign(console, quiet);
+  Object.assign(console, { log() {}, warn() {} });
   try {
-    const got = await rescueWordlessTurn({ upstreamBody, reqId: 't1', callOpenRouter, notes: NOTE });
+    const got = await rescueWordlessTurn({ upstreamBody, reqId: 't1', callOpenRouter, notes: NOTE, callTimeoutMs: 150000 });
     assert.match(got.text, /Recovered/);
     const without = await rescueWordlessTurn({ upstreamBody, reqId: 't2', callOpenRouter });
     assert.match(without.text, /Recovered/);
   } finally {
     Object.assign(console, keep);
   }
-  assert.equal(sent[0].messages.length, 3);
-  assert.equal(sent[0].messages[2].role, 'user');
-  assert.match(sent[0].messages[2].content, /<notes>\nThe chorus should land/);
-  assert.deepEqual(sent[0].reasoning, OFF);
-  assert.equal(sent[0].stream, false);
-  assert.equal(sent[1].messages.length, 2, 'no notes, no extra message: the old rescue exactly');
+  const [plan, write, plain] = sent;
+  assert.equal(plan.body.max_tokens, 700);
+  assert.equal(plan.wait, 40000);
+  assert.deepEqual(plan.body.reasoning, OFF);
+  assert.equal(plan.body.messages.length, 2, 'the plan call reads only the notes, not the 42k-char prompt');
+  assert.match(plan.body.messages[1].content, /<notes>\nThe chorus should land/);
+  assert.equal(write.body.messages.length, 3);
+  assert.match(write.body.messages[2].content, /<plan>\nPlan: a dog song/);
+  assert.doesNotMatch(JSON.stringify(write.body.messages), /<notes>/, 'raw notes never reach the writer');
+  assert.equal(write.body.max_tokens, 4000, 'the answer is capped');
+  assert.equal(write.wait, 150000);
+  assert.deepEqual(write.body.reasoning, OFF);
+  assert.equal(write.body.stream, false);
+  assert.equal(plain.body.messages.length, 2, 'no notes, no extra message: the old rescue exactly');
+  assert.equal(plain.body.max_tokens, 16384, 'and no cap');
   assert.equal(upstreamBody.messages.length, 2, 'the turn body is not mutated');
+});
+
+test('rescueWordlessTurn: an answer that runs to its cap is written again with no plan; a failed plan writes with none', async () => {
+  const keep = { log: console.log, warn: console.warn };
+  const logs = [];
+  Object.assign(console, { log: (m) => logs.push(m), warn: (m) => logs.push(m) });
+  try {
+    const sent = [];
+    const replies = [PLAN, RAN_ON, RESCUE];
+    const call = async (body) => { sent.push(body); return replies.shift(); };
+    const got = await rescueWordlessTurn({ upstreamBody: song(), reqId: 'r1', callOpenRouter: call, notes: NOTE });
+    assert.match(got.text, /Recovered/);
+    assert.equal(sent.length, 3);
+    assert.ok(!sent[2].messages.some((m) => /<plan>|<notes>/.test(String(m.content))), 'the second write has no plan');
+    assert.equal(sent[2].max_tokens, 4000);
+    assert.ok(logs.some((m) => /ran to its 4000-token cap -- writing again with no plan/.test(m)));
+
+    const sent2 = [];
+    const replies2 = [new Error('plan host down'), RESCUE];
+    const call2 = async (body) => { sent2.push(body); const r = replies2.shift(); if (r instanceof Error) throw r; return r; };
+    const got2 = await rescueWordlessTurn({ upstreamBody: song(), reqId: 'r2', callOpenRouter: call2, notes: NOTE });
+    assert.match(got2.text, /Recovered/);
+    assert.equal(sent2.length, 2);
+    assert.ok(!sent2[1].messages.some((m) => /<plan>|<notes>/.test(String(m.content))));
+    assert.ok(logs.some((m) => /plan failed: plan host down -- writing with no plan/.test(m)));
+  } finally {
+    Object.assign(console, keep);
+  }
 });
 
 test('streaming: at the deadline a turn with only thoughts is cut and answered from its notes', async () => {
   const s = server();
   const res = response();
   const up = thinking([THOUGHT]);
-  s.queue.push(up.fixture, json(RESCUE));
+  s.queue.push(up.fixture, json(PLAN), json(RESCUE));
   const done = s.post(song({ kade_think_deadline_ms: 210000 }), res);
   await untilWaiting(up.state);
   assert.equal(Object.hasOwn(s.calls[0], 'kade_think_deadline_ms'), false, 'the provider never sees the field');
@@ -173,15 +213,18 @@ test('streaming: at the deadline a turn with only thoughts is cut and answered f
   timer.fn();
   await done;
   assert.equal(up.state.cancelled, true, 'the thought was cut upstream');
-  assert.equal(s.calls.length, 2);
-  const rescue = s.calls[1];
+  assert.equal(s.calls.length, 3, 'the thought, the plan, the answer');
+  assert.match(s.calls[1].messages[1].content, /<notes>[\s\S]*The chorus should land on the hook/);
+  assert.equal(s.waits[1], 40000);
+  const rescue = s.calls[2];
   assert.equal(rescue.stream, false);
   assert.deepEqual(rescue.reasoning, OFF);
+  assert.equal(rescue.max_tokens, 4000);
   assert.equal(Object.hasOwn(rescue, 'kade_think_deadline_ms'), false);
-  assert.equal(s.waits[1], 150000, 'the whole song gets 150 s a try (two fit the 5 minutes the booth keeps), not 90 s');
+  assert.equal(s.waits[2], 150000, 'the whole song gets 150 s a try (two fit the 5 minutes the booth keeps), not 90 s');
   const last = rescue.messages[rescue.messages.length - 1];
   assert.equal(last.role, 'user');
-  assert.match(last.content, /<notes>[\s\S]*The chorus should land on the hook/);
+  assert.match(last.content, /<plan>\nPlan: a dog song/);
   assert.match(res.raw, /Recovered/);
   assert.match(res.raw, /\[DONE\]/);
   assert.ok(s.logs.some((line) => line.includes('THINK DEADLINE: 210000ms')));
@@ -213,11 +256,12 @@ test('streaming: with a deadline set, a token-budget stop also hands over the no
   const frames = [THOUGHT, frame({}, 'length'), 'data: [DONE]\n\n'];
   const pending = frames.map((f) => Buffer.from(f));
   s.queue.push(() => ({ ok: true, status: 200, headers: { get: (key) => key === 'content-type' ? 'text/event-stream' : null },
-    body: { getReader: () => ({ read: async () => pending.length ? { done: false, value: pending.shift() } : { done: true }, cancel: async () => {} }) } }), json(RESCUE));
+    body: { getReader: () => ({ read: async () => pending.length ? { done: false, value: pending.shift() } : { done: true }, cancel: async () => {} }) } }), json(PLAN), json(RESCUE));
   await s.post(song({ kade_think_deadline_ms: 300000 }), res);
-  assert.equal(s.calls.length, 2);
-  const last = s.calls[1].messages[s.calls[1].messages.length - 1];
-  assert.match(last.content, /<notes>[\s\S]*The chorus should land/);
+  assert.equal(s.calls.length, 3);
+  assert.match(s.calls[1].messages[1].content, /<notes>[\s\S]*The chorus should land/);
+  const last = s.calls[2].messages[s.calls[2].messages.length - 1];
+  assert.match(last.content, /<plan>/);
   assert.match(res.raw, /Recovered/);
   assert.ok(!s.logs.some((line) => line.includes('THINK DEADLINE')), 'the model stopped by itself');
 });
@@ -267,7 +311,7 @@ test('streaming: a thought cut before the bubble showed a sentence never lands i
   const res = response();
   const unfinished = frame({ role: 'assistant', reasoning: 'weighing the hook against the second verse without a full stop yet' });
   const up = thinking([unfinished]);
-  s.queue.push(up.fixture, json(RESCUE));
+  s.queue.push(up.fixture, json(PLAN), json(RESCUE));
   const done = s.post(song({ kade_think_deadline_ms: 90000 }), res);
   await untilWaiting(up.state);
   deadlineTimer(s).fn();

@@ -228,23 +228,38 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
     /* Part 141.3: on x-ai "reasoning off" must be SAID -- a bare body lets
      * Grok pick, and Grok picks thinking. */
     if (isXaiModel(fallbackBody.model) || isMimoModel(fallbackBody.model)) fallbackBody.reasoning = { effort: 'none', enabled: false, exclude: false };
-    const notesMessage = thinkNotesMessage(notes);
-    if (notesMessage && Array.isArray(fallbackBody.messages)) {
-      fallbackBody.messages = [...fallbackBody.messages, { role: 'user', content: notesMessage }];
-      console.log(`[req ${reqId}] wordless rescue (${lane}) carries ${notesMessage.length} chars of the model's own notes`);
+    /* Oct 27 2026: the thought is carried as a short PLAN, never as raw notes. Handed its raw
+     * chain back, the writer went on thinking out loud inside the answer in 2 of 8 real songs
+     * ("Wait, that's a weekday. Let me fix:", numbered tries; 30k and 44k chars, 300 and 571
+     * "sung" lines). A plan has no train of thought to continue. The written answer is capped,
+     * and one that runs to the cap is written again with no plan. */
+    const withNotes = !!String(notes || '').trim() && Array.isArray(fallbackBody.messages);
+    if (withNotes) {
+      fallbackBody.max_tokens = Math.min(Number(fallbackBody.max_tokens) || THINK_RESCUE_MAX_TOKENS, THINK_RESCUE_MAX_TOKENS);
+      delete fallbackBody.max_completion_tokens;
     }
+    const plainBody = { ...fallbackBody };
+    const plan = withNotes ? await thinkPlan({ notes, fallbackBody, callOpenRouter, signal, reqId, lane }) : '';
+    if (plan) fallbackBody.messages = [...fallbackBody.messages, { role: 'user', content: thinkPlanMessage(plan) }];
     /* `callTimeoutMs` widens the one non-stream wait (default 90 s, then a retry from
      * scratch): a whole song with thinking off can take longer on a slow night. */
-    let call = callOpenRouter(fallbackBody, callTimeoutMs, signal);
-    if (timeoutMs > 0) {
-      call = Promise.race([
-        call,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`rescue window (${timeoutMs}ms) closed`)), timeoutMs),
-        ),
-      ]);
+    const ask = (body) => {
+      let call = callOpenRouter(body, callTimeoutMs, signal);
+      if (timeoutMs > 0) {
+        call = Promise.race([
+          call,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`rescue window (${timeoutMs}ms) closed`)), timeoutMs),
+          ),
+        ]);
+      }
+      return call;
+    };
+    let fb = await ask(fallbackBody);
+    if (plan && fb && fb.choices && fb.choices[0] && fb.choices[0].finish_reason === 'length') {
+      console.warn(`[req ${reqId}] wordless rescue (${lane}) from the plan ran to its ${fallbackBody.max_tokens}-token cap -- writing again with no plan`);
+      fb = await ask(plainBody);
     }
-    const fb = await call;
     const fbText = fb && fb.choices && fb.choices[0] && fb.choices[0].message && fb.choices[0].message.content;
     if (typeof fbText === 'string' && fbText.trim().length > 0) {
       console.log(`[req ${reqId}] wordless rescue (${lane}) landed ${fbText.length} chars`);
@@ -267,7 +282,7 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
  * until the fork gave up (req 5udqua). A caller that cannot wait forever sends
  * `kade_think_deadline_ms`: at that mark, if no words have come yet, the
  * stream is cut and the wordless rescue asks for the answer with thinking off,
- * handing the model its own notes so the thought is used, not thrown away.
+ * from a short plan made of its own notes, so the thought is used, not thrown away.
  * Only the screen lane honours it (handleStreaming); the field never reaches a
  * provider. Kill: KADE_THINK_DEADLINE=0 ignores the field (it is still removed).
  */
@@ -286,9 +301,47 @@ function takeThinkDeadline(body) {
   return { body: rest, deadlineMs: usable ? Math.round(ms) : null };
 }
 
+/* The answer written after a cut is capped: a whole song is about 900-1,500 tokens, so the cap
+ * only ever stops an answer that has gone on thinking out loud. */
+const THINK_RESCUE_MAX_TOKENS = Math.max(1000, Number(process.env.KADE_THINK_RESCUE_MAX_TOKENS || 4000) || 4000);
+const THINK_PLAN_MAX_TOKENS = 700;
+const THINK_PLAN_WAIT_MS = 40000;
+
+/* The model's notes become a short plan in one quick call with thinking off. Any failure or an
+ * empty plan returns '' and the answer is written with no plan, which is the old rescue exactly. */
+async function thinkPlan({ notes, fallbackBody, callOpenRouter, signal, reqId, lane }) {
+  try {
+    const planBody = {
+      model: fallbackBody.model,
+      ...(fallbackBody.provider ? { provider: fallbackBody.provider } : {}),
+      ...(fallbackBody.models ? { models: fallbackBody.models } : {}),
+      stream: false,
+      max_tokens: THINK_PLAN_MAX_TOKENS,
+      reasoning: fallbackBody.reasoning || { effort: 'none', enabled: false, exclude: false },
+      messages: [
+        { role: 'system', content: 'You turn rough working notes into a short, clean plan. You never continue the work yourself.' },
+        { role: 'user', content: thinkNotesMessage(notes) },
+      ],
+    };
+    const r = await callOpenRouter(planBody, THINK_PLAN_WAIT_MS, signal);
+    const choice = r && r.choices && r.choices[0];
+    const plan = String((choice && choice.message && choice.message.content) || '').trim();
+    if (!plan) {
+      console.warn(`[req ${reqId}] wordless rescue (${lane}) got no plan from ${String(notes).length} chars of notes -- writing with no plan`);
+      return '';
+    }
+    console.log(`[req ${reqId}] wordless rescue (${lane}) made a ${plan.length}-char plan from ${String(notes).length} chars of the model's own notes`);
+    return plan.slice(0, 4000);
+  } catch (e) {
+    if (signal && signal.aborted) throw e;
+    console.warn(`[req ${reqId}] wordless rescue (${lane}) plan failed: ${e.message} -- writing with no plan`);
+    return '';
+  }
+}
+
 /* The notes are the model's own reasoning from the cut turn. A long thought
  * keeps its opening (how it read the request) and its latest stretch (where
- * it got to); the middle goes. Nobody but the model reads this message. */
+ * it got to); the middle goes. Only the plan call reads this message. */
 const THINK_NOTES_HEAD_CHARS = 4000;
 const THINK_NOTES_TAIL_CHARS = 28000;
 function thinkNotesMessage(notes) {
@@ -303,9 +356,16 @@ function thinkNotesMessage(notes) {
   const kept = text.length <= THINK_NOTES_HEAD_CHARS + THINK_NOTES_TAIL_CHARS
     ? text
     : `${text.slice(0, head)}\n[...]\n${text.slice(tail)}`;
-  return 'Your time for thinking about this request is over. These are your own private notes from thinking about it. They are unfinished, and nobody else will see them.\n\n'
+  return 'These are rough working notes for a reply that has not been written yet:\n\n'
     + `<notes>\n${kept}\n</notes>\n\n`
-    + 'Now write your complete reply to the request above, in exactly the format it asks for. Use whatever in the notes is good. Do not mention the notes or your thinking.';
+    + 'Write a short plan from them in at most 250 words: what the reply will say or do, its parts in order, and up to eight finished lines or phrases from the notes worth keeping word for word. Plain sentences and a short list. Do not write the reply itself, and show no working.';
+}
+
+/* The plan rides into the answer as a last user message. */
+function thinkPlanMessage(plan) {
+  return 'Your time for thinking about this request is over. This is the plan you made while thinking. It is private, and nobody else will see it.\n\n'
+    + `<plan>\n${String(plan || '').trim()}\n</plan>\n\n`
+    + 'Now write your complete reply to the request above, finished, in exactly the format it asks for. Show no working: no drafts, no checks, no notes, and no mention of the plan.';
 }
 
 /* ⭐ AUG 28 2026 — THE SENSITIVE BLOCK GETS A VOICE. Her first two native-
@@ -410,7 +470,9 @@ module.exports = {
   rescueWordlessTurn,
   takeThinkDeadline,
   thinkNotesMessage,
+  thinkPlanMessage,
   THINK_RESCUE_WAIT_MS,
+  THINK_RESCUE_MAX_TOKENS,
   isSensitiveBlockedTurn,
   sensitiveBlockedNotice,
   stripPriorImages,
