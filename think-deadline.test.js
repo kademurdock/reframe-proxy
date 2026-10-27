@@ -178,7 +178,7 @@ test('streaming: at the deadline a turn with only thoughts is cut and answered f
   assert.equal(rescue.stream, false);
   assert.deepEqual(rescue.reasoning, OFF);
   assert.equal(Object.hasOwn(rescue, 'kade_think_deadline_ms'), false);
-  assert.equal(s.waits[1], 240000, 'the whole song gets one long wait, not 90 s and a retry from scratch');
+  assert.equal(s.waits[1], 150000, 'the whole song gets 150 s a try (two fit the 5 minutes the booth keeps), not 90 s');
   const last = rescue.messages[rescue.messages.length - 1];
   assert.equal(last.role, 'user');
   assert.match(last.content, /<notes>[\s\S]*The chorus should land on the hook/);

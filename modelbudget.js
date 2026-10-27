@@ -273,10 +273,11 @@ async function rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, timeout
  */
 const THINK_DEADLINE_MIN_MS = 5000;
 const THINK_DEADLINE_MAX_MS = 1800000;
-/* The rescue after a deadline writes the whole answer in one non-stream call. A song with
- * thinking off took 17-29 s in testing; on a slow night it can pass the usual 90 s wait,
- * whose retry would start the song over. The caller's own hang-up is the real wall. */
-const THINK_RESCUE_WAIT_MS = Math.max(30000, Number(process.env.KADE_THINK_RESCUE_MS || 240000) || 240000);
+/* The rescue after a deadline writes the whole answer in one non-stream call, retried once from
+ * scratch if no answer comes (callOpenRouterTimeoutGuarded). A song with thinking off took 17-53 s
+ * in testing, and once stalled past 3 minutes on a busy night, so each try waits 150 s: two tries
+ * fit the 5 minutes the Sound Booth keeps for the words. The caller's hang-up is the real wall. */
+const THINK_RESCUE_WAIT_MS = Math.max(30000, Number(process.env.KADE_THINK_RESCUE_MS || 150000) || 150000);
 function takeThinkDeadline(body) {
   if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'kade_think_deadline_ms')) return { body, deadlineMs: null };
   const { kade_think_deadline_ms: asked, ...rest } = body;
