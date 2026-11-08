@@ -3133,12 +3133,18 @@ async function maybeAutoThink(body, reqId = '??????', decision = null) {
      * Nov 8 2026: KADE_MIMO_QUICK=deadline thinks at effort low AND always gets
      * the chat think deadline's quick limit (handleStreaming arms it from the
      * `quickDeadline` flag, even with KADE_CHAT_THINK_DEADLINE off). Unset or
-     * 'low' behave exactly as before. */
+     * 'low' behave exactly as before. Only where the limit can arm: a call turn,
+     * and any caller that did not say deadlineCapable (the non-stream route, a
+     * shim or phone turn), rides instant as before -- never unbounded low. */
     const mimoQuick = process.env.KADE_MIMO_QUICK;
     let quickDeadline = false;
-    if (tier === 'quick' && isMimoModel(cleaned.model) && mimoQuick === 'deadline') {
+    const deadlineArmable = !isCall && !!(decision && decision.deadlineCapable);
+    if (tier === 'quick' && isMimoModel(cleaned.model) && mimoQuick === 'deadline' && deadlineArmable) {
       console.log(`[auto-think][req ${reqId}] MiMo: quick thinks at effort low under a time limit (KADE_MIMO_QUICK=deadline)`);
       quickDeadline = true;
+    } else if (tier === 'quick' && isMimoModel(cleaned.model) && mimoQuick === 'deadline') {
+      console.log(`[auto-think][req ${reqId}] MiMo: quick ridden as instant (KADE_MIMO_QUICK=deadline, but no time limit can arm on this turn)`);
+      tier = 'instant';
     } else if (tier === 'quick' && isMimoModel(cleaned.model) && mimoQuick !== 'low') {
       console.log(`[auto-think][req ${reqId}] MiMo: quick ridden as instant (KADE_MIMO_QUICK=low to think)`);
       tier = 'instant';
@@ -3432,7 +3438,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     }
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
-  const autoThinkDecision = {};
+  /* Nov 8 2026 (review): deadlineCapable tells maybeAutoThink whether a chat think deadline can
+   * arm on this turn. KADE_MIMO_QUICK=deadline only makes a quick vote think where it can: not on
+   * a phone turn, not on a shim turn, not behind a caller's own (unusable) deadline value. */
+  const autoThinkDecision = {
+    deadlineCapable: !phoneLive && !shimActive && !(req._thinkDeadlineAsked && !req._thinkDeadlineMs),
+  };
   upstreamBody = await maybeAutoThink(upstreamBody, reqId, autoThinkDecision);
   upstreamBody = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(upstreamBody)))))));
   // Nov 8 2026: the chat think deadline (inert unless switched on; see armChatThinkDeadline).
@@ -4333,6 +4344,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * turn sailed through with the guard standing right there. THE PERSON CANNOT
    * SEE REASONING. THEY CAN ONLY SEE WORDS. Zero words is a failed turn, full
    * stop, whatever the provider called it and whatever it spent getting there. */
+  /* Nov 8 2026 (review): set when the chat rescue lane served this turn, so the truncation
+   * retry below never re-asks it with full thinking and no time limit. */
+  let chatRescued = false;
   if (isWordlessTurn({
     model: upstreamBody.model,
     finishReason,
@@ -4383,6 +4397,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     if (rescued) {
       contentAccum = rescued.text;
       finishReason = rescued.finishReason;
+      if (thinkDeadlineMs && chatThinkLane) chatRescued = true;
     }
   }
 
@@ -4466,7 +4481,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     (finishReason === 'error' || streamAborted) &&
     contentAccum.length > 0 &&
     !toolMode &&
-    !phoneLive
+    !phoneLive &&
+    /* Nov 8 2026 (review): a chat-rescued turn is never re-asked here. The retry resends the
+     * original body (thinking on, no deadline): exactly the wait the chat deadline cut. */
+    !chatRescued
   ) {
     console.warn(`[req ${reqId}] stream died mid-generation (${streamAborted ? 'connection aborted' : 'finish=error'}) with ${contentAccum.length} partial chars -- re-asking once rather than serving half a reply`);
     try {

@@ -17,7 +17,8 @@ MiMo chat turns have no time limit on their thinking. The Sound Booth's think de
   - **Plan:** made on MiMo Flash with `models` deleted, the Flash host order, 250 tokens, a 10 s window and thinking off. Zero retention and data-collection deny are kept.
   - **Writer:** the turn's own model, thinking off, a 60 s window, capped at 4,000 tokens. It sees **only the plan**, never the raw thought.
   - **Tool calls:** if the writer answers with `tool_calls`, that message goes to the client intact. The rescue never serves an empty turn.
-  - **Fallback:** if the plan or the writer fails, comes back empty or runs to its cap, there is one plain thinking-off write. If that fails too, the turn takes the existing path.
+  - **Fallback:** if the plan or the writer fails, comes back empty, runs to its cap or dies mid-reply (`finish=error`), there is one plain thinking-off write. If that fails too, the turn takes the existing path.
+  - **No re-ask with thinking on:** a rescued chat turn never goes to the truncation retry (`KADE_RETRY_TRUNCATED`), which would resend the original body with thinking on and no limit. A writer that died mid-reply is served with `finish_reason: length`.
 
 ## Switches
 
@@ -28,7 +29,7 @@ MiMo chat turns have no time limit on their thinking. The Sound Booth's think de
 | `KADE_CHAT_THINK_DEADLINE_DEEP_MS` | 45000 | A deep vote |
 | `KADE_CHAT_THINK_DEADLINE_EXPLICIT_MS` | 75000 | The Deep button, a character's effort setting, or anything else that thinks |
 | `KADE_CHAT_THINK_DEADLINE_TOOLSTEP_MS` | 15000 | An agent step whose last message is a tool result |
-| `KADE_MIMO_QUICK` | unset | Unset: quick rides instant. `low`: quick thinks at low with no limit. **`deadline`**: quick thinks at low **and always gets the quick limit, even with the master switch off**. |
+| `KADE_MIMO_QUICK` | unset | Unset: quick rides instant. `low`: quick thinks at low with no limit. **`deadline`**: quick thinks at low **and always gets the quick limit, even with the master switch off**. Only where the limit can arm: on a call turn, a shim turn, the non-stream route, or behind a caller's unusable `kade_think_deadline_ms`, quick rides instant as if unset. |
 
 All values in ms are clamped to the range 5 s to 30 min.
 
@@ -41,6 +42,7 @@ All values in ms are clamped to the range 5 s to 30 min.
 
 - `[chat-think][req X] armed <ms> tier=<quick|deep|explicit|toolstep>`
 - `[auto-think][req X] MiMo: quick thinks at effort low under a time limit (KADE_MIMO_QUICK=deadline)`
+- `[auto-think][req X] MiMo: quick ridden as instant (KADE_MIMO_QUICK=deadline, but no time limit can arm on this turn)`
 - `THINK DEADLINE: <ms>ms and no words yet ...` (the existing cut line)
 - `[chat-think][req X] rescue path: plan then write` / `plain write (a N-char thought is a host stall, no plan)` / `plain write (fallback...)`
 - `[chat-think][req X] rescue: made a N-char plan from M chars of thought` / `plan failed (...)` / `write from the plan came back empty`
@@ -61,7 +63,7 @@ The plan call on Flash uses `CHAT_PLAN_SYSTEM` and `CHAT_NOTES_MESSAGE`. These a
 
 ## Known gaps
 
-- **Non-stream turns:** the deadline is honoured on the streaming screen lane only. A non-stream request with `KADE_MIMO_QUICK=deadline` thinks at low with no limit. LibreChat chat streams, so this is not expected in practice.
+- **Non-stream turns:** the deadline is honoured on the streaming screen lane only. Under `KADE_MIMO_QUICK=deadline` a non-stream quick vote rides instant (it cannot be limited), and `KADE_CHAT_THINK_DEADLINE=1` arms nothing there.
 - **Usage metering:** a cut turn's rescue calls (plan and writer) are not added to `usage`. This is the same as the booth rescue.
 - **Agent steps:** each agent step is voted and limited on its own. A three-step tool turn can take up to three limits plus their rescues.
 - **The reasoning bubble:** it shows the thought up to the cut. On the chat lane the gateway keeps the ordinary bubble. The booth's "no `<think>` in the content" rule stays booth-only.

@@ -257,6 +257,41 @@ test('KADE_MIMO_QUICK=deadline: a quick vote thinks at effort low and gets the q
   await finish(d);
 });
 
+/* Review fix: the switch may only make a quick vote think where a time limit can arm. */
+test('KADE_MIMO_QUICK=deadline never thinks unbounded: call turns, non-stream and shim callers ride instant', async () => {
+  // A call turn with the Aug 14 router restored (KADE_CALL_INSTANT_DEFAULT=0): quick stays instant.
+  const p = server({ KADE_MIMO_QUICK: 'deadline', KADE_CALL_INSTANT_DEFAULT: '0' });
+  p.queue.push(vote('quick'), speaks('Stay put if the rent gap is big.'));
+  await p.post(chat({ messages: [
+    { role: 'system', content: 'You are a friendly helper.' },
+    { role: 'user', content: `${LONG_ASK} [PHONE CALL from a caller]` },
+  ] }), response());
+  assert.equal(p.calls.length, 2, 'the vote and the reply');
+  assert.notEqual(p.calls[1].reasoning?.enabled, true, 'the call turn does not think');
+  assert.ok(!p.timers.some((x) => String(x.fn).includes('THINK DEADLINE')));
+  assert.ok(!p.logs.some((l) => l.includes('[chat-think]')));
+  assert.ok(p.logs.some((l) => l.includes('no time limit can arm on this turn')));
+
+  // maybeAutoThink straight: only a caller that says deadlineCapable gets the thinking quick.
+  const s = server({ KADE_MIMO_QUICK: 'deadline' });
+  const run = vm.runInContext('maybeAutoThink', s.context);
+  s.queue.push(vote('quick'));
+  const nonStream = await run(chat(), 'x'); // the non-stream route passes no decision
+  assert.notEqual(nonStream.reasoning?.enabled, true);
+  s.queue.push(vote('quick'));
+  const shim = { deadlineCapable: false }; // handleStreaming on a shim or phone turn
+  const shimOut = await run(chat(), 'x', shim);
+  assert.equal(shim.tier, 'instant');
+  assert.equal(shim.quickDeadline, undefined);
+  assert.notEqual(shimOut.reasoning?.enabled, true);
+  s.queue.push(vote('quick'));
+  const web = { deadlineCapable: true };
+  const webOut = await run(chat(), 'x', web);
+  assert.equal(web.tier, 'quick');
+  assert.equal(web.quickDeadline, true);
+  assert.equal(webOut.reasoning.effort, 'low');
+});
+
 test('maybeAutoThink reports its decision without changing what it returns', async () => {
   const s = server({});
   const run = vm.runInContext('maybeAutoThink', s.context);
@@ -363,6 +398,28 @@ test('rescue: an empty write from the plan falls back to one plain write', async
   assert.equal(s.calls[2].messages.length, s.calls[0].messages.length + 1, 'the first write carried the plan');
   assert.match(res.raw, /shorter commute/);
   assert.ok(s.logs.some((l) => l.includes('rescue path: plain write (fallback')));
+});
+
+/* Review fix: a rescue writer that dies mid-reply (finish=error) must not trip the truncation
+ * retry, which would resend the original body with thinking on and no time limit. */
+test('rescue: a writer that dies mid-reply is served as cut, never re-asked with thinking on', async () => {
+  const { s, res } = await cutTurn(SHORT_THOUGHT, reply('If mornings are the rough part, the shorter', 'error'));
+  assert.equal(s.calls.length, 2, 'the thought and one plain write: no truncation retry');
+  assert.ok(!s.logs.some((l) => l.includes('stream died mid-generation')));
+  assert.match(res.raw, /If mornings are the rough part, the shorter/);
+  assert.match(res.raw, /"finish_reason":"length"/);
+  assert.doesNotMatch(res.raw, /"finish_reason":"error"/);
+
+  // From the plan: a died write falls back to one plain write, like a capped one.
+  const body = { model: 'xiaomi/mimo-v2.6-pro', messages: [{ role: 'user', content: 'hi' }] };
+  const sent = [];
+  const replies = [PLAN, reply('Half an ans', 'error'), ANSWER];
+  const call = async (b) => { sent.push(b); return replies.shift(); };
+  const got = await quiet(() => rescueChatThought({ upstreamBody: body, reqId: 'e', callOpenRouter: call, notes: LONG_THOUGHT }));
+  assert.equal(sent.length, 3);
+  assert.match(got.out.text, /shorter commute/);
+  assert.equal(got.out.finishReason, 'stop');
+  assert.ok(got.logs.some((l) => l.includes('the write from the plan died mid-reply')));
 });
 
 test('rescueChatThought: plan or writer failures fall back to a plain write; all failing returns null', async () => {

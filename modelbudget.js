@@ -511,8 +511,13 @@ async function rescueChatThought({ upstreamBody, reqId, callOpenRouter, signal, 
       return { text: got.text, finishReason: 'tool_calls', toolCalls: got.toolCalls };
     }
     console.log(`[chat-think][req ${reqId}] landed ${got.text.length} chars via ${path}`);
-    return { text: got.text, finishReason: got.finishReason };
+    /* A writer that died mid-reply (finish=error) is served as cut ('length'), never as
+     * 'error': server.js re-asks an 'error' turn with the original body, thinking on and no
+     * time limit -- the very wait this lane exists to end. */
+    return { text: got.text, finishReason: got.finishReason === 'error' ? 'length' : got.finishReason };
   };
+  /* A write that ran to its cap or died mid-reply is not a finished answer. */
+  const unfinished = (got) => got.finishReason === 'length' || got.finishReason === 'error';
 
   let fromPlan = null;
   if (thought.length < CHAT_SHORT_THOUGHT_CHARS) {
@@ -523,14 +528,14 @@ async function rescueChatThought({ upstreamBody, reqId, callOpenRouter, signal, 
     if (plan) {
       console.log(`[chat-think][req ${reqId}] rescue path: plan then write`);
       fromPlan = await write({ ...writerBody, messages: [...(writerBody.messages || []), { role: 'user', content: chatPlanMessage(plan) }] }, 'write from the plan');
-      if (fromPlan && (fromPlan.toolCalls || fromPlan.finishReason !== 'length')) return landed(fromPlan, 'the plan');
+      if (fromPlan && (fromPlan.toolCalls || !unfinished(fromPlan))) return landed(fromPlan, 'the plan');
     }
     if (signal && signal.aborted) return null;
-    console.log(`[chat-think][req ${reqId}] rescue path: plain write (fallback${fromPlan ? ': the write from the plan ran to its cap' : ''})`);
+    console.log(`[chat-think][req ${reqId}] rescue path: plain write (fallback${fromPlan ? `: the write from the plan ${fromPlan.finishReason === 'error' ? 'died mid-reply' : 'ran to its cap'}` : ''})`);
   }
   const plain = await write(writerBody, 'plain write');
   if (plain) return landed(plain, 'a plain write');
-  /* A write from the plan that ran to its cap still beats an empty turn. */
+  /* A write from the plan that ran to its cap (or died mid-reply) still beats an empty turn. */
   if (fromPlan) return landed(fromPlan, 'the plan (capped)');
   console.warn(`[chat-think][req ${reqId}] rescue: nothing landed -- leaving the turn as it was`);
   return null;
