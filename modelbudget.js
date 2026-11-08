@@ -1,6 +1,6 @@
 'use strict';
 const { isSolModel, solEffortFor } = require('./sol.js');
-const { isMimoModel } = require('./mimo.js');
+const { isMimoModel, withMimoProvider } = require('./mimo.js');
 /**
  * modelbudget.js — WHO CAN THINK, AND HOW MUCH ROOM THEY GET TO SPEAK.
  *
@@ -344,18 +344,22 @@ async function thinkPlan({ notes, fallbackBody, callOpenRouter, signal, reqId, l
  * it got to); the middle goes. Only the plan call reads this message. */
 const THINK_NOTES_HEAD_CHARS = 4000;
 const THINK_NOTES_TAIL_CHARS = 28000;
+/* Keeps the opening and the latest stretch of a long thought; the middle goes. */
+function keepEnds(text, headChars, tailChars) {
+  /* Never cut between the two halves of an emoji or other surrogate pair. */
+  const lowHalf = (i) => i > 0 && i < text.length && /[\uDC00-\uDFFF]/.test(text[i]);
+  let head = headChars;
+  if (lowHalf(head)) head -= 1;
+  let tail = text.length - tailChars;
+  if (lowHalf(tail)) tail += 1;
+  return text.length <= headChars + tailChars
+    ? text
+    : `${text.slice(0, head)}\n[...]\n${text.slice(tail)}`;
+}
 function thinkNotesMessage(notes) {
   const text = String(notes || '').trim();
   if (!text) return '';
-  /* Never cut between the two halves of an emoji or other surrogate pair. */
-  const lowHalf = (i) => i > 0 && i < text.length && /[\uDC00-\uDFFF]/.test(text[i]);
-  let head = THINK_NOTES_HEAD_CHARS;
-  if (lowHalf(head)) head -= 1;
-  let tail = text.length - THINK_NOTES_TAIL_CHARS;
-  if (lowHalf(tail)) tail += 1;
-  const kept = text.length <= THINK_NOTES_HEAD_CHARS + THINK_NOTES_TAIL_CHARS
-    ? text
-    : `${text.slice(0, head)}\n[...]\n${text.slice(tail)}`;
+  const kept = keepEnds(text, THINK_NOTES_HEAD_CHARS, THINK_NOTES_TAIL_CHARS);
   return 'These are rough working notes for a reply that has not been written yet:\n\n'
     + `<notes>\n${kept}\n</notes>\n\n`
     + 'Write a short plan from them in at most 250 words: what the reply will say or do, its parts in order, and up to eight finished lines or phrases from the notes worth keeping word for word. Plain sentences and a short list. Do not write the reply itself, and show no working.';
@@ -366,6 +370,170 @@ function thinkPlanMessage(plan) {
   return 'Your time for thinking about this request is over. This is the plan you made while thinking. It is private, and nobody else will see it.\n\n'
     + `<plan>\n${String(plan || '').trim()}\n</plan>\n\n`
     + 'Now write your complete reply to the request above, finished, in exactly the format it asks for. Show no working: no drafts, no checks, no notes, and no mention of the plan.';
+}
+
+/* ⭐ NOV 8 2026 — THE CHAT THINK DEADLINE AND ITS RESCUE (CHAT_THINK_DEADLINE.md).
+ * Chat turns on MiMo think with no time limit of their own: the booth's deadline
+ * above was only ever sent by the Sound Booth. server.js can now arm the same
+ * req._thinkDeadlineMs for a chat turn (KADE_CHAT_THINK_DEADLINE=1, or a quick
+ * vote under KADE_MIMO_QUICK=deadline). A chat thought cut at its mark is
+ * rescued HERE, on its own lane, and not by the song wording above:
+ *
+ *   - a thought under CHAT_SHORT_THOUGHT_CHARS is a host stall, not a long
+ *     think: no plan, one plain thinking-off write;
+ *   - otherwise a plan on MiMo Flash (`models` deleted so OpenRouter cannot run
+ *     it on Pro, Flash host order, 250 tokens, 10 s, thinking off, zdr kept);
+ *   - the writer is the turn's own model with thinking off, 60 s, and sees ONLY
+ *     the plan, never the raw thought (the booth lesson: handed its own chain,
+ *     a writer keeps thinking out loud in the answer);
+ *   - a writer that answers with tool_calls has that message returned intact,
+ *     so an agent step still runs its tool (the booth rescue kept only content
+ *     and would have served an empty turn);
+ *   - a plan or writer that fails, times out or comes back empty falls back to
+ *     one plain thinking-off write; if that fails too, null, and server.js
+ *     takes its existing path.
+ * Kill: leave KADE_CHAT_THINK_DEADLINE unset and KADE_MIMO_QUICK not 'deadline'
+ * (nothing is armed, so this never runs). */
+const CHAT_SHORT_THOUGHT_CHARS = 400;
+const CHAT_PLAN_MODEL = 'xiaomi/mimo-v2.6-flash';
+const CHAT_PLAN_MAX_TOKENS = 250;
+const CHAT_PLAN_WAIT_MS = 10000;
+const CHAT_WRITE_WAIT_MS = 60000;
+const CHAT_NOTES_HEAD_CHARS = 2000;
+const CHAT_NOTES_TAIL_CHARS = 12000;
+
+/* ⚠️ PROMPT TEXT KADE REVIEWS. These three strings are the only words the chat
+ * rescue adds to a conversation. Only CHAT_PLAN_MESSAGE reaches the character's
+ * model (as the last user message, with {plan} filled in); the other two go to
+ * the Flash plan call alone. No persona content, on purpose. */
+const CHAT_PLAN_SYSTEM = 'You turn rough notes into a short plan for a chat reply. You never write the reply yourself.';
+const CHAT_NOTES_MESSAGE = 'Rough notes for a chat reply that has not been written yet:\n\n<notes>\n{notes}\n</notes>\n\n'
+  + 'In under 120 words, say plainly what the reply should say or do, in order. Do not write the reply.';
+const CHAT_PLAN_MESSAGE = 'Notes for your reply: {plan}\n\nAnswer the last message now, in your own voice. Don\'t mention these notes.';
+
+function chatNotesMessage(notes) {
+  const text = String(notes || '').trim();
+  if (!text) return '';
+  return CHAT_NOTES_MESSAGE.replace('{notes}', () => keepEnds(text, CHAT_NOTES_HEAD_CHARS, CHAT_NOTES_TAIL_CHARS));
+}
+function chatPlanMessage(plan) {
+  return CHAT_PLAN_MESSAGE.replace('{plan}', () => String(plan || '').trim());
+}
+
+/* One call with a hard window: the call is aborted at `ms` (no retry runs past
+ * it), and a client hang-up aborts it at once. */
+function callWithin(callOpenRouter, body, ms, signal) {
+  const ctl = new AbortController();
+  const onAbort = () => ctl.abort();
+  if (signal) {
+    if (signal.aborted) ctl.abort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+  let timer;
+  const windowClosed = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      ctl.abort();
+      reject(new Error(`${ms}ms window closed`));
+    }, ms);
+  });
+  return Promise.race([Promise.resolve().then(() => callOpenRouter(body, ms, ctl.signal)), windowClosed]).finally(() => {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  });
+}
+
+/* What a reply carries: words, tool calls, or nothing. */
+function replyOf(r) {
+  const choice = r && r.choices && r.choices[0];
+  const message = (choice && choice.message) || {};
+  const text = typeof message.content === 'string' ? message.content : '';
+  const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length ? message.tool_calls : null;
+  return { text, toolCalls, finishReason: (choice && choice.finish_reason) || 'stop' };
+}
+
+async function chatPlan({ notes, writerBody, callOpenRouter, signal, reqId }) {
+  try {
+    const provider = { ...(writerBody.provider || {}) };
+    delete provider.order; // withMimoProvider gives Flash its own host order
+    delete provider.sort;
+    const planBody = withMimoProvider({
+      model: CHAT_PLAN_MODEL,
+      provider,
+      stream: false,
+      max_tokens: CHAT_PLAN_MAX_TOKENS,
+      reasoning: { effort: 'none', enabled: false, exclude: false },
+      messages: [
+        { role: 'system', content: CHAT_PLAN_SYSTEM },
+        { role: 'user', content: chatNotesMessage(notes) },
+      ],
+    }, false);
+    delete planBody.models; // OpenRouter's `models` list outranks `model`: the plan must run on Flash
+    const plan = replyOf(await callWithin(callOpenRouter, planBody, CHAT_PLAN_WAIT_MS, signal)).text.trim();
+    if (!plan) {
+      console.warn(`[chat-think][req ${reqId}] rescue: no plan from ${String(notes).length} chars of thought`);
+      return '';
+    }
+    console.log(`[chat-think][req ${reqId}] rescue: made a ${plan.length}-char plan from ${String(notes).length} chars of thought`);
+    return plan.slice(0, 2000);
+  } catch (e) {
+    console.warn(`[chat-think][req ${reqId}] rescue: plan failed (${e.message})`);
+    return '';
+  }
+}
+
+/**
+ * The chat lane's answer to a cut thought. Returns { text, finishReason,
+ * toolCalls? } or null. Never sends the raw thought to the writer.
+ */
+async function rescueChatThought({ upstreamBody, reqId, callOpenRouter, signal, notes = '' }) {
+  if (signal && signal.aborted) return null;
+  const writerBody = { ...upstreamBody, stream: false };
+  delete writerBody.stream_options;
+  delete writerBody.include_reasoning;
+  delete writerBody.reasoning_effort;
+  delete writerBody.max_completion_tokens;
+  writerBody.reasoning = { effort: 'none', enabled: false, exclude: false };
+  writerBody.max_tokens = Math.min(Number(upstreamBody.max_tokens) || THINK_RESCUE_MAX_TOKENS, THINK_RESCUE_MAX_TOKENS);
+  const thought = String(notes || '').trim();
+  const write = async (body, label) => {
+    try {
+      const got = replyOf(await callWithin(callOpenRouter, body, CHAT_WRITE_WAIT_MS, signal));
+      if (got.toolCalls || got.text.trim()) return got;
+      console.warn(`[chat-think][req ${reqId}] rescue: ${label} came back empty`);
+    } catch (e) {
+      console.warn(`[chat-think][req ${reqId}] rescue: ${label} failed (${e.message})`);
+    }
+    return null;
+  };
+  const landed = (got, path) => {
+    if (got.toolCalls) {
+      console.log(`[chat-think][req ${reqId}] landed ${got.toolCalls.length} tool call(s) via ${path}${got.text ? ` and ${got.text.length} chars` : ''}`);
+      return { text: got.text, finishReason: 'tool_calls', toolCalls: got.toolCalls };
+    }
+    console.log(`[chat-think][req ${reqId}] landed ${got.text.length} chars via ${path}`);
+    return { text: got.text, finishReason: got.finishReason };
+  };
+
+  let fromPlan = null;
+  if (thought.length < CHAT_SHORT_THOUGHT_CHARS) {
+    console.log(`[chat-think][req ${reqId}] rescue path: plain write (a ${thought.length}-char thought is a host stall, no plan)`);
+  } else {
+    const plan = await chatPlan({ notes: thought, writerBody, callOpenRouter, signal, reqId });
+    if (signal && signal.aborted) return null;
+    if (plan) {
+      console.log(`[chat-think][req ${reqId}] rescue path: plan then write`);
+      fromPlan = await write({ ...writerBody, messages: [...(writerBody.messages || []), { role: 'user', content: chatPlanMessage(plan) }] }, 'write from the plan');
+      if (fromPlan && (fromPlan.toolCalls || fromPlan.finishReason !== 'length')) return landed(fromPlan, 'the plan');
+    }
+    if (signal && signal.aborted) return null;
+    console.log(`[chat-think][req ${reqId}] rescue path: plain write (fallback${fromPlan ? ': the write from the plan ran to its cap' : ''})`);
+  }
+  const plain = await write(writerBody, 'plain write');
+  if (plain) return landed(plain, 'a plain write');
+  /* A write from the plan that ran to its cap still beats an empty turn. */
+  if (fromPlan) return landed(fromPlan, 'the plan (capped)');
+  console.warn(`[chat-think][req ${reqId}] rescue: nothing landed -- leaving the turn as it was`);
+  return null;
 }
 
 /* ⭐ AUG 28 2026 — THE SENSITIVE BLOCK GETS A VOICE. Her first two native-
@@ -471,6 +639,19 @@ module.exports = {
   takeThinkDeadline,
   thinkNotesMessage,
   thinkPlanMessage,
+  rescueChatThought,
+  chatNotesMessage,
+  chatPlanMessage,
+  CHAT_PLAN_SYSTEM,
+  CHAT_NOTES_MESSAGE,
+  CHAT_PLAN_MESSAGE,
+  CHAT_SHORT_THOUGHT_CHARS,
+  CHAT_PLAN_MODEL,
+  CHAT_PLAN_MAX_TOKENS,
+  CHAT_PLAN_WAIT_MS,
+  CHAT_WRITE_WAIT_MS,
+  THINK_DEADLINE_MIN_MS,
+  THINK_DEADLINE_MAX_MS,
   THINK_RESCUE_WAIT_MS,
   THINK_RESCUE_MAX_TOKENS,
   isSensitiveBlockedTurn,

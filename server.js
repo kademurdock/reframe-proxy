@@ -331,7 +331,10 @@ const {
   adaptForGlm,
   isWordlessTurn,
   rescueWordlessTurn,
+  rescueChatThought,
   takeThinkDeadline,
+  THINK_DEADLINE_MIN_MS,
+  THINK_DEADLINE_MAX_MS,
   THINK_RESCUE_WAIT_MS,
   isSensitiveBlockedTurn,
   sensitiveBlockedNotice,
@@ -3016,7 +3019,18 @@ async function classifyThinkTier(excerpt, reqId) {
   }
 }
 
-async function maybeAutoThink(body, reqId = '??????') {
+/* Nov 8 2026: `decision` (optional) is an object the caller passes in; it is
+ * filled with what the router decided, so handleStreaming can arm the chat think
+ * deadline where `req` is in scope. tier: 'instant' | 'quick' | 'deep' |
+ * 'explicit' (a caller already chose a real effort: the Deep button or a
+ * character's setting) | 'skip' | 'error'. quickDeadline: true when a MiMo quick
+ * vote thinks only because KADE_MIMO_QUICK=deadline. Filling it changes nothing
+ * the function returns. Kept inline (no helper) so mimo-speed.test.js can still
+ * run this function on its own. */
+async function maybeAutoThink(body, reqId = '??????', decision = null) {
+  const note = (tier, extra = {}) => {
+    if (decision && typeof decision === 'object') Object.assign(decision, { tier, ...extra });
+  };
   try {
     /* Part 67 (Aug 15): every silent exit now names itself. Her live web
      * turns produced ZERO auto-think lines while everything visible looked
@@ -3025,6 +3039,7 @@ async function maybeAutoThink(body, reqId = '??????') {
      * per skip; the next mystery names its own gate. */
     if (!AUTO_DEEPTHINK || !isReasoningModel(body?.model)) {
       console.log(`[auto-think][req ${reqId}] skip: ${!AUTO_DEEPTHINK ? 'KADE_AUTO_DEEPTHINK=0' : `non-reasoning model (${String(body?.model || '(none)')})`}`);
+      note('skip');
       return body;
     }
     const r = body.reasoning || {};
@@ -3037,6 +3052,7 @@ async function maybeAutoThink(body, reqId = '??????') {
     const explicitOff = r.enabled === false && effort === 'none';
     if (r.enabled === true || ['low', 'medium', 'high'].includes(effort) || explicitOff) {
       console.log(`[auto-think][req ${reqId}] skip: explicit choice already made (enabled=${r.enabled === true}, effort=${effort || '(none)'})`);
+      note(explicitOff ? 'instant' : 'explicit');
       return body;
     }
     const msgs = Array.isArray(body.messages) ? body.messages : [];
@@ -3044,6 +3060,7 @@ async function maybeAutoThink(body, reqId = '??????') {
     const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
     if (!hasSystem && !hasTools) {
       console.log(`[auto-think][req ${reqId}] skip: bare title/summarizer shape`);
+      note('skip');
       return body; // titles/summaries: never think
     }
     /* CALLS RIDE AUTO TOO, CAPPED (Aug 14 2026, her ask: "let's turn the phone
@@ -3070,6 +3087,7 @@ async function maybeAutoThink(body, reqId = '??????') {
     const cleaned = stripInstantFromBody(body);
     if (forcedInstant) {
       console.log(`[auto-think][req ${reqId}] fresh [INSTANT] -> effort none, router skipped`);
+      note('instant');
       return { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } };
     }
     /* ⭐ AUG 28 2026 — CALLS START INSTANT, HER CALL: "calls should be on
@@ -3098,6 +3116,7 @@ async function maybeAutoThink(body, reqId = '??????') {
     const CALL_INSTANT = process.env.KADE_CALL_INSTANT_DEFAULT !== '0';
     if (isCall && CALL_INSTANT) {
       console.log(`[auto-think][req ${reqId}] call turn -> instant by default (no classifier, no wait); say "think hard" for deep`);
+      note('instant');
       return { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } };
     }
     const heur = autoThinkHeuristic(excerpt);
@@ -3110,11 +3129,21 @@ async function maybeAutoThink(body, reqId = '??????') {
      * spent a median 2,400 output tokens (up to 8,500) and took a median 77 s against
      * 20 s for instant; reasoning.max_tokens was ignored on both machines tested (Xiaomi, DeepInfra).
      * So the router's quick vote rides instant on MiMo. Deep, a fresh [DEEP THINK]
-     * and agent settings are untouched. Revert: KADE_MIMO_QUICK=low. */
-    if (tier === 'quick' && isMimoModel(cleaned.model) && process.env.KADE_MIMO_QUICK !== 'low') {
+     * and agent settings are untouched. Revert: KADE_MIMO_QUICK=low.
+     * Nov 8 2026: KADE_MIMO_QUICK=deadline thinks at effort low AND always gets
+     * the chat think deadline's quick limit (handleStreaming arms it from the
+     * `quickDeadline` flag, even with KADE_CHAT_THINK_DEADLINE off). Unset or
+     * 'low' behave exactly as before. */
+    const mimoQuick = process.env.KADE_MIMO_QUICK;
+    let quickDeadline = false;
+    if (tier === 'quick' && isMimoModel(cleaned.model) && mimoQuick === 'deadline') {
+      console.log(`[auto-think][req ${reqId}] MiMo: quick thinks at effort low under a time limit (KADE_MIMO_QUICK=deadline)`);
+      quickDeadline = true;
+    } else if (tier === 'quick' && isMimoModel(cleaned.model) && mimoQuick !== 'low') {
       console.log(`[auto-think][req ${reqId}] MiMo: quick ridden as instant (KADE_MIMO_QUICK=low to think)`);
       tier = 'instant';
     }
+    note(tier, quickDeadline ? { quickDeadline } : {});
     if (tier === 'instant') {
       /* Part 67, the last silent path: heuristic-instant used to return with
        * no line at all — which read as "auto-think is broken" the first time
@@ -3189,6 +3218,7 @@ async function maybeAutoThink(body, reqId = '??????') {
     };
   } catch (e) {
     console.log(`[auto-think][req ${reqId}] error, untouched: ${e.message}`);
+    note('error');
     return body;
   }
 }
@@ -3298,6 +3328,61 @@ function withReasoningIncluded(body) {
   return withDeepThinkStripped({ ...body, reasoning });
 }
 
+/* ⭐ NOV 8 2026 — THE CHAT THINK DEADLINE (CHAT_THINK_DEADLINE.md). Chat turns on
+ * MiMo think with no limit of their own (Oct 16: effort 'low' ran a median 77 s;
+ * deep turns 60-100 s). This arms the booth's own mechanism, req._thinkDeadlineMs,
+ * for a chat turn, and marks the lane 'chat' so a cut thought is rescued by
+ * modelbudget.rescueChatThought, not by the song wording.
+ *
+ * Arms only when ALL hold: the turn will think (after adaptForMimo), on a MiMo
+ * model, on the screen lane (not phone-live, not the tool shim), and the caller
+ * sent no kade_think_deadline_ms of its own (usable or not). Then:
+ *   KADE_CHAT_THINK_DEADLINE=1      master switch (default OFF)
+ *     last message is a tool result  -> KADE_CHAT_THINK_DEADLINE_TOOLSTEP_MS (15000)
+ *     quick vote                     -> KADE_CHAT_THINK_DEADLINE_QUICK_MS    (20000)
+ *     deep vote                      -> KADE_CHAT_THINK_DEADLINE_DEEP_MS     (45000)
+ *     explicit (Deep button, a character's effort, anything else that thinks)
+ *                                    -> KADE_CHAT_THINK_DEADLINE_EXPLICIT_MS (75000)
+ *   KADE_MIMO_QUICK=deadline        a quick vote always gets the quick limit,
+ *                                    even with the master switch off.
+ * Rollback: unset KADE_CHAT_THINK_DEADLINE and set KADE_MIMO_QUICK back to unset
+ * or 'low'. With neither set this returns before touching req, so every request
+ * runs exactly as before. Log: `[chat-think][req X] armed <ms> tier=<t>`. */
+function chatThinkMs(name, fallback) {
+  const raw = process.env[name];
+  const ms = raw === undefined || raw === '' ? fallback : Number(raw);
+  if (!Number.isFinite(ms)) return fallback;
+  return Math.min(THINK_DEADLINE_MAX_MS, Math.max(THINK_DEADLINE_MIN_MS, Math.round(ms)));
+}
+function armChatThinkDeadline(req, body, decision, { phoneLive, shimActive, reqId }) {
+  const master = process.env.KADE_CHAT_THINK_DEADLINE === '1';
+  const quickForced = !!(decision && decision.quickDeadline);
+  if (!master && !quickForced) return null;
+  if (req._thinkDeadlineAsked || req._thinkDeadlineMs) return null; // the caller's own deadline stands
+  if (phoneLive || shimActive) return null;
+  if (!isMimoModel(body && body.model)) return null;
+  const r = (body && body.reasoning) || {};
+  if (r.enabled !== true) return null; // adaptForMimo has settled it: this turn will not think
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  // appendReminder adds a system note after the conversation; the step is named by what came before it.
+  let at = msgs.length - 1;
+  while (at >= 0 && msgs[at] && msgs[at].role === 'system') at--;
+  const last = msgs[at];
+  let tier;
+  if (quickForced && !master) tier = 'quick';
+  else if (last && last.role === 'tool') tier = 'toolstep';
+  else if (decision && (decision.tier === 'quick' || decision.tier === 'deep')) tier = decision.tier;
+  else tier = 'explicit';
+  const ms = tier === 'toolstep' ? chatThinkMs('KADE_CHAT_THINK_DEADLINE_TOOLSTEP_MS', 15000)
+    : tier === 'quick' ? chatThinkMs('KADE_CHAT_THINK_DEADLINE_QUICK_MS', 20000)
+      : tier === 'deep' ? chatThinkMs('KADE_CHAT_THINK_DEADLINE_DEEP_MS', 45000)
+        : chatThinkMs('KADE_CHAT_THINK_DEADLINE_EXPLICIT_MS', 75000);
+  req._thinkDeadlineMs = ms;
+  req._thinkDeadlineLane = 'chat';
+  console.log(`[chat-think][req ${reqId}] armed ${ms} tier=${tier}`);
+  return { ms, tier };
+}
+
 // -- streaming handler -------------------------------------------------------
 // Reads OpenRouter's SSE stream. Buffers raw events until it can tell whether
 // this is a TOOL-CALL turn (-> flip to live passthrough) or a pure CONTENT
@@ -3347,8 +3432,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     }
   } catch {}
   console.log(`[req ${reqId}] handleStreaming start, reasoning=${JSON.stringify(upstreamBody.reasoning)}${phoneLive ? ', PHONE turn -> live content passthrough' : ''}`);
-  upstreamBody = await maybeAutoThink(upstreamBody, reqId);
+  const autoThinkDecision = {};
+  upstreamBody = await maybeAutoThink(upstreamBody, reqId, autoThinkDecision);
   upstreamBody = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(upstreamBody)))))));
+  // Nov 8 2026: the chat think deadline (inert unless switched on; see armChatThinkDeadline).
+  armChatThinkDeadline(req, upstreamBody, autoThinkDecision, { phoneLive, shimActive, reqId });
+  const chatThinkLane = req._thinkDeadlineLane === 'chat';
   // Session 22 (Kade: "Check caching, because that saves money in multiple
   // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
   // repeated ~9K-token prefix -> cached_tokens 8192, hit rate $0.16/M vs
@@ -4263,10 +4352,33 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       : null;
     let rescued;
     try {
-      rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered', signal: hangup,
-        notes: thinkDeadlineMs ? reasoningAccum : '', callTimeoutMs: thinkDeadlineMs ? THINK_RESCUE_WAIT_MS : undefined });
+      /* Nov 8 2026: a chat turn armed by armChatThinkDeadline takes the chat lane (plan on
+       * Flash, writer sees only the plan, tool calls pass through); the booth keeps its own. */
+      rescued = thinkDeadlineMs && chatThinkLane
+        ? await rescueChatThought({ upstreamBody, reqId, callOpenRouter, signal: hangup, notes: reasoningAccum })
+        : await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered', signal: hangup,
+          notes: thinkDeadlineMs ? reasoningAccum : '', callTimeoutMs: thinkDeadlineMs ? THINK_RESCUE_WAIT_MS : undefined });
     } finally {
       if (rescueBeat) clearInterval(rescueBeat);
+    }
+    /* A chat rescue whose writer called a tool: hand the client that message intact (the
+     * tool-shim path's shape), so the agent runs its tool instead of getting an empty turn. */
+    if (rescued && Array.isArray(rescued.toolCalls) && rescued.toolCalls.length && !hangup.aborted) {
+      const toolTurn = {
+        id: template?.id,
+        object: 'chat.completion',
+        created: template?.created,
+        model: template?.model || upstreamBody.model,
+        choices: [{ index: 0, message: { role: 'assistant', content: rescued.text || '', tool_calls: rescued.toolCalls }, finish_reason: 'tool_calls' }],
+        usage,
+      };
+      if (!res.headersSent) {
+        res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      }
+      res.write(buildFakeSSE(toolTurn));
+      res.end();
+      console.log(`[req ${reqId}] chat-think rescue tool turn sent at ${Date.now() - t0}ms (${rescued.toolCalls.length} call(s))`);
+      return;
     }
     if (rescued) {
       contentAccum = rescued.text;
@@ -4445,9 +4557,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     // deltas into the SAME stored think part the injection used to
     // create, so persistence/auto-title/TTS behavior is unchanged.
     console.log(`[req ${reqId}] reasoning streamed live (${reasoningAccum.length} chars) -- <think> injection skipped`);
-  } else if (thinkDeadlineMs) {
+  } else if (thinkDeadlineMs && !chatThinkLane) {
     /* Oct 27 2026: a caller with a think deadline (the Sound Booth desk) reads only the words, and a
-     * <think> block in them would land in the song. Its thought went into the rescue as notes. */
+     * <think> block in them would land in the song. Its thought went into the rescue as notes.
+     * Nov 8 2026: a chat turn armed by the gateway itself keeps the ordinary bubble below. */
     console.log(`[req ${reqId}] think deadline lane: ${reasoningAccum.length} reasoning chars kept out of the content`);
   } else if (reasoningAccum.length > 0 && result.choices[0].message.content.length > 0) {
     const seed = {
@@ -4616,6 +4729,9 @@ app.post('/chat/completions', async (req, res) => {
   req._hangup = hangup;
   /* Oct 27 2026: a caller's think deadline (THE THINK DEADLINE, modelbudget.js).
    * Taken off the body here so no provider ever sees it; only handleStreaming uses it. */
+  /* Nov 8 2026: whether the caller sent the field at all, usable or not, so the chat think
+   * deadline (armChatThinkDeadline) never overrides a caller's own choice. */
+  req._thinkDeadlineAsked = !!req.body && typeof req.body === 'object' && Object.hasOwn(req.body, 'kade_think_deadline_ms');
   const thinkDeadline = takeThinkDeadline(req.body);
   req.body = thinkDeadline.body;
   req._thinkDeadlineMs = thinkDeadline.deadlineMs;
