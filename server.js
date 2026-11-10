@@ -1918,6 +1918,43 @@ function withProviderExclusion(body) {
 // real-cost rule (is_byok decides whether upstream_inference_cost is extra)
 // lives in one place. See usage-cost.js.
 const { sumUsage, costNote } = require('./usage-cost');
+/* Nov 10 2026: the rescue lanes (plan call, writer call, a second plain write) made paid calls
+ * whose usage was dropped, so the caller billed nothing for them and no log line named them.
+ * This wraps the model call and keeps the real usage of every answer that came back; nothing
+ * is estimated (a call that reported no usage adds none). */
+function meterCalls(call) {
+  const meter = { usage: null, calls: 0 };
+  const metered = async (...args) => {
+    const out = await call(...args);
+    if (out && out.usage) {
+      meter.usage = sumUsage(meter.usage, out.usage);
+      meter.calls += 1;
+    }
+    return out;
+  };
+  return { metered, meter };
+}
+/* Nov 10 2026: a tool-call step is passed through raw, so its usage frame was never read here:
+ * no "upstream usage" line (the cost of every tool step was missing from the log) and no Z.AI
+ * meter note. The client still got the frame. This reads the last usage frame out of the tail
+ * of what was forwarded; it changes nothing on the wire. */
+const TOOL_TAIL_MAX = 16384;
+function usageFromSseTail(tail) {
+  const lines = String(tail || '').split(String.fromCharCode(10));
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.startsWith('data:') || !line.includes('"usage"')) continue;
+    try {
+      const parsed = JSON.parse(line.slice(5).trim());
+      if (parsed && parsed.usage && typeof parsed.usage === 'object') return parsed.usage;
+    } catch {}
+  }
+  return null;
+}
+function noteRescueUsage(reqId, meter) {
+  if (!meter.usage) return;
+  console.log(`[req ${reqId}] rescue usage (${meter.calls} call(s)): prompt=${meter.usage.prompt_tokens ?? '?'} completion=${meter.usage.completion_tokens ?? '?'}${costNote(meter.usage)}`);
+}
 
 // ── Protect Kiana's TTS-2 sentinel tags through the slop-rewrite pass ────────
 // Kiana writes performance directions wrapped in U+F003/U+F004 (see
@@ -3846,10 +3883,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     if (currentEvent) flush += currentEvent + '\n\n';
     if (leftoverBuffer) flush += leftoverBuffer;
     if (flush) res.write(flush);
+    if (flush) toolTail = flush.slice(-TOOL_TAIL_MAX);
     if (TOOLWIRE_DEBUG && flush) wireLog += flush.slice(0, Math.max(0, 1800 - wireLog.length));
     rawPending = '';
   }
 
+  let toolTail = '';
   function readWithIdleTimeout() {
     return Promise.race([
       reader.read(),
@@ -3889,6 +3928,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       if (toolMode) {
         // already committed to live passthrough — forward raw bytes as-is
         res.write(text);
+        toolTail = (toolTail + text).slice(-TOOL_TAIL_MAX);
         if (TOOLWIRE_DEBUG) wireLog += text.slice(0, Math.max(0, 1800 - wireLog.length));
         continue;
       }
@@ -4133,6 +4173,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   }
   console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, reasoningAccum.length=${reasoningAccum.length}, finishReason=${finishReason}`);
   console.log(`[req ${reqId}] served by provider=${upstreamProvider || '(not reported)'}`);
+  if (toolMode && !usage) usage = usageFromSseTail(toolTail);
   if (usage) {
     const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;
     console.log(`[req ${reqId}] upstream usage: prompt=${usage.prompt_tokens ?? '?'} cached=${cached} completion=${usage.completion_tokens ?? '?'}${cached ? ` -- CACHE HIT ${Math.round((cached / (usage.prompt_tokens || 1)) * 100)}%` : ' -- no cache hit'}${costNote(usage)}`);
@@ -4373,16 +4414,20 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       ? setInterval(() => { if (!res.writableEnded) { try { res.write(': keep-alive\n\n'); } catch (e) {} } }, HEARTBEAT_MS)
       : null;
     let rescued;
+    const rescueCalls = meterCalls(callOpenRouter);
     try {
       /* Nov 8 2026: a chat turn armed by armChatThinkDeadline takes the chat lane (plan on
        * Flash, writer sees only the plan, tool calls pass through); the booth keeps its own. */
       rescued = thinkDeadlineMs && chatThinkLane
-        ? await rescueChatThought({ upstreamBody, reqId, callOpenRouter, signal: hangup, notes: reasoningAccum })
-        : await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'buffered', signal: hangup,
+        ? await rescueChatThought({ upstreamBody, reqId, callOpenRouter: rescueCalls.metered, signal: hangup, notes: reasoningAccum })
+        : await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter: rescueCalls.metered, lane: 'buffered', signal: hangup,
           notes: thinkDeadlineMs ? reasoningAccum : '', callTimeoutMs: thinkDeadlineMs ? THINK_RESCUE_WAIT_MS : undefined });
     } finally {
       if (rescueBeat) clearInterval(rescueBeat);
     }
+    /* What the rescue's own calls spent rides back with the turn, landed or not. */
+    noteRescueUsage(reqId, rescueCalls.meter);
+    if (rescueCalls.meter.usage) usage = sumUsage(usage, rescueCalls.meter.usage);
     /* A chat rescue whose writer called a tool: hand the client that message intact (the
      * tool-shim path's shape), so the agent runs its tool instead of getting an empty turn. */
     if (rescued && Array.isArray(rescued.toolCalls) && rescued.toolCalls.length && !hangup.aborted) {
@@ -4852,8 +4897,11 @@ app.post('/chat/completions', async (req, res) => {
     })
   ) {
     console.warn(`[req ${reqId}] WORDLESS TURN CAUGHT on non-stream (finish=${choice.finish_reason}, 0 content, model=${upstreamBody.model}) -- re-asking once with reasoning off`);
-    const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter, lane: 'non-stream', signal: hangup });
+    const rescueCalls = meterCalls(callOpenRouter);
+    const rescued = await rescueWordlessTurn({ upstreamBody, reqId, callOpenRouter: rescueCalls.metered, lane: 'non-stream', signal: hangup });
     if (hangup.aborted) return;
+    noteRescueUsage(reqId, rescueCalls.meter);
+    if (rescueCalls.meter.usage) result.usage = sumUsage(result.usage, rescueCalls.meter.usage);
     if (rescued) {
       choice.message = { ...message, content: rescued.text };
       choice.finish_reason = rescued.finishReason;

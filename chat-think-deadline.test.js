@@ -504,3 +504,32 @@ test('the chat plan message is short, plain and carries no persona', () => {
   assert.ok(!long.includes('M'));
   assert.equal(CHAT_PLAN_MAX_TOKENS, 250);
 });
+
+/* ── Nov 10 2026: what the rescue spent rides back with the turn ───────────── */
+
+const usageFrames = (raw) => raw.split('\n\n').filter((p) => p.startsWith('data: ') && !p.includes('[DONE]'))
+  .map((p) => JSON.parse(p.slice(6))).filter((f) => f.usage).map((f) => f.usage);
+const withUsage = (value, usage) => ({ ...value, usage });
+
+test('rescue usage: the plan and writer calls are handed back as the turn usage and logged', async () => {
+  const { s, res } = await cutTurn(LONG_THOUGHT,
+    withUsage(PLAN, { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340, cost: 0.0001 }),
+    withUsage(ANSWER, { prompt_tokens: 23000, completion_tokens: 60, total_tokens: 23060, cost: 0.0092 }));
+  const usages = usageFrames(res.raw);
+  assert.equal(usages.length, 1, 'one terminal usage frame');
+  assert.equal(usages[0].prompt_tokens, 23300);
+  assert.equal(usages[0].completion_tokens, 100);
+  assert.ok(Math.abs(usages[0].cost - 0.0093) < 1e-9, `cost summed, got ${usages[0].cost}`);
+  assert.ok(s.logs.some((l) => /rescue usage \(2 call\(s\)\): prompt=23300 completion=100 cost=\$0\.009300/.test(l)), s.logs.filter((l) => l.includes('usage')).join('\n'));
+});
+
+test('rescue usage: a rescue tool turn carries the usage too, and nothing is made up when no call reports any', async () => {
+  const tool = await cutTurn(LONG_THOUGHT,
+    withUsage(PLAN, { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340, cost: 0.0001 }),
+    withUsage(TOOL, { prompt_tokens: 23000, completion_tokens: 20, total_tokens: 23020, cost: 0.0091 }));
+  assert.match(tool.res.raw, /web_search/);
+  assert.equal(usageFrames(tool.res.raw)[0].prompt_tokens, 23300);
+  const bare = await cutTurn(LONG_THOUGHT, PLAN, ANSWER);
+  assert.deepEqual(usageFrames(bare.res.raw), [], 'no usage reported, none invented');
+  assert.ok(!bare.s.logs.some((l) => l.includes('rescue usage')));
+});

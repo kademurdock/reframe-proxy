@@ -121,3 +121,25 @@ test('Sol raw tool passthrough remains byte-for-byte unchanged, including usage'
   assert.equal(raw, sse);
   assert.deepEqual(frames.find((frame) => frame.usage).usage, USAGE);
 });
+
+/* Nov 10 2026: a tool-call step is forwarded raw and its usage frame was never read by the
+ * gateway, so no "upstream usage" line named what the step cost. The wire is unchanged. */
+test('a raw tool passthrough step logs its upstream usage line, whatever the chunking', async () => {
+  const sse = OPEN + chunk({ tool_calls: [{ index: 0, id: 'offline-call', type: 'function',
+    function: { name: 'add_fixture', arguments: '{"a":5,"b":7}' } }] }) +
+    chunk({}, 'tool_calls') + USAGE_EVENT + DONE;
+  for (const split of [31, 200, 100000]) {
+    const { raw, logs } = await harness()({ split, sse });
+    assert.equal(raw, sse, `wire unchanged at split ${split}`);
+    assert.ok(logs.some((line) => line.includes('upstream usage: prompt=18190') && line.includes('cost=$0.002742')),
+      `usage line at split ${split}: ${logs.filter((l) => l.includes('usage')).join(' | ')}`);
+  }
+});
+
+test('a tool passthrough step with no usage frame logs none', async () => {
+  const sse = OPEN + chunk({ tool_calls: [{ index: 0, id: 'offline-call', type: 'function',
+    function: { name: 'add_fixture', arguments: '{"a":5,"b":7}' } }] }) + chunk({}, 'tool_calls') + DONE;
+  const { raw, logs } = await harness()({ split: 31, sse });
+  assert.equal(raw, sse);
+  assert.ok(!logs.some((line) => line.includes('upstream usage:')));
+});
