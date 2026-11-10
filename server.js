@@ -777,7 +777,34 @@ function adaptForKimi(body) {
   return next;
 }
 
+/* Nov 10 2026 (call limits lane): THE EDITOR PASSES STOP WHEN THE PERSON HANGS UP. The reply's own
+ * model call has been cancelled on a hang-up since Oct 16, but the passes that run on a finished
+ * reply (the slop rewrite, the coherence regeneration, and any helper that calls through
+ * callOpenRouterOnce without a signal) carried no signal: after a Stop or a barge-in each one ran
+ * on to its own 25 s limit, paid, for an answer nobody would get. The hang-up signal of the turn
+ * now rides an AsyncLocalStorage around detectAndRewrite, and a call that was given no signal of
+ * its own picks it up here. Nothing changes for a turn whose client stays. Kill:
+ * KADE_EDITOR_HANGUP_CANCEL=0. */
+const { AsyncLocalStorage } = require('node:async_hooks');
+const editorHangup = new AsyncLocalStorage();
+const EDITOR_HANGUP_CANCEL = process.env.KADE_EDITOR_HANGUP_CANCEL !== '0';
+/** The hang-up signal of the turn whose editor pass is running, if any. */
+function editorHangupSignal() {
+  return EDITOR_HANGUP_CANCEL ? editorHangup.getStore() : undefined;
+}
+async function editWithHangup(signal, result, upstreamBody) {
+  if (!EDITOR_HANGUP_CANCEL || !signal) return detectAndRewrite(result, upstreamBody);
+  if (signal.aborted) return result; // nobody is listening: no paid edit for nobody
+  try {
+    return await editorHangup.run(signal, () => detectAndRewrite(result, upstreamBody));
+  } catch (e) {
+    if (signal.aborted) return result; // the cancel itself; the reply is left as it was
+    throw e;
+  }
+}
+
 async function callOpenRouterOnce(body, timeoutMs, signal) {
+  if (!signal && typeof editorHangupSignal === 'function') signal = editorHangupSignal();
   // Aug 14 2026 (Part 63, the ?????? receipts): auto-think used to live HERE,
   // which meant every INTERNAL model call routed too -- the slop rewritePass
   // (system prompt + no reasoning field) got classified off the REPLY text it
@@ -1139,6 +1166,43 @@ const SLOP_VERIFY = process.env.KADE_SLOP_VERIFY !== '0';
  * KADE_SLOP_SECOND_PASS=1 brings the second swing back. */
 const SLOP_SECOND_PASS = process.env.KADE_SLOP_SECOND_PASS === '1';
 const RETRY_TRUNCATED = process.env.KADE_RETRY_TRUNCATED !== '0';
+/* Nov 10 2026 (call limits lane): THE SAME SINGLE RE-ASK ON THE TWO LIVE LANES. The re-ask above
+ * covers the buffered web and chat lane only. A phone turn, and a turn on a model whose tools are
+ * written into the prompt (tool-shim-live), that died with an error or a dropped connection
+ * before its first word was still delivered empty: dead air on a call, silence for a screen
+ * reader. OFF unless KADE_LIVE_REASK=1, because the phone lane is the hot call path and this has
+ * only been run against local fakes, never a real call.
+ *
+ * With the switch on, a phone turn holds back the events that carry no words (the role-only
+ * opening chunk, an error or finish chunk, the end marker) until the first word arrives, then
+ * sends them all in their order and streams as it always has: the first word is not delayed. If
+ * the stream ends in error or drops with no word sent, the turn is asked ONCE more in one piece,
+ * one attempt inside a short window (KADE_PHONE_REASK_MS, default 8000; on the shim lane
+ * KADE_SHIM_REASK_MS, default 60000). Words, or a tool call, go out in place of the held events.
+ * A re-ask that fails or comes back empty sends the held events exactly as the host sent them,
+ * which is what the caller got before this existed. KADE_RETRY_TRUNCATED=0 turns this off too. */
+const LIVE_REASK = process.env.KADE_LIVE_REASK === '1' && RETRY_TRUNCATED;
+const PHONE_REASK_MS = parseInt(process.env.KADE_PHONE_REASK_MS, 10) || 8000;
+const SHIM_REASK_MS = parseInt(process.env.KADE_SHIM_REASK_MS, 10) || 60000;
+
+/* The one re-ask both live lanes share: the same body in one piece, ONE attempt (no timeout
+ * retry, no overload retries: on a call every second is dead air), cut at `timeoutMs`, cancelled
+ * by a hang-up. Returns the host's answer or null; never throws. */
+async function liveReask({ upstreamBody, reqId, lane, timeoutMs, signal, callOnce = callOpenRouterOnce }) {
+  if (signal && signal.aborted) return null;
+  try {
+    const retryBody = { ...upstreamBody, stream: false };
+    delete retryBody.stream_options;
+    const rt = await callOnce(retryBody, timeoutMs, signal);
+    if (rt && rt.usage) {
+      console.log(`[req ${reqId}] live re-ask (${lane}) usage: prompt=${rt.usage.prompt_tokens ?? '?'} completion=${rt.usage.completion_tokens ?? '?'}${costNote(rt.usage)}`);
+    }
+    return rt || null;
+  } catch (e) {
+    console.warn(`[req ${reqId}] live re-ask (${lane}) failed: ${e.message} -- leaving the turn as it was`);
+    return null;
+  }
+}
 
 /* One place that knows what "the detectors" means. Was inline in the response
  * path, which meant the rewrite had no way to re-check itself against the same
@@ -3667,7 +3731,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       );
     }
     if (!(shimActive && parseShimToolCalls(json))) {
-      await detectAndRewrite(json, upstreamBody);
+      await editWithHangup(hangup, json, upstreamBody);
     }
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     return res.send(buildFakeSSE(json));
@@ -3800,6 +3864,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let upstreamProvider = null;
   let sawDone = false;      // phoneLive: whether upstream's [DONE] was already forwarded
   let phoneFirstWrite = 0;  // phoneLive: t of first live content byte (latency logging)
+  /* Nov 10 2026 (KADE_LIVE_REASK=1 only): events with no words are held until the first word. */
+  const phoneHold = phoneLive && LIVE_REASK;
+  let phoneHeld = '';        // phoneHold: the wordless events not yet sent, in order
+  let phoneWordsOut = false; // phoneHold: a word has reached the caller
 
   // -- shim live-streaming state machine (only used when shimLive) -----------
   const SHIM_SENTINELS = ['<tool_call', '<think'];
@@ -3884,6 +3952,95 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     }
   }
 
+  /* Nov 10 2026 (KADE_LIVE_REASK=1 only): a shim turn whose stream ended in error, or dropped,
+   * with nothing sent is asked once more in one piece. The caller checks `shimFirstWrite === 0`,
+   * the byte counter: the client has seen no word, so the answer lands in a still-empty turn. A
+   * tool call in the answer is handed over in the shape this lane already uses for one, and then
+   * this returns true (the answer is finished). Words are emitted and it returns false, so the
+   * lane writes its usual finish chunk. Kept out of the return site so the wordless guard there
+   * stays next to its finish line (modelbudget.test.js holds that). */
+  async function shimLiveReask() {
+    if (res.writableEnded || contentAccum.trim() || !(finishReason === 'error' || streamAborted)) return false;
+    console.warn(`[req ${reqId}] shim-live stream died before its first word (${streamAborted ? 'connection aborted' : 'finish=error'}) -- re-asking once`);
+    const reaskBeat = setInterval(() => { if (!res.writableEnded) { try { res.write(': keep-alive\n\n'); } catch (e) {} } }, HEARTBEAT_MS);
+    let rt = null;
+    try {
+      rt = await liveReask({ upstreamBody, reqId, lane: 'shim-live', timeoutMs: SHIM_REASK_MS, signal: hangup });
+    } finally {
+      clearInterval(reaskBeat);
+    }
+    if (rt && rt.usage) usage = sumUsage(usage, rt.usage);
+    const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
+    if (typeof rtText === 'string' && rtText.trim().length > 0 && !hangup.aborted && !res.writableEnded) {
+      const pseudo = {
+        id: template?.id,
+        object: 'chat.completion',
+        created: template?.created,
+        model: template?.model || upstreamBody.model,
+        choices: [{ index: 0, message: { role: 'assistant', content: rtText }, finish_reason: 'stop' }],
+        usage,
+      };
+      if (parseShimToolCalls(pseudo)) {
+        res.write(buildFakeSSE(pseudo));
+        try { res.end(); } catch (e) {}
+        console.log(`[req ${reqId}] shim-live re-ask: tool turn sent at ${Date.now() - t0}ms (${pseudo.choices[0].message.tool_calls.length} call(s))`);
+        return true;
+      }
+      /* Words: the model's private <think> spans never reach the client on this lane. */
+      const spoken = rtText.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, ' ').trim();
+      if (spoken) {
+        emitShimContent(spoken);
+        contentAccum = spoken;
+        finishReason = contentFinishReason(rt.choices[0].finish_reason);
+        console.log(`[req ${reqId}] shim-live re-ask landed ${spoken.length} chars at ${Date.now() - t0}ms`);
+      }
+    } else if (!hangup.aborted) {
+      console.warn(`[req ${reqId}] shim-live re-ask came back empty -- the turn ends as it would have`);
+    }
+    return false;
+  }
+
+  /* Nov 10 2026 (KADE_LIVE_REASK=1 only): a phone turn whose stream ended in error, or dropped,
+   * before its first word. The caller of this checks that no word went out and nothing replaced
+   * the held events. Nothing but keep-alives has reached the caller (the wordless events are
+   * held), so one re-ask inside the phone window can still speak. A tool call in the answer is
+   * handed over whole so the agent runs it. Returns true when it answered (the response is
+   * ended). A re-ask that fails or is empty returns false and changes nothing: the held events go
+   * out at the return site exactly as the host sent them. */
+  async function phoneLiveReask() {
+    if (res.writableEnded || contentAccum.trim() || !(finishReason === 'error' || streamAborted)) return false;
+    console.warn(`[req ${reqId}] phone-live stream died before its first word (${streamAborted ? 'connection aborted' : 'finish=error'}) -- re-asking once inside ${PHONE_REASK_MS}ms`);
+    const rt = await liveReask({ upstreamBody, reqId, lane: 'phone-live', timeoutMs: PHONE_REASK_MS, signal: hangup });
+    if (rt && rt.usage) usage = sumUsage(usage, rt.usage);
+    const rtMessage = (rt && rt.choices && rt.choices[0] && rt.choices[0].message) || {};
+    const rtText = typeof rtMessage.content === 'string' ? scrubSearchArtifacts(rtMessage.content) : '';
+    const rtToolCalls = Array.isArray(rtMessage.tool_calls) ? rtMessage.tool_calls : [];
+    if (!hangup.aborted && !res.writableEnded && (rtToolCalls.length || rtText.trim().length > 0)) {
+      const reasked = {
+        id: template?.id || `reask-${reqId}`,
+        object: 'chat.completion',
+        created: template?.created || Math.floor(Date.now() / 1000),
+        model: template?.model || upstreamBody.model,
+        choices: [{
+          index: 0,
+          message: rtToolCalls.length
+            ? { role: 'assistant', content: rtText, tool_calls: rtToolCalls }
+            : { role: 'assistant', content: rtText },
+          finish_reason: rtToolCalls.length ? 'tool_calls' : contentFinishReason(rt.choices[0].finish_reason),
+        }],
+        usage,
+      };
+      try {
+        res.write(buildFakeSSE(reasked)); // words (or the call), the finish mark, usage, [DONE]
+        res.end();
+      } catch (e) {}
+      console.log(`[req ${reqId}] phone-live re-ask ${rtToolCalls.length ? `tool turn (${rtToolCalls.length} call(s))` : `landed ${rtText.length} chars`} at ${Date.now() - t0}ms`);
+      return true;
+    }
+    if (!hangup.aborted) console.warn(`[req ${reqId}] phone-live re-ask came back empty -- the turn ends as it would have`);
+    return false;
+  }
+
   function startPassthrough(currentEvent, leftoverBuffer) {
     toolMode = true;
     console.log(`[req ${reqId}] tool_calls detected -> live passthrough at ${Date.now() - t0}ms`);
@@ -3902,7 +4059,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     // decided to flip modes. All of it is forwarded as raw bytes; the
     // client's own SSE parser doesn't care about our internal chunk/event
     // boundaries, so simply concatenating and writing once is safe.
-    let flush = rawPending;
+    let flush = phoneHeld + rawPending; // phoneHeld is '' unless KADE_LIVE_REASK holds a phone turn
+    phoneHeld = '';
     if (currentEvent) flush += currentEvent + '\n\n';
     if (leftoverBuffer) flush += leftoverBuffer;
     if (flush) res.write(flush);
@@ -4127,14 +4285,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           // [DONE]) downstream immediately. Never buffered into rawPending,
           // never slop-rewritten. Reasoning events were already replaced by
           // empty-content heartbeats above (handledLive), same as web.
-          if (!phoneFirstWrite) {
-            phoneFirstWrite = Date.now();
-            console.log(`[req ${reqId}] phone: first live event forwarded at ${phoneFirstWrite - t0}ms`);
-          }
           /* Best-effort artifact scrub on phone-live events (whole tokens in
            * one delta; split-across-deltas fragments are caught by the TTS
            * proxy's own net). Only offending events get re-serialized. */
           let phoneOut = rawEvent;
+          let phoneWords = false; // this event carries at least one visible character
           try {
             /* Aug 24 2026 (Part 92.19) — THIS SCRUB HAD NEVER ONCE RUN.
              * It read `chunk`, which is declared inside the `for (const line
@@ -4157,8 +4312,24 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
                 pl.content = scrubbedDelta;
                 phoneOut = `data: ${JSON.stringify(chunk)}`;
               }
+              phoneWords = /\S/.test(pl.content);
             }
           } catch (e) { /* forward raw over breaking a phone turn */ }
+          if (phoneHold && !phoneWordsOut) {
+            if (!phoneWords) {
+              phoneHeld += phoneOut + '\n\n';
+              continue;
+            }
+            phoneWordsOut = true;
+            if (phoneHeld) {
+              res.write(phoneHeld);
+              phoneHeld = '';
+            }
+          }
+          if (!phoneFirstWrite) {
+            phoneFirstWrite = Date.now();
+            console.log(`[req ${reqId}] phone: first live event forwarded at ${phoneFirstWrite - t0}ms`);
+          }
           res.write(phoneOut + '\n\n');
           continue;
         }
@@ -4305,6 +4476,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
         finishReason = notice.finishReason;
       }
     }
+    if (LIVE_REASK && shimFirstWrite === 0 && (await shimLiveReask())) return;
     const fin = { ...shimChunkBase(), choices: [{ index: 0, delta: {}, finish_reason: finishReason || 'stop' }] };
     try {
       if (!res.writableEnded) {
@@ -4336,9 +4508,13 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
      * Fail-soft top to bottom — a rescue that dies leaves the turn exactly
      * as it was. This can make a silent call speak; it must never make a
      * working call worse. */
+    /* Nov 10 2026: with KADE_LIVE_REASK=1 the wordless events are still held here, so "the
+     * caller has heard nothing" is simply "no word went out". Without the switch it is the old
+     * test, unchanged. `phoneReplaced`: our own words went out in place of the host's events. */
+    const phoneUnheard = phoneHold ? !phoneWordsOut : (phoneFirstWrite === 0 && !sawDone);
+    let phoneReplaced = false;
     if (
-      phoneFirstWrite === 0 &&
-      !sawDone &&
+      phoneUnheard &&
       !res.writableEnded &&
       isWordlessTurn({ model: upstreamBody.model, finishReason, contentLength: contentAccum.length, reasoningLength: reasoningAccum.length })
     ) {
@@ -4358,14 +4534,15 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: rescued.text }, finish_reason: null }] })}\n\n`);
           res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: rescued.finishReason }] })}\n\n`);
           contentAccum = rescued.text;
+          phoneReplaced = true;
         } catch (e) {}
       }
     }
+    if (phoneHold && !phoneWordsOut && !phoneReplaced && (await phoneLiveReask())) return;
     /* Content-filter silence on an open phone line: the caller hears the
      * honest notice instead of dead air. Local text, no re-ask, instant. */
     if (
-      phoneFirstWrite === 0 &&
-      !sawDone &&
+      phoneUnheard &&
       !res.writableEnded &&
       isSensitiveBlockedTurn({ finishReason, contentLength: contentAccum.length })
     ) {
@@ -4382,11 +4559,17 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
         res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: notice.finishReason }] })}\n\n`);
         contentAccum = notice.text;
         finishReason = notice.finishReason;
+        phoneReplaced = true;
       } catch (e) {}
     }
+    /* Held and never replaced: the caller gets what the host sent, as before the hold existed. */
+    if (phoneHeld && !phoneReplaced && !res.writableEnded) {
+      try { res.write(phoneHeld); } catch (e) {}
+    }
+    phoneHeld = '';
     console.log(`[req ${reqId}] phone live-stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
     try {
-      if (!sawDone && !res.writableEnded) res.write('data: [DONE]\n\n');
+      if ((!sawDone || phoneReplaced) && !res.writableEnded) res.write('data: [DONE]\n\n');
       res.end();
     } catch (e) {}
     return;
@@ -4674,7 +4857,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     console.log(`[req ${reqId}] tool-shim turn sent at ${Date.now() - t0}ms (${result.choices[0].message.tool_calls.length} call(s))`);
     return;
   }
-  await detectAndRewrite(result, upstreamBody);
+  await editWithHangup(hangup, result, upstreamBody);
   // If reasoning was collected, trigger the bubble via @librechat/agents'
   // think_and_text path:
   //
@@ -4975,7 +5158,7 @@ app.post('/chat/completions', async (req, res) => {
       choice.finish_reason = rescued.finishReason;
     }
   }
-  await detectAndRewrite(result, upstreamBody);
+  await editWithHangup(hangup, result, upstreamBody);
   scrubSpecialTokensFromTitleReply(result, req.body);
   // Part 295: the rooms and game seats bill from this usage, so name its real
   // cost here (the BYOK split shows once her Google key is in OpenRouter).
