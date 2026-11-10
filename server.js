@@ -2486,6 +2486,29 @@ async function detectAndRewrite(result, upstreamBody) {
   return result;
 }
 
+/* Nov 10 2026 (review): a re-ask's finish_reason is copied onto a reply that carries words
+ * only. "tool_calls" on a message with no tool call tells the client to run a tool that is
+ * not there, so a words-only reply never says it. */
+function contentFinishReason(reason) {
+  return !reason || reason === 'tool_calls' || reason === 'function_call' ? 'stop' : reason;
+}
+
+/* Nov 10 2026: the last net under the streaming route. A throw inside handleStreaming closes
+ * this one answer (502 if nothing has gone out, otherwise the stream is ended) and the gateway
+ * keeps serving. Never throws itself. */
+function closeFailedStream(res, reqId, err) {
+  try { console.error(`[req ${reqId}] handleStreaming threw: ${err && err.stack || err}`); } catch {}
+  try {
+    if (!res.headersSent) {
+      res.status(502).set('Content-Type', 'application/json').send(
+        JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
+      );
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+  } catch {}
+}
+
 // -- fake single-shot SSE (for buffered content turns) -----------------------
 function buildFakeSSE(finalResponse) {
   const choice = finalResponse.choices?.[0] || {};
@@ -4497,7 +4520,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           if (typeof rtText === 'string' && rtText.trim().length > 0) {
             console.log(`[req ${reqId}] sensitive retry landed ${rtText.length} chars -- an earlier image was the poison, the newest one is innocent`);
             contentAccum = rtText;
-            finishReason = (rt.choices[0].finish_reason) || 'stop';
+            finishReason = contentFinishReason(rt.choices[0].finish_reason);
             if (rt.usage) { usage = sumUsage(usage, rt.usage); }
             served = true;
           } else {
@@ -4553,25 +4576,67 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     !phoneLive &&
     /* Nov 8 2026 (review): a chat-rescued turn is never re-asked here. The retry resends the
      * original body (thinking on, no deadline): exactly the wait the chat deadline cut. */
-    !chatRescued
+    !chatRescued &&
+    /* Nov 10 2026 (review): the wordless re-ask is not for a turn with a think deadline. It
+     * resends the original body, thinking on and no time limit, which is the wait that caller
+     * asked not to have. Such a turn ends as it did before the wordless re-ask existed; a
+     * half-written reply on a deadline turn is still re-asked, as it always was. */
+    !(contentAccum.length === 0 && thinkDeadlineMs)
   ) {
     console.warn(`[req ${reqId}] stream died mid-generation (${streamAborted ? 'connection aborted' : 'finish=error'}) with ${contentAccum.length} partial chars -- re-asking once rather than serving ${contentAccum.length ? 'half a reply' : 'an empty reply'}`);
+    /* Nov 10 2026 (review): the stream's heartbeat stopped when the read loop ended, and this
+     * call writes nothing until it returns (a thinking body may take minutes). Keep the line
+     * warm the way the rescue above does, so the client never sits on a silent connection. */
+    const retryBeat = setInterval(() => { if (!res.writableEnded) { try { res.write(': keep-alive\n\n'); } catch (e) {} } }, HEARTBEAT_MS);
     try {
       const retryBody = { ...upstreamBody, stream: false };
       delete retryBody.stream_options;
-      const rt = await callOpenRouter(retryBody, undefined, hangup);
-      const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
+      let rt;
+      try {
+        rt = await callOpenRouter(retryBody, undefined, hangup);
+      } finally {
+        clearInterval(retryBeat);
+      }
+      const rtMessage = (rt && rt.choices && rt.choices[0] && rt.choices[0].message) || {};
+      const rtText = rtMessage.content;
+      const rtToolCalls = Array.isArray(rtMessage.tool_calls) ? rtMessage.tool_calls : [];
+      /* Nov 10 2026 (review): what the re-ask spent is counted whatever came back. It used to be
+       * added only when its words were taken, so an empty or tool-call answer was a paid call
+       * that nobody was billed for and no log line showed. */
+      if (rt && rt.usage) {
+        usage = sumUsage(usage, rt.usage);
+        console.log(`[req ${reqId}] truncation retry usage: prompt=${rt.usage.prompt_tokens ?? '?'} completion=${rt.usage.completion_tokens ?? '?'}${costNote(rt.usage)}`);
+      }
+      /* Nov 10 2026 (review): the retry resends the tools, so the model may answer with a tool
+       * call. Only the words were read: the call was dropped, and a lead-in sentence could go
+       * out marked finish_reason "tool_calls" with no call behind it. Nothing has been sent to
+       * the client yet, so hand it that message whole, the way the chat rescue above does. */
+      if (rtToolCalls.length && !hangup.aborted) {
+        const toolTurn = {
+          id: template?.id,
+          object: 'chat.completion',
+          created: template?.created,
+          model: template?.model || upstreamBody.model,
+          choices: [{ index: 0, message: { role: 'assistant', content: typeof rtText === 'string' ? rtText : '', tool_calls: rtToolCalls }, finish_reason: 'tool_calls' }],
+          usage,
+        };
+        if (!res.headersSent) {
+          res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+        }
+        res.write(buildFakeSSE(toolTurn));
+        res.end();
+        console.log(`[req ${reqId}] truncation retry tool turn sent at ${Date.now() - t0}ms (${rtToolCalls.length} call(s), was ${contentAccum.length} partial chars)`);
+        return;
+      }
       if (typeof rtText === 'string' && rtText.trim().length > 0 && rtText.trim().length >= contentAccum.length) {
         console.log(`[req ${reqId}] truncation retry landed ${rtText.length} chars (was ${contentAccum.length}) at ${Date.now() - t0}ms`);
         contentAccum = rtText;
-        finishReason = (rt.choices[0].finish_reason) || 'stop';
-        if (rt.usage) {
-          usage = sumUsage(usage, rt.usage);
-        }
+        finishReason = contentFinishReason(rt.choices[0].finish_reason);
       } else {
         console.warn(`[req ${reqId}] truncation retry came back shorter or empty (${rtText ? rtText.length : 0} chars) -- keeping the original partial`);
       }
     } catch (rtErr) {
+      clearInterval(retryBeat);
       console.warn(`[req ${reqId}] truncation retry failed: ${rtErr.message} -- keeping the original partial`);
     }
   }
@@ -4858,18 +4923,7 @@ app.post('/chat/completions', async (req, res) => {
     /* Nov 10 2026: Express 4 does not catch a rejected async handler and nothing else
      * does either, so any throw inside the streaming path ended the process and every
      * other reply in flight. Log it, close this one answer, keep serving. */
-    return handleStreaming(req, res, upstreamBody, shim.active, shimDeepThink).catch((err) => {
-      console.error(`[req ${reqId}] handleStreaming threw: ${err && err.stack || err}`);
-      try {
-        if (!res.headersSent) {
-          res.status(502).set('Content-Type', 'application/json').send(
-            JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
-          );
-        } else if (!res.writableEnded) {
-          res.end();
-        }
-      } catch {}
-    });
+    return handleStreaming(req, res, upstreamBody, shim.active, shimDeepThink).catch((err) => closeFailedStream(res, reqId, err));
   }
 
   // -- non-streaming path: original buffered behaviour, now with the Novita

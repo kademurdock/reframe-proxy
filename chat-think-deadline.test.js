@@ -554,3 +554,37 @@ test('idle timeout: the silent stream is cancelled upstream before the one re-as
   assert.deepEqual(s.calls[1].reasoning, OFF, 'the re-ask is the wordless rescue, thinking off');
   assert.ok(s.logs.concat(logs).some((l) => l.includes('streaming read error') && l.includes('IdleTimeout')));
 });
+
+/* ── Nov 10 2026 (independent review): the wordless re-ask and the deadline ── */
+
+/* An upstream whose stream ends with finish "error" before any word or thought. */
+function diesWordless() {
+  const frames = [frame({ role: 'assistant', content: '' }), frame({}, 'error'), 'data: [DONE]\n\n'].map((f) => Buffer.from(f));
+  return () => ({ ok: true, status: 200, headers: { get: (key) => key === 'content-type' ? 'text/event-stream' : null },
+    body: { getReader: () => ({ read: async () => frames.length ? { done: false, value: frames.shift() } : { done: true }, cancel: async () => {} }) } });
+}
+
+test('a deadline turn that dies before its first word is not re-asked with thinking on and no limit', async () => {
+  const s = server({ KADE_CHAT_THINK_DEADLINE: '1' });
+  const res = response();
+  s.queue.push(diesWordless());
+  await quiet(() => s.post(deepChat(), res));
+  assert.ok(armedLine(s), 'the turn had a think deadline');
+  assert.equal(s.calls.length, 1, 'no second call: the re-ask would think again from the start with no time limit');
+  assert.ok(!s.logs.some((l) => l.includes('stream died mid-generation')));
+  assert.match(res.raw, /\[DONE\]/, 'the turn still ends cleanly');
+});
+
+test('the same death with no deadline is re-asked once, and the line is kept warm while it waits', async () => {
+  const s = server();
+  const res = response();
+  s.queue.push(diesWordless(), json(ANSWER));
+  await quiet(() => s.post(deepChat(), res));
+  assert.equal(s.calls.length, 2);
+  assert.equal(s.calls[1].stream, false);
+  assert.match(res.raw, /shorter commute probably pays for itself/);
+  const beats = s.timers.filter((t) => String(t.fn).includes('keep-alive'));
+  assert.equal(beats.length, 2, 'the stream heartbeat, then one for the re-ask');
+  assert.ok(beats.every((t) => t.cleared), 'both are stopped when their wait ends');
+  assert.equal(beats[1].ms, 10000);
+});

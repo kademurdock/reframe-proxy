@@ -287,6 +287,48 @@ test('non-stream: a wordless stop is rescued, a tool call is left alone', async 
   assert.equal(JSON.stringify(toolRes.body.choices[0].message.tool_calls), JSON.stringify([call]));
 });
 
+/* Nov 10 2026 (independent review): the non-stream route's rescue metering had no test. The
+ * debate room and the game seats bill from this usage. */
+const WORDLESS = { choices: [{ index: 0, message: { role: 'assistant', content: '', reasoning: 'Long thought.' }, finish_reason: 'stop' }] };
+const FIRST_USAGE = { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500, cost: 0.002 };
+const RESCUE_USAGE = { prompt_tokens: 1010, completion_tokens: 7, total_tokens: 1017, cost: 0.0005 };
+async function nonStreamRescue(first, rescue) {
+  const s = server();
+  const res = response();
+  s.queue.push(json(first), json(rescue));
+  await s.post(turn(false), res);
+  assert.equal(s.calls.length, 2);
+  assert.equal(res.body.choices[0].message.content, 'Recovered.');
+  return { usage: res.body.usage, rescueLines: s.logs.filter((line) => line.includes('rescue usage')) };
+}
+
+test('non-stream: rescue usage is added to the turn usage once', async () => {
+  const { usage, rescueLines } = await nonStreamRescue({ ...WORDLESS, usage: FIRST_USAGE }, { ...RESCUE, usage: RESCUE_USAGE });
+  assert.equal(usage.prompt_tokens, 2010);
+  assert.equal(usage.completion_tokens, 507);
+  assert.equal(usage.total_tokens, 2517);
+  assert.ok(Math.abs(usage.cost - 0.0025) < 1e-9, `cost summed once, got ${usage.cost}`);
+  assert.equal(rescueLines.length, 1, rescueLines.join('\n'));
+  assert.match(rescueLines[0], /rescue usage \(1 call\(s\)\): prompt=1010 completion=7/);
+});
+
+test('non-stream: a rescue alone reporting usage is still handed back, and nothing is made up when none is reported', async () => {
+  const only = await nonStreamRescue(WORDLESS, { ...RESCUE, usage: RESCUE_USAGE });
+  assert.equal(only.usage.prompt_tokens, 1010);
+  assert.equal(only.usage.completion_tokens, 7);
+  assert.equal(only.rescueLines.length, 1);
+
+  const first = await nonStreamRescue({ ...WORDLESS, usage: FIRST_USAGE }, RESCUE);
+  assert.equal(first.usage.prompt_tokens, 1000);
+  assert.equal(first.usage.completion_tokens, 500);
+  assert.equal(first.usage.total_tokens, 1500);
+  assert.equal(first.rescueLines.length, 0);
+
+  const none = await nonStreamRescue(WORDLESS, RESCUE);
+  assert.equal(none.usage, undefined, 'no usage reported, none invented');
+  assert.equal(none.rescueLines.length, 0);
+});
+
 test('non-stream: a hang-up while the model works cancels it without a retry or an error reply', async () => {
   const s = server();
   const res = response();
