@@ -4281,6 +4281,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     try {
       if (!res.writableEnded) {
         res.write(`data: ${JSON.stringify(fin)}\n\n`);
+        /* Nov 10 2026: this lane dropped the upstream usage frame (the live drain never forwards
+         * raw events), so a shimmed model's prose turn was billed nothing by the caller. The
+         * real usage rides in the canonical terminal frame, as on the buffered lane. */
+        if (usage) res.write(`data: ${JSON.stringify({ ...shimChunkBase(), choices: [], usage })}\n\n`);
         res.write('data: [DONE]\n\n');
       }
       res.end();

@@ -63,7 +63,7 @@ function harness() {
       set() { return this; }, status() { return this; }, flushHeaders() { this.headersSent = true; },
       write(value) { raw += value; }, send(value) { raw += value; this.writableEnded = true; },
       end() { this.writableEnded = true; }, json() { assert.fail('Unexpected JSON response'); } };
-    await routes['POST /chat/completions']({ body: { model: BASE.model, stream: true,
+    await routes['POST /chat/completions']({ body: { model: BASE.model, stream: true, ...(input.body || {}),
       reasoning: { effort: 'low' }, messages: [
         { role: 'system', content: 'Answer one short fictional greeting.' },
         { role: 'user', content: 'Hello.' } ] }, headers: {}, path: '/chat/completions' }, res);
@@ -142,4 +142,23 @@ test('a tool passthrough step with no usage frame logs none', async () => {
   const { raw, logs } = await harness()({ split: 31, sse });
   assert.equal(raw, sse);
   assert.ok(!logs.some((line) => line.includes('upstream usage:')));
+});
+
+/* Nov 10 2026: a shimmed model (tools translated into the prompt) answering in prose streams on
+ * the shim-live lane, which never forwarded the usage frame: the caller billed the turn nothing. */
+test('shim-live prose turn: the upstream usage frame reaches the client once, before DONE', async () => {
+  const shimBase = { ...BASE, model: 'nousresearch/hermes-4-70b' };
+  const ev = (delta, finish_reason = null, extra = {}) => event({ ...shimBase, choices: [{ index: 0, delta, finish_reason }], ...extra });
+  const sse = ev({ role: 'assistant' }) + ev({ content: 'It is sunny and warm in Springfield today. ' }) + ev({ content: 'A light wind from the south.' }) +
+    ev({}, 'stop') + event({ ...shimBase, choices: [], usage: USAGE }) + DONE;
+  const tools = [{ type: 'function', function: { name: 'weather', description: 'Weather for a place', parameters: { type: 'object', properties: { place: { type: 'string' } } } } }];
+  const { frames } = await harness()({ split: 64, sse, body: { model: shimBase.model, tools } });
+  const words = frames.filter((f) => f !== '[DONE]').map((f) => f.choices?.[0]?.delta?.content || '').join('');
+  assert.match(words, /sunny and warm in Springfield/);
+  const usages = frames.filter((f) => f !== '[DONE]' && f.usage);
+  assert.equal(usages.length, 1, 'one usage frame');
+  assert.deepEqual(usages[0].usage, USAGE);
+  assert.deepEqual(usages[0].choices, []);
+  assert.equal(frames[frames.length - 1], '[DONE]');
+  assert.equal(frames[frames.length - 2], usages[0], 'right before DONE');
 });
