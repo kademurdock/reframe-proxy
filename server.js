@@ -3889,13 +3889,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   }
 
   let toolTail = '';
+  /* Nov 10 2026: each read left its own 90 s idle timer pending after the read had won (one timer
+   * and its closure per chunk of every stream). The timer is now cleared when the read settles. */
   function readWithIdleTimeout() {
-    return Promise.race([
-      reader.read(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(Object.assign(new Error('idle timeout'), { name: 'IdleTimeout' })), STREAM_IDLE_TIMEOUT_MS)
-      ),
-    ]);
+    let idleTimer = null;
+    const idle = new Promise((_, reject) => {
+      idleTimer = setTimeout(() => reject(Object.assign(new Error('idle timeout'), { name: 'IdleTimeout' })), STREAM_IDLE_TIMEOUT_MS);
+    });
+    return Promise.race([reader.read(), idle]).finally(() => clearTimeout(idleTimer));
   }
 
   /* Oct 27 2026 — THE THINK DEADLINE (modelbudget.js). At the caller's mark,
@@ -4154,6 +4155,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     stopHeartbeat();
     stopThinkTimer();
     streamAborted = true;
+    /* Nov 10 2026: a stream given up on (90 s of silence, or a read error) was left open, so the
+     * host could go on generating, and billing, for an answer nobody would read while the re-ask
+     * below started a second one. Cancel it, as the think deadline and a hang-up already do. */
+    try { reader.cancel().catch(() => {}); } catch (e) {}
     if (toolMode) {
       // already streaming live; best we can do is end the response
       try { res.end(); } catch (e) {}
@@ -4455,6 +4460,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       contentAccum = rescued.text;
       finishReason = rescued.finishReason;
       if (thinkDeadlineMs && chatThinkLane) chatRescued = true;
+      /* Nov 10 2026: the rescue's answer is a whole answer. When the stream had died (a read error
+       * or 90 s of silence) with thoughts and no words, the rescue answered and then the truncation
+       * retry below took that whole answer for a half-written one and asked a THIRD time, with full
+       * thinking and no time limit: a second paid call and a long wait for a reply already in hand. */
+      streamAborted = false;
     }
   }
 

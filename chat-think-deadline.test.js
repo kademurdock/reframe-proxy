@@ -533,3 +533,24 @@ test('rescue usage: a rescue tool turn carries the usage too, and nothing is mad
   assert.deepEqual(usageFrames(bare.res.raw), [], 'no usage reported, none invented');
   assert.ok(!bare.s.logs.some((l) => l.includes('rescue usage')));
 });
+
+/* ── Nov 10 2026: a stream given up on is cancelled upstream ──────────────── */
+
+test('idle timeout: the silent stream is cancelled upstream before the one re-ask, and read timers do not pile up', async () => {
+  const s = server();
+  const res = response();
+  const up = thinking([frame({ role: 'assistant', content: '' }), frame({ reasoning: SHORT_THOUGHT })]);
+  s.queue.push(up.fixture, json(ANSWER));
+  const done = s.post(deepChat(), res);
+  await untilWaiting(up.state);
+  const idle = s.timers.filter((t) => String(t.fn).includes('idle timeout'));
+  assert.ok(idle.length >= 2, 'one idle timer per read');
+  assert.equal(idle.filter((t) => !t.cleared).length, 1, 'only the read still waiting keeps its timer (they used to pile up, one per chunk)');
+  idle.find((t) => !t.cleared).fn(); // 90 s of silence
+  const { logs } = await quiet(() => done);
+  assert.equal(up.state.cancelled, true, 'the stalled stream was cancelled upstream (before the fix it was left open)');
+  assert.match(res.raw, /shorter commute probably pays for itself/, 'and the person still got an answer');
+  assert.equal(s.calls.length, 2, 'the stream, then ONE re-ask (before the fix a third call followed, with thinking on and no limit)');
+  assert.deepEqual(s.calls[1].reasoning, OFF, 'the re-ask is the wordless rescue, thinking off');
+  assert.ok(s.logs.concat(logs).some((l) => l.includes('streaming read error') && l.includes('IdleTimeout')));
+});
