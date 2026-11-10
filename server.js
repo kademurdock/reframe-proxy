@@ -4487,20 +4487,22 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   if (
     RETRY_TRUNCATED &&
     (finishReason === 'error' || streamAborted) &&
-    contentAccum.length > 0 &&
+    /* Nov 10 2026: no longer only a HALF reply. A stream that died before its first word was
+     * delivered as an empty reply with finish=stop (silence for a screen-reader user); the
+     * same single re-ask covers it. */
     !toolMode &&
     !phoneLive &&
     /* Nov 8 2026 (review): a chat-rescued turn is never re-asked here. The retry resends the
      * original body (thinking on, no deadline): exactly the wait the chat deadline cut. */
     !chatRescued
   ) {
-    console.warn(`[req ${reqId}] stream died mid-generation (${streamAborted ? 'connection aborted' : 'finish=error'}) with ${contentAccum.length} partial chars -- re-asking once rather than serving half a reply`);
+    console.warn(`[req ${reqId}] stream died mid-generation (${streamAborted ? 'connection aborted' : 'finish=error'}) with ${contentAccum.length} partial chars -- re-asking once rather than serving ${contentAccum.length ? 'half a reply' : 'an empty reply'}`);
     try {
       const retryBody = { ...upstreamBody, stream: false };
       delete retryBody.stream_options;
       const rt = await callOpenRouter(retryBody, undefined, hangup);
       const rtText = rt && rt.choices && rt.choices[0] && rt.choices[0].message && rt.choices[0].message.content;
-      if (typeof rtText === 'string' && rtText.trim().length >= contentAccum.length) {
+      if (typeof rtText === 'string' && rtText.trim().length > 0 && rtText.trim().length >= contentAccum.length) {
         console.log(`[req ${reqId}] truncation retry landed ${rtText.length} chars (was ${contentAccum.length}) at ${Date.now() - t0}ms`);
         contentAccum = rtText;
         finishReason = (rt.choices[0].finish_reason) || 'stop';
