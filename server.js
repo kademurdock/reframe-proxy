@@ -3553,6 +3553,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       } catch (fbErr) {
         if (hangup.aborted) return;
         console.error(`[req ${reqId}] fallback fetch failed: ${fbErr.message}`);
+        /* Nov 10 2026: the first answer's body is already read; going on used to read it
+         * again, reject, and end the whole process. Answer plainly instead. */
+        return res.status(502).set('Content-Type', 'application/json').send(
+          JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
+        );
       }
     }
   }
@@ -3573,6 +3578,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     } catch (fbErr) {
       if (hangup.aborted) return;
       console.error(`[req ${reqId}] zai fallback fetch failed: ${fbErr.message}`);
+      return res.status(502).set('Content-Type', 'application/json').send(
+        JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
+      );
     }
   }
   // A hang-up mid-body rejects the read; nobody is left to answer, so return quietly.
@@ -4786,7 +4794,21 @@ app.post('/chat/completions', async (req, res) => {
     // body -- withReasoningIncluded/withDeepThinkStripped removed the marker
     // from upstreamBody already.
     const shimDeepThink = shim.active && deepThinkRequested(req.body);
-    return handleStreaming(req, res, upstreamBody, shim.active, shimDeepThink);
+    /* Nov 10 2026: Express 4 does not catch a rejected async handler and nothing else
+     * does either, so any throw inside the streaming path ended the process and every
+     * other reply in flight. Log it, close this one answer, keep serving. */
+    return handleStreaming(req, res, upstreamBody, shim.active, shimDeepThink).catch((err) => {
+      console.error(`[req ${reqId}] handleStreaming threw: ${err && err.stack || err}`);
+      try {
+        if (!res.headersSent) {
+          res.status(502).set('Content-Type', 'application/json').send(
+            JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
+          );
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+      } catch {}
+    });
   }
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
