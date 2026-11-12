@@ -4175,7 +4175,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     const idleError = () => Object.assign(new Error(phoneStall ? `idle timeout (phone, ${PHONE_IDLE_MS}ms after the last word)` : 'idle timeout'), { name: 'IdleTimeout' });
     if (idleMs <= 0) return Promise.reject(idleError());
     const idle = new Promise((_, reject) => {
-      idleTimer = setTimeout(() => reject(idleError()), idleMs);
+      // The literal 'idle timeout' stays in this callback: chat-think-deadline.test.js finds the read timers by it.
+      idleTimer = setTimeout(() => reject(phoneStall ? idleError() : Object.assign(new Error('idle timeout'), { name: 'IdleTimeout' })), idleMs);
     });
     return Promise.race([reader.read(), idle]).finally(() => clearTimeout(idleTimer));
   }
@@ -4683,7 +4684,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       console.warn(`[req ${reqId}] phone stream ${streamAbortWhy || 'aborted'} after ${contentAccum.length} chars -- ended with the stall notice`);
     }
     if (liveBeat) clearInterval(liveBeat);
-    console.log(`[req ${reqId}] ${liveLane} stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
+    console.log(`[req ${reqId}] ${screenLive ? 'screen-live stream ended' : 'phone live-stream ended'} at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
     try {
       if ((!sawDone || phoneReplaced) && !res.writableEnded) res.write('data: [DONE]\n\n');
       res.end();

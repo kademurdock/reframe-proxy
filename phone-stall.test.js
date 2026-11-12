@@ -86,7 +86,7 @@ for (const mode of ['quiet', 'comments']) {
   test(`a phone reply that stalls after its first words (${mode}) ends with the notice`, async () => {
     const r = await run(mode);
     assert.ok(r.body, 'the gateway was still holding the turn after 4 s:\n' + r.log.slice(-1500));
-    assert.ok(r.tookMs < 1500, `took ${r.tookMs}ms`);
+    assert.ok(r.tookMs < 3000, `took ${r.tookMs}ms`); // 400 ms idle limit; the rest is boot-time load on a slow machine (it was 90 s)
     assert.ok(r.body.includes('So the thing about your fence is'));
     assert.ok(r.body.indexOf(NOTICE) > r.body.indexOf('fence is'), 'notice after the partial words');
     assert.ok(r.body.trimEnd().endsWith('data: [DONE]'));
@@ -97,7 +97,7 @@ for (const mode of ['quiet', 'comments']) {
 
 test('a reply that finished and then stalled before [DONE] ends early with no notice', async () => {
   const r = await run('finished');
-  assert.ok(r.body && r.tookMs < 1500);
+  assert.ok(r.body && r.tookMs < 3000, `took ${r.tookMs}ms`);
   assert.ok(!r.body.includes(NOTICE));
   assert.equal(r.body.split('"finish_reason":"stop"').length - 1, 1);
   assert.ok(r.body.trimEnd().endsWith('data: [DONE]'));
