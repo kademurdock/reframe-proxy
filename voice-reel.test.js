@@ -23,13 +23,14 @@ const body = (said, head = KIANA_HEAD, extra = {}) => ({
   ...extra,
 });
 
-// Kiana's pool approved by Kade in chat, Nov 12 2026 ("Yes, turn them on"). Harley's is still a draft.
+// Both pools approved by Kade in chat, Nov 12 2026: Kiana ("Yes, turn them on"), Harley (she sent his
+// lines: "handle how you see best"). The draft-path tests use unapproved copies.
 const DRAFTS = POOLS.map((p) => ({ ...p, approved: false }));
 
-test('both pools load and are big enough clean; Kiana is approved, Harley is still a draft', () => {
+test('both pools load, are big enough clean, and are approved', () => {
   assert.deepStrictEqual(POOLS.map((p) => p.id).sort(), ['harley', 'kiana']);
   for (const p of POOLS) {
-    assert.strictEqual(p.approved, p.id === 'kiana', p.id + ': only her word turns a pool on');
+    assert.strictEqual(p.approved, true, p.id + ': approved by her word on Nov 12 2026');
     assert.ok(p.lines.filter((l) => !l.salty).length >= MIN_POOL, p.id + ' has too few clean lines');
   }
 });
