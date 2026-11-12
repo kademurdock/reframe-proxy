@@ -3077,10 +3077,56 @@ const JEV_THINK_TIMEOUT_MS = parseInt(process.env.KADE_JEV_THINK_TIMEOUT_MS || '
  * get no steer note at all. Any failure returns undefined and the note is
  * written from the regexes exactly as before.
  * Kill: KADE_JEV_STEER=0. Budget: KADE_JEV_STEER_TIMEOUT_MS (700). */
+/* Nov 12 2026 (gateway audit GW-6): a screen turn the person will HEAR as it arrives (the app speaks each
+ * sentence when it lands, Part 98.2) can take the phone lane's live passthrough: first words at the model's
+ * first sentence instead of after the whole reply and the editors. The editors cannot run on words already
+ * out, so a live turn skips them (Kade's trade): no phrase repair, register edit, reply focus, coherence
+ * regeneration or %%-tag typo fix; the search-artifact scrub still runs on each piece.
+ * KADE_SCREEN_LIVE=off (default) | asked (kade_live: true in the body) | all.
+ * Only a turn that is PROVED not to think goes live. A body that merely does not say "think" may still
+ * think (an effort word with no `enabled`, a Kimi body after adaptForKimi, a host that decides for itself),
+ * and a thinking turn needs the buffered path: its deadline, its rescue and its truncation retry. */
+const SCREEN_LIVE = String(process.env.KADE_SCREEN_LIVE || 'off').trim().toLowerCase();
+function screenLiveWanted(req) {
+  return SCREEN_LIVE === 'all' || (SCREEN_LIVE === 'asked' && req._liveAsked === true);
+}
+/* True only when the body, as it will be sent, cannot think. Read AFTER the adapters. */
+function thinkingProvedOff(body) {
+  if (!isReasoningModel(body && body.model)) return true;
+  if (body.thinking && typeof body.thinking === 'object') return body.thinking.type === 'disabled'; // Z.AI direct
+  const r = body.reasoning || {};
+  if (r.enabled === true) return false;
+  const effort = typeof r.effort === 'string' ? r.effort.toLowerCase()
+    : typeof body.reasoning_effort === 'string' ? body.reasoning_effort.toLowerCase() : '';
+  if (effort) return effort === 'none';
+  return r.enabled === false;
+}
+function screenLiveLane(body) {
+  if (!body || !Array.isArray(body.messages)) return false;
+  if (body.response_format && body.response_format.type !== 'text') return false;
+  return !(writingDeskFor(body) || isLyricBody(body) || isSweptMachineBody(body) || isMemoryKeeperShapedBody(body) ||
+    isCompactionShapedBody(body) || isTitleShapedBody(body));
+}
+/* Before the pre-pass, when auto-think has not voted yet: could this turn still go live? Used only to
+ * skip the awaited Jev steer, so a turn that is already known to stay buffered keeps its steer. */
+function screenLivePossible(req, body) {
+  if (!screenLiveWanted(req) || req._thinkDeadlineAsked || req._thinkDeadlineMs || isPhoneTurn(body)) return false;
+  const r = (body && body.reasoning) || {};
+  const effort = typeof r.effort === 'string' ? r.effort.toLowerCase()
+    : typeof (body && body.reasoning_effort) === 'string' ? body.reasoning_effort.toLowerCase() : '';
+  if (r.enabled === true || (effort && effort !== 'none')) return false; // someone already chose to think
+  return screenLiveLane(body);
+}
+function screenLiveFor(req, body, { phoneLive, shimActive }) {
+  if (phoneLive || shimActive || !screenLiveWanted(req)) return false;
+  if (req._thinkDeadlineAsked || req._thinkDeadlineMs) return false;
+  return screenLiveLane(body) && thinkingProvedOff(body);
+}
+
 const JEV_STEER_TIMEOUT_MS = parseInt(process.env.KADE_JEV_STEER_TIMEOUT_MS || '700', 10);
 const jevTierPrefetch = new Map();
 
-async function jevPrePass(body, reqId) {
+async function jevPrePass(body, reqId, { live = false } = {}) {
   try {
     if (!jev.enabled() || !Array.isArray(body?.messages) || isPhoneTurn(body)) return undefined;
     if (writingDeskFor(body) || isLyricBody(body) || isCompactionShapedBody(body) || isMemoryKeeperShapedBody(body) ||
@@ -3094,6 +3140,7 @@ async function jevPrePass(body, reqId) {
         setTimeout(() => jevTierPrefetch.delete(reqId), 30000).unref?.();
       }
     }
+    if (live) return undefined; // GW-6: a turn headed for the live lane writes its steer note from the regexes (no 330-700 ms wait)
     if (!DRIFT_STEER || !jev.enabled('KADE_JEV_STEER')) return undefined;
     const ask = steerRequest(body, { isInjected: looksInjected, personText: stripContextReplay });
     if (!ask) return undefined;
@@ -3594,6 +3641,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   // Nov 8 2026: the chat think deadline (inert unless switched on; see armChatThinkDeadline).
   armChatThinkDeadline(req, upstreamBody, autoThinkDecision, { phoneLive, shimActive, reqId });
   const chatThinkLane = req._thinkDeadlineLane === 'chat';
+  /* GW-6: decided here, after auto-think, the adapters and the chat deadline have all settled
+   * whether this turn thinks. */
+  const screenLive = screenLiveFor(req, upstreamBody, { phoneLive, shimActive });
+  const liveContent = phoneLive || screenLive; // content is forwarded as it arrives
+  const liveLane = screenLive ? 'screen-live' : 'phone-live';
+  if (screenLive) console.log(`[req ${reqId}] SCREEN turn -> live content passthrough (editors skipped)`);
   // Session 22 (Kade: "Check caching, because that saves money in multiple
   // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
   // repeated ~9K-token prefix -> cached_tokens 8192, hit rate $0.16/M vs
@@ -3890,7 +3943,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let phoneSpokeAt = 0;
   let sawFinish = false;    // the host sent a finish_reason: the reply itself is whole
   /* Nov 10 2026 (KADE_LIVE_REASK=1 only): events with no words are held until the first word. */
-  const phoneHold = phoneLive && LIVE_REASK;
+  /* GW-6: a screen-live turn always holds them. That is what lets the wordless rescue, the one
+   * re-ask and the content-filter notice below still answer a turn that produced no word. */
+  const phoneHold = (phoneLive && LIVE_REASK) || screenLive;
   let phoneHeld = '';        // phoneHold: the wordless events not yet sent, in order
   let phoneWordsOut = false; // phoneHold: a word has reached the caller
 
@@ -4034,8 +4089,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * out at the return site exactly as the host sent them. */
   async function phoneLiveReask() {
     if (res.writableEnded || contentAccum.trim() || !(finishReason === 'error' || streamAborted)) return false;
-    console.warn(`[req ${reqId}] phone-live stream died before its first word (${streamAborted ? 'connection aborted' : 'finish=error'}) -- re-asking once inside ${PHONE_REASK_MS}ms`);
-    const rt = await liveReask({ upstreamBody, reqId, lane: 'phone-live', timeoutMs: PHONE_REASK_MS, signal: hangup });
+    // GW-6: the same re-ask serves a screen-live turn, so the line names its lane and its own window.
+    console.warn(`[req ${reqId}] ${liveLane} stream died before its first word (${streamAborted ? 'connection aborted' : 'finish=error'}) -- re-asking once inside ${screenLive ? SHIM_REASK_MS : PHONE_REASK_MS}ms`);
+    const rt = await liveReask({ upstreamBody, reqId, lane: liveLane, timeoutMs: screenLive ? SHIM_REASK_MS : PHONE_REASK_MS, signal: hangup });
     if (rt && rt.usage) usage = sumUsage(usage, rt.usage);
     const rtMessage = (rt && rt.choices && rt.choices[0] && rt.choices[0].message) || {};
     const rtText = typeof rtMessage.content === 'string' ? scrubSearchArtifacts(rtMessage.content) : '';
@@ -4313,7 +4369,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
         }
         if (toolMode) break;
-        if (phoneLive && !handledLive) {
+        if (liveContent && !handledLive) {
           // PHONE turn: forward this event (content delta / finish / usage /
           // [DONE]) downstream immediately. Never buffered into rawPending,
           // never slop-rewritten. Reasoning events were already replaced by
@@ -4361,7 +4417,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
           if (!phoneFirstWrite) {
             phoneFirstWrite = Date.now();
-            console.log(`[req ${reqId}] phone: first live event forwarded at ${phoneFirstWrite - t0}ms`);
+            console.log(`[req ${reqId}] ${liveLane}: first live event forwarded at ${phoneFirstWrite - t0}ms`);
           }
           res.write(phoneOut + '\n\n');
           continue;
@@ -4527,7 +4583,15 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     return;
   }
 
-  if (phoneLive) {
+  if (liveContent) {
+    /* GW-6: the stream's own heartbeat stopped with the read loop. A screen-live rescue or re-ask
+     * may take as long as a whole reply, so the line is kept warm until this block ends the turn. */
+    const liveBeat = screenLive
+      ? setInterval(() => {
+          if (res.writableEnded) { clearInterval(liveBeat); return; }
+          try { res.write(': keep-alive\n\n'); } catch (e) {}
+        }, HEARTBEAT_MS)
+      : null;
     /* Aug 28 2026 — THE WORDLESS GUARD REACHES THE PHONE (spec
      * WORDLESS_GUARD_LAST_TWO_PATHS §3). A wordless turn here used to be
      * delivered as dead air — a blind caller holding a handset listening to
@@ -4552,10 +4616,10 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       !res.writableEnded &&
       isWordlessTurn({ model: upstreamBody.model, finishReason, contentLength: contentAccum.length, reasoningLength: reasoningAccum.length })
     ) {
-      console.warn(`[req ${reqId}] WORDLESS TURN on phone-live (finish=${finishReason}, 0 bytes out, ${reasoningAccum.length} reasoning chars) -- rescuing inside the phone window`);
+      console.warn(`[req ${reqId}] WORDLESS TURN on ${liveLane} (finish=${finishReason}, 0 bytes out, ${reasoningAccum.length} reasoning chars) -- rescuing inside the ${screenLive ? 'screen' : 'phone'} window`);
       const phoneRescueMs = parseInt(process.env.KADE_PHONE_RESCUE_MS, 10) || 8000;
       const rescued = await rescueWordlessTurn({
-        upstreamBody, reqId, callOpenRouter, timeoutMs: phoneRescueMs, lane: 'phone-live', signal: hangup,
+        upstreamBody, reqId, callOpenRouter, timeoutMs: screenLive ? 0 : phoneRescueMs, lane: liveLane, signal: hangup,
       });
       if (rescued && !res.writableEnded) {
         const base = {
@@ -4572,7 +4636,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
         } catch (e) {}
       }
     }
-    if (phoneHold && !phoneWordsOut && !phoneReplaced && (await phoneLiveReask())) return;
+    if (phoneHold && RETRY_TRUNCATED && !phoneWordsOut && !phoneReplaced && (await phoneLiveReask())) return;
     /* Content-filter silence on an open phone line: the caller hears the
      * honest notice instead of dead air. Local text, no re-ask, instant. */
     if (
@@ -4580,7 +4644,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       !res.writableEnded &&
       isSensitiveBlockedTurn({ finishReason, contentLength: contentAccum.length })
     ) {
-      console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn on phone-live (finish=${finishReason}) -- speaking the notice`);
+      console.warn(`[req ${reqId}] SENSITIVE-BLOCKED turn on ${liveLane} (finish=${finishReason}) -- speaking the notice`);
       const notice = sensitiveBlockedNotice(upstreamBody);
       const base = {
         id: `sensitive-${reqId}`,
@@ -4612,7 +4676,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       } catch (e) {}
       console.warn(`[req ${reqId}] phone stream ${streamAbortWhy || 'aborted'} after ${contentAccum.length} chars -- ended with the stall notice`);
     }
-    console.log(`[req ${reqId}] phone live-stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
+    if (liveBeat) clearInterval(liveBeat);
+    console.log(`[req ${reqId}] ${liveLane} stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
     try {
       if ((!sawDone || phoneReplaced) && !res.writableEnded) res.write('data: [DONE]\n\n');
       res.end();
@@ -4801,7 +4866,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
      * delivered as an empty reply with finish=stop (silence for a screen-reader user); the
      * same single re-ask covers it. */
     !toolMode &&
-    !phoneLive &&
+    !liveContent &&
     /* Nov 8 2026 (review): a chat-rescued turn is never re-asked here. The retry resends the
      * original body (thinking on, no deadline): exactly the wait the chat deadline cut. */
     !chatRescued &&
@@ -5115,6 +5180,13 @@ app.post('/chat/completions', async (req, res) => {
   const thinkDeadline = takeThinkDeadline(req.body);
   req.body = thinkDeadline.body;
   req._thinkDeadlineMs = thinkDeadline.deadlineMs;
+  /* GW-6: the caller's "this reply is heard as it arrives" flag. Taken off the body here, on both
+   * routes and in every mode, so no provider ever sees it. */
+  if (req.body && typeof req.body === 'object' && Object.hasOwn(req.body, 'kade_live')) {
+    const { kade_live: liveAsked, ...rest } = req.body;
+    req.body = rest;
+    req._liveAsked = liveAsked === true;
+  }
 
   /* Part 97: the tool-fumble escalator — must sit BEFORE the tool shim so the
    * shim's model-specific decision sees the model this call will actually run. */
@@ -5140,7 +5212,7 @@ app.post('/chat/completions', async (req, res) => {
   if (shim.active) console.log(`[req ${reqId}] TOOL SHIM active for ${req.body.model} (${_toolNames.length} tools -> prompt)`);
 
   if (wantsStream) {
-    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: true, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId) })));
+    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: true, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId, { live: !shim.active && screenLivePossible(req, shim.body) }) })));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
     // Deep-Think shim turns need the buffered path (their reply is one big
