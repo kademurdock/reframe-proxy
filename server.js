@@ -3527,6 +3527,19 @@ function armChatThinkDeadline(req, body, decision, { phoneLive, shimActive, reqI
 // turn (-> buffer to end, detect/rewrite, emit fake SSE). Inactivity timeout
 // guards against a stalled upstream provider mid-stream.
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
+/* Nov 12 2026 (gateway audit GW-2): a phone stream that has spoken and then goes quiet. 90 s of silence was
+ * the limit (sized for screen turns that think); the bridge gave up at 45 s and the caller heard nothing.
+ * After the first word a phone stream gets KADE_PHONE_IDLE_MS without a data event from the host, then
+ * ends with a spoken notice (Kade's yes, Nov 12: "Sorry, I lost my train of thought there. Go ahead.").
+ * Measured from the last DATA event, not the last bytes: a host's keep-alive comment lines are bytes too,
+ * and would hold a per-read limit open for ever. Before the first word nothing changes (tool calls and
+ * cold hosts are slow there). Off: KADE_PHONE_IDLE_MS=0. No notice, limit kept: KADE_PHONE_STALL_NOTICE=
+ * (empty). The bridge's own stall timer (PHONE_TURN_STALL_MS, 45 s) must stay above this. */
+const PHONE_IDLE_MS = (() => {
+  const n = parseInt(process.env.KADE_PHONE_IDLE_MS ?? '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 20000;
+})();
+const PHONE_STALL_NOTICE = process.env.KADE_PHONE_STALL_NOTICE ?? ' Sorry, I lost my train of thought there. Go ahead.';
 
 async function handleStreaming(req, res, upstreamBody, shimActive = false, shimDeepThink = false) {
   const reqId = req._reqId || '??????';
@@ -3868,10 +3881,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * leaves finishReason at its 'stop' default — which would otherwise make a
    * half-written reply look like a finished one. Same cure either way. */
   let streamAborted = false;
+  let streamAbortWhy = ''; // GW-2: why the read ended early, for the stall notice's log line
   let usage = null;
   let upstreamProvider = null;
   let sawDone = false;      // phoneLive: whether upstream's [DONE] was already forwarded
   let phoneFirstWrite = 0;  // phoneLive: t of first live content byte (latency logging)
+  /* GW-2: 0 until the host's first visible character on a phone turn, then the time of its last data event. */
+  let phoneSpokeAt = 0;
+  let sawFinish = false;    // the host sent a finish_reason: the reply itself is whole
   /* Nov 10 2026 (KADE_LIVE_REASK=1 only): events with no words are held until the first word. */
   const phoneHold = phoneLive && LIVE_REASK;
   let phoneHeld = '';        // phoneHold: the wordless events not yet sent, in order
@@ -4082,8 +4099,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * and its closure per chunk of every stream). The timer is now cleared when the read settles. */
   function readWithIdleTimeout() {
     let idleTimer = null;
+    /* GW-2: once a phone turn has spoken, the limit runs from the host's last data event. Tool mode
+     * forwards raw bytes without parsing events, so it keeps the per-read 90 s limit. */
+    const phoneStall = phoneSpokeAt > 0 && !toolMode;
+    const idleMs = phoneStall ? phoneSpokeAt + PHONE_IDLE_MS - Date.now() : STREAM_IDLE_TIMEOUT_MS;
+    const idleError = () => Object.assign(new Error(phoneStall ? `idle timeout (phone, ${PHONE_IDLE_MS}ms after the last word)` : 'idle timeout'), { name: 'IdleTimeout' });
+    if (idleMs <= 0) return Promise.reject(idleError());
     const idle = new Promise((_, reject) => {
-      idleTimer = setTimeout(() => reject(Object.assign(new Error('idle timeout'), { name: 'IdleTimeout' })), STREAM_IDLE_TIMEOUT_MS);
+      idleTimer = setTimeout(() => reject(idleError()), idleMs);
     });
     return Promise.race([reader.read(), idle]).finally(() => clearTimeout(idleTimer));
   }
@@ -4145,6 +4168,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           } catch (e) {
             continue;
           }
+          if (phoneSpokeAt) phoneSpokeAt = Date.now(); // GW-2: any data event is the host still talking
           if (!template) template = chunk;
           if (chunk.usage) usage = chunk.usage;
           // Aug 19 2026: which MACHINE answered. OpenRouter puts the
@@ -4159,7 +4183,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
           const delta = chunk.choices?.[0]?.delta || {};
           const fr = chunk.choices?.[0]?.finish_reason;
-          if (fr) finishReason = fr;
+          if (fr) { finishReason = fr; sawFinish = true; }
           if (delta.tool_calls) {
             // Pass the triggering event + whatever's left unparsed in
             // sseBuffer so nothing already-received gets thrown away.
@@ -4249,6 +4273,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
           if (typeof delta.content === 'string') {
             contentAccum += delta.content;
+            if (phoneLive && PHONE_IDLE_MS > 0 && !phoneSpokeAt && /\S/.test(delta.content)) phoneSpokeAt = Date.now(); // GW-2
             /* Part 92.27 — THE CASIO WATCH. DETECT ONLY, ON PURPOSE.
              *
              * Aug 25 2026: a reply answered Kade's question, ended cleanly,
@@ -4357,6 +4382,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     stopHeartbeat();
     stopThinkTimer();
     streamAborted = true;
+    streamAbortWhy = err && err.name === 'IdleTimeout' ? 'went quiet' : `dropped (${(err && err.name) || 'error'})`;
     /* Nov 10 2026: a stream given up on (90 s of silence, or a read error) was left open, so the
      * host could go on generating, and billing, for an answer nobody would read while the re-ask
      * below started a second one. Cancel it, as the think deadline and a hang-up already do. */
@@ -4575,6 +4601,17 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       try { res.write(phoneHeld); } catch (e) {}
     }
     phoneHeld = '';
+    /* GW-2: words went out, then the host went quiet or dropped before it finished the reply: say so
+     * instead of ending in silence. Not after a finish_reason or [DONE]: that reply was whole, and a
+     * notice after it would be the gateway talking over a finished answer. */
+    if (streamAborted && phoneSpokeAt && !sawFinish && !sawDone && !phoneReplaced && PHONE_STALL_NOTICE.trim() && !res.writableEnded) {
+      const base = { id: `stall-${reqId}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: template?.model || upstreamBody.model };
+      try {
+        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: PHONE_STALL_NOTICE }, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      } catch (e) {}
+      console.warn(`[req ${reqId}] phone stream ${streamAbortWhy || 'aborted'} after ${contentAccum.length} chars -- ended with the stall notice`);
+    }
     console.log(`[req ${reqId}] phone live-stream ended at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
     try {
       if ((!sawDone || phoneReplaced) && !res.writableEnded) res.write('data: [DONE]\n\n');
