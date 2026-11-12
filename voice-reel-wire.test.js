@@ -10,7 +10,7 @@ const { conversationNoteFor } = require('./conversation-judgment');
  * the card as the last words of the tail. With them off, the wire is what it is today. */
 const PERSONA = "house notes\n\nYou're Kiana, the flagship intelligence of Kade-AI.\n\n## 3. How you talk\nLoose and direct.\n\n## Voice performance v2\nDirections in percent signs.";
 const REPLY = "%%%amused%%% Nah, he ain't coming, and you know it.";
-const PARROT = "%%%easy%%% Your eyes lying to you, basically. Anyway, what else is going on?";
+const PARROT = "%%%easy%%% Nice don't tell you nothing about the car. Anyway, what else is going on?";
 const PORT = '31891';
 
 async function run({ stream = false, env = {}, reply = REPLY, messages }) {
@@ -69,7 +69,7 @@ test('switches on: reel after the head, real turn after the reel, card last, rep
 
 test('a reply that repeats a reel line is caught by the parrot guard', async () => {
   const r = await run({ env: ON, reply: PARROT });
-  assert.match(r.log, /\[echo-guard\] persona_parrot: "your eyes lying to you basically/);
+  assert.match(r.log, /\[echo-guard\] persona_parrot: "nice don't tell you nothing about the car/);
 });
 
 test('another character gets neither piece', async () => {

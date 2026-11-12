@@ -182,9 +182,9 @@ test('a line about the thing they just brought up sits that turn out', () => {
   for (let i = 0; i < 40; i++) {
     const b = body('conversation number ' + i);
     const later = { ...b, messages: [...b.messages, { role: 'assistant', content: 'x' },
-      { role: 'user', content: 'ugh my landlord and the moon and the reunion, and I burned dinner' }] };
+      { role: 'user', content: 'ugh my credit card, the sunset, my muddy mix, and the vaccine thing' }] };
     const ids = withVoiceReel(later, ON)[REEL].ids;
-    for (const id of ['k03', 'k05', 'k11', 'k13']) assert.ok(!ids.includes(id), id + ' rode on a matching topic');
+    for (const id of ['k09', 'k13', 'k14', 'k19']) assert.ok(!ids.includes(id), id + ' rode on a matching topic');
   }
 });
 
@@ -214,7 +214,7 @@ test('the card is the character\'s own first person, short, and reaches the parr
   assert.ok(!/["“”]/.test(card), 'a card quotes no sample reply');
   const lines = reelLinesFor(body('hey'), ON);
   assert.ok(lines.length >= 14 + 5);
-  const copied = 'Okay so. Your eyes lying to you, basically. Anyway what else.';
+  const copied = "Okay so. Nice don't tell you nothing about the car. Anyway what else.";
   const hits = detectPersonaParrot(copied, KIANA_HEAD, { exampleLines: lines });
   assert.strictEqual(hits.length, 1);
   assert.strictEqual(hits[0].pattern, 'persona_parrot');
