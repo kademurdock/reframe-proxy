@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { writingDeskFor, WRITING_STYLE_NOTE } = require('./writing');
-const { LYRIC_OUTPUT_NOTE } = require('./lyrics');
+const { LYRIC_OUTPUT_NOTE, isSongDeskBody, SONG_DESK_NOTE } = require('./lyrics');
 const source = fs.readFileSync(require.resolve('./server.js'), 'utf8');
 const script = { messages: [{ role: 'system', content: "You are the script desk in Kade-AI's Sound Booth. Write XML." }, { role: 'user', content: 'Format my words.' }] };
 const lyric = { messages: [{ role: 'system', content: 'LYRIC — SONGWRITER AND CO-WRITER\nWrite songs.' }] };
@@ -20,7 +20,7 @@ test('all dedicated writing desks share the craft layer, including shortening an
 });
 
 test('real prompt assembly adds one shared writing note without chat directions or mutation', () => {
-  const context = { writingDeskFor, WRITING_STYLE_NOTE, LYRIC_OUTPUT_NOTE, console: { log() {} } };
+  const context = { writingDeskFor, WRITING_STYLE_NOTE, LYRIC_OUTPUT_NOTE, isSongDeskBody, SONG_DESK_NOTE, process: { env: {} }, console: { log() {} } };
   vm.runInNewContext(source.slice(source.indexOf('function appendReminder(body)'), source.indexOf('// -- TOOL SHIM')) + '\nthis.run=appendReminder;', context);
   for (const body of [script, lyric, persona]) {
     const original = JSON.stringify(body);
@@ -30,6 +30,43 @@ test('real prompt assembly adds one shared writing note without chat directions 
     assert.ok(result.messages.at(-1).content.startsWith(WRITING_STYLE_NOTE));
     assert.equal(writingDeskFor(result), writingDeskFor(body), 'return path still recognizes the prepared request');
     assert.equal(result.model, body.model, 'craft does not silently override a selected model');
+  }
+});
+
+test('the Sound Booth song desk gets its one-sentence note last; the chat songwriter keeps the long one', () => {
+  const songDesk = { messages: [{ role: 'system', content: "You are Lyric, working the songwriting desk in Kade-AI's Sound Booth.\nWrite the song." }, { role: 'user', content: 'A song about rain.' }] };
+  const run = (env) => {
+    const context = { writingDeskFor, WRITING_STYLE_NOTE, LYRIC_OUTPUT_NOTE, isSongDeskBody, SONG_DESK_NOTE, process: { env }, console: { log() {} } };
+    vm.runInNewContext(source.slice(source.indexOf('function appendReminder(body)'), source.indexOf('// -- TOOL SHIM')) + '\nthis.run=appendReminder;', context);
+    return (body) => context.run(body);
+  };
+  assert.equal(isSongDeskBody(songDesk), true);
+  assert.equal(isSongDeskBody(lyric), false);
+  const original = JSON.stringify(songDesk);
+  const out = run({})(songDesk);
+  assert.equal(JSON.stringify(songDesk), original);
+  assert.equal(out.messages.length, songDesk.messages.length + 1);
+  assert.deepEqual({ ...out.messages.at(-1) }, { role: 'system', content: SONG_DESK_NOTE }, 'exactly the short note, nothing else');
+  assert.equal(writingDeskFor(out), 'lyrics', 'the return path still sees a lyric desk');
+  // the chat songwriter and the other desks are unchanged
+  assert.equal(run({})(lyric).messages.at(-1).content, WRITING_STYLE_NOTE + '\n' + LYRIC_OUTPUT_NOTE);
+  assert.equal(run({})(script).messages.at(-1).content, WRITING_STYLE_NOTE);
+  // the switch puts the long note back on the song desk
+  assert.equal(run({ KADE_SONG_DESK_NOTE: '0' })(songDesk).messages.at(-1).content, WRITING_STYLE_NOTE + '\n' + LYRIC_OUTPUT_NOTE);
+  // one sentence of rules, and none of the prose advice
+  assert.ok(SONG_DESK_NOTE.length < 220);
+  assert.doesNotMatch(SONG_DESK_NOTE, /specific details|weak, generic|"/);
+});
+
+test('the long craft note describes the pivot in words; the switch restores the quoted form', () => {
+  const { WRITING_STYLE_NOTE_BASE } = require('./writing');
+  assert.ok(WRITING_STYLE_NOTE_BASE.includes('reflexive "not X, but Y" pivots.'));
+  if (process.env.KADE_SONG_DESK_NOTE === '0') {
+    assert.equal(WRITING_STYLE_NOTE, WRITING_STYLE_NOTE_BASE);
+  } else {
+    assert.ok(!WRITING_STYLE_NOTE.includes('"not X, but Y"'));
+    assert.ok(WRITING_STYLE_NOTE.includes('the reflexive pivot that denies one thing in order to assert another.'));
+    assert.equal(WRITING_STYLE_NOTE.replace('the reflexive pivot that denies one thing in order to assert another.', 'reflexive "not X, but Y" pivots.'), WRITING_STYLE_NOTE_BASE);
   }
 });
 

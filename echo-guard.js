@@ -200,10 +200,15 @@ function detectUserEcho(content, humanText) {
 /* The one entry point server.js calls. humanText is the person's actual
  * message (the caller strips the fork's injected blobs); when it is absent
  * only the parrot channel runs. */
-function detectEchoGuard(content, upstreamBody, { humanText = '' } = {}) {
+function detectEchoGuard(content, upstreamBody, { humanText = '', exampleLines = [] } = {}) {
   const out = [];
   try {
-    out.push(...detectPersonaParrot(content, systemTextOf(upstreamBody)));
+    /* Nov 12 2026: lines the character is shown as conversation turns (voice-reel.js) are never-reuse
+     * lines exactly like the persona's "You:" examples. The whole pool is passed, not just this
+     * conversation's picks. With the reel off the list is empty and this is the call it was. */
+    const sys = systemTextOf(upstreamBody);
+    out.push(...detectPersonaParrot(content, sys, exampleLines.length
+      ? { exampleLines: [...exampleLinesFromSystem(sys), ...exampleLines] } : {}));
   } catch (e) {
     console.error('[echo-guard] parrot check threw, skipping:', e.message);
   }

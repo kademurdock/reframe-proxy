@@ -1,6 +1,6 @@
 'use strict';
 
-const { casualHouseOn } = require('./casual-house');
+const { casualHouseOn, voiceLicenceOn, ownAddressOn, reworded } = require('./casual-house');
 
 const PILOT_MARKER = 'KADE CONVERSATION JUDGMENT PILOT';
 const CONVERSATION_NOTE_CLASSIC = [
@@ -98,6 +98,53 @@ const PERFORMANCE_NOTE_CASUAL =
   ' Keep directions out of code, drafts and structured output.' +
   ' If someone asks for a particular performance, give them that.';
 
+/* Nov 12 2026, the voice licence (casual-house.js has the reason and the switch). The texts above
+ * are the notes as they were and stay byte for byte; these pairs are the whole difference. One
+ * list serves both texts, since each "before" occurs in only one of them or reads the same in both.
+ *   - the list of what a character keeps now names its grammar and its teasing;
+ *   - "useful" and "other users" set an assistant's register, so the same two rules are said
+ *     without those words;
+ *   - the rule against ending on an offer quoted the help-desk line it bans, and a quoted line
+ *     gets copied (talk-register.js, Part 292), so the rule now names the move in plain words.
+ * The voice (percent-sign) note is not touched. KADE_VOICE_LICENCE=0 sends the texts above. */
+const VOICE_LICENCE_PAIRS = [
+  ['Keep your particular tastes, vocabulary, humor, affection, curiosity and disagreements.',
+    'Keep your particular tastes, vocabulary, grammar, humor, teasing, affection, curiosity and disagreements.'],
+  ['Stay intelligent and useful.', 'Stay intelligent, and come through when they need something.'],
+  [' Stay smart and useful, and give full explanations,', ' Stay smart, come through when they need something, and give full explanations,'],
+  ['or what other users usually want.', 'or what other people you talk with usually want.'],
+  ['or compare this person to other users.', 'or compare this person to anybody else you talk with.'],
+  [" and don't compare them to other users.", " and don't compare them to anybody else you talk with."],
+  ['Do not add "anything else", a menu of topics,', 'Do not add a closing offer, a menu of topics,'],
+  [' Don\'t add "anything else", a menu of topics,', " Don't add a closing offer, a menu of topics,"],
+];
+
+/* Nov 12 2026, the pet-name sentence. The note told every character "their name, or nothing",
+ * which overruled a character whose own approved text gives it ma'am, sir, bud or friend. It now
+ * points at the character's own notes, and a term of address still goes the moment it is
+ * unwelcome. Its own switch: KADE_OWN_ADDRESS=0 puts the old sentence back. */
+const OWN_ADDRESS_PAIRS = [
+  ['Use their name or no address unless they welcome a pet name.',
+    'Use their name, or the plain terms of address your own character notes give you; drop any of them the moment they are unwelcome.'],
+  [" Call them by their name, or nothing, unless they've said they like a pet name.",
+    " Call them by their name, or by what your own character notes say you call people, and drop it the moment they don't like it."],
+];
+
+/* Each of the eight texts (classic or casual, licence on or off, own address on or off) is built
+ * once and reused, so a character is sent the same bytes every turn. */
+const conversationTexts = new Map();
+function conversationNoteFor(casual, env = process.env) {
+  const licence = voiceLicenceOn(env), address = ownAddressOn(env);
+  const key = (casual ? 4 : 0) + (licence ? 2 : 0) + (address ? 1 : 0);
+  if (!conversationTexts.has(key)) {
+    let text = casual ? CONVERSATION_NOTE_CASUAL : CONVERSATION_NOTE_CLASSIC;
+    if (licence) text = reworded(text, VOICE_LICENCE_PAIRS);
+    if (address) text = reworded(text, OWN_ADDRESS_PAIRS);
+    conversationTexts.set(key, text);
+  }
+  return conversationTexts.get(key);
+}
+
 // Exported for tests: fixed at load from the process switch. Nothing sent
 // reads these; conversationGuidanceFor() picks its text on every call via
 // casualHouseOn(env), so editing these changes nothing a model sees.
@@ -112,11 +159,12 @@ function conversationGuidanceFor(body, env = process.env) {
     (typeof message.content === 'string' ? message.content : Array.isArray(message.content)
       ? message.content.filter(part => part?.type === 'text').map(part => part.text || '').join('\n') : '').includes(PILOT_MARKER));
   if (mode !== '1' && !pilot) return null;
-  if (casualHouseOn(env)) return { conversation: CONVERSATION_NOTE_CASUAL, performance: PERFORMANCE_NOTE_CASUAL };
-  return { conversation: CONVERSATION_NOTE_CLASSIC, performance: PERFORMANCE_NOTE_CLASSIC };
+  if (casualHouseOn(env)) return { conversation: conversationNoteFor(true, env), performance: PERFORMANCE_NOTE_CASUAL };
+  return { conversation: conversationNoteFor(false, env), performance: PERFORMANCE_NOTE_CLASSIC };
 }
 
 module.exports = {
   PILOT_MARKER, CONVERSATION_NOTE, PERFORMANCE_NOTE, conversationGuidanceFor,
+  conversationNoteFor, VOICE_LICENCE_PAIRS, OWN_ADDRESS_PAIRS,
   CONVERSATION_NOTE_CLASSIC, CONVERSATION_NOTE_CASUAL, PERFORMANCE_NOTE_CLASSIC, PERFORMANCE_NOTE_CASUAL,
 };

@@ -266,6 +266,13 @@ function detectBlocklist(text) {
   for (const entry of BLOCKLIST) {
     let idx = lower.indexOf(entry.phrase);
     while (idx !== -1) {
+      // Nov 12 2026: a phrase ends at a word end. "i've got you" used to match "I've got your
+      // back"; KADE_SLOP_WORD_BOUNDARY=0 restores the old substring match.
+      if (process.env.KADE_SLOP_WORD_BOUNDARY !== '0' && /[a-z]$/.test(entry.phrase) &&
+          /[a-z]/.test(lower[idx + entry.phrase.length] || '')) {
+        idx = lower.indexOf(entry.phrase, idx + entry.phrase.length);
+        continue;
+      }
       matches.push({
         pattern: `blocklist:${entry.category}`,
         tightness: 'balanced',
@@ -389,10 +396,13 @@ function detectOverHedging(text) {
   let m;
   while ((m = sentenceRe.exec(text)) !== null) {
     const sentence = m[0];
-    const lower = sentence.toLowerCase();
+    const lower = process.env.KADE_SLOP_WORD_BOUNDARY === '0' ? sentence.toLowerCase()
+      : sentence.toLowerCase().replace(/\b(?:might|may|used to)\s+(?:could|can|should|would)\b/g, 'might'); // "might could" is one hedge
     let hits = 0;
     for (const word of HEDGE_WORDS) {
-      if (lower.includes(word)) hits++;
+      // Nov 12 2026: whole words. "mighty" is not "might" and "couldn't" is not a hedge.
+      if (process.env.KADE_SLOP_WORD_BOUNDARY === '0' ? lower.includes(word)
+        : new RegExp('(?:^|[^a-z])' + word + "(?![a-z'’])").test(lower)) hits++;
     }
     if (hits >= 2) {
       matches.push({

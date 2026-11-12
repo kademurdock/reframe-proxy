@@ -1,6 +1,6 @@
 'use strict';
 
-const { casualHouseOn } = require('./casual-house');
+const { casualHouseOn, voiceLicenceOn, reworded } = require('./casual-house');
 const { isSolModel } = require('./sol');
 
 /* ── TALK, DON'T WRITE (Part 292, Sep 25 2026) ─────────────────────────────
@@ -170,6 +170,27 @@ const TRUST_LISTENER_NOTE =
   ' Go with plain words and a sharp observation over fancy vocabulary, and leave the thesaurus on the shelf.' +
   ' If a sentence is only there to connect two other sentences, cut it.';
 
+/* Nov 12 2026, the voice licence (casual-house.js has the reason and the switch). The texts above
+ * are the notes as they were and stay byte for byte; these pairs are the whole difference.
+ *   - talk, classic and casual: the sentence about contractions and everyday words now also says
+ *     the grammar is the character's own (three words, so the note stays inside its 170-word
+ *     limit). Contractions, everyday words, sentence mix and every length line are untouched.
+ *   - the Sol notes: a "no quota" told a character it never had to use its own vocabulary, slang
+ *     or swearing. The rhythm rule and the caricature rule stay.
+ * Explain and trust-the-listener carry no such wording and are not changed.
+ * Built once at load, so a character is sent the same bytes every turn.
+ * KADE_VOICE_LICENCE=0 sends the texts above. */
+const VOICE_LICENCE_PAIRS = [
+  [' Use contractions and everyday words, with short and long sentences the way speech runs.',
+    ' Use contractions, everyday words and your own grammar, with short and long sentences the way speech runs.'],
+  [' Use your own rhythm, with no vocabulary quota.', ' Use your own rhythm and your own vocabulary.'],
+  ['slang and swearing are choices, with no quota or caricature.', 'slang and swearing are yours to choose, never as a caricature.'],
+];
+const TALK_NOTE_CLASSIC_LICENSED = reworded(TALK_NOTE_CLASSIC, VOICE_LICENCE_PAIRS);
+const TALK_NOTE_CASUAL_LICENSED = reworded(TALK_NOTE_CASUAL, VOICE_LICENCE_PAIRS);
+const SOL_CHARACTER_NOTE_LICENSED = reworded(SOL_CHARACTER_NOTE, VOICE_LICENCE_PAIRS);
+const KIANA_SOL_REGISTER_NOTE_LICENSED = reworded(KIANA_SOL_REGISTER_NOTE, VOICE_LICENCE_PAIRS);
+
 // Exported for tests: fixed at load from the process switch. Nothing sent
 // reads these; talkRegisterNoteFor() and trustListenerNoteFor() pick their
 // text on every call via casualHouseOn(env), so editing these changes nothing
@@ -241,9 +262,14 @@ function talkRegisterNoteFor(body, env = process.env) {
   try {
     if (String(env.KADE_TALK_REGISTER ?? '1') === '0') return '';
     if (!body || (body.response_format && body.response_format.type !== 'text')) return '';
-    if (solCharacterVoiceFor(body, env)) return SOL_CHARACTER_NOTE + (isKianaSolInstructionBody(body) ? KIANA_SOL_REGISTER_NOTE : '');
+    const licence = voiceLicenceOn(env);
+    if (solCharacterVoiceFor(body, env)) {
+      return (licence ? SOL_CHARACTER_NOTE_LICENSED : SOL_CHARACTER_NOTE) +
+        (isKianaSolInstructionBody(body) ? (licence ? KIANA_SOL_REGISTER_NOTE_LICENSED : KIANA_SOL_REGISTER_NOTE) : '');
+    }
     const casual = casualHouseOn(env);
     if (registerMode(body) === 'explain') return casual ? EXPLAIN_NOTE_CASUAL : EXPLAIN_NOTE_CLASSIC;
+    if (licence) return casual ? TALK_NOTE_CASUAL_LICENSED : TALK_NOTE_CLASSIC_LICENSED;
     return casual ? TALK_NOTE_CASUAL : TALK_NOTE_CLASSIC;
   } catch (e) {
     return '';
@@ -256,7 +282,8 @@ function talkRegisterNoteFor(body, env = process.env) {
 function trustListenerNoteFor(body, env = process.env) {
   try {
     if (!casualHouseOn(env)) return '';
-    return talkRegisterNoteFor(body, env) === TALK_NOTE_CASUAL ? TRUST_LISTENER_NOTE : '';
+    const talk = talkRegisterNoteFor(body, env);
+    return talk === TALK_NOTE_CASUAL || talk === TALK_NOTE_CASUAL_LICENSED ? TRUST_LISTENER_NOTE : '';
   } catch (e) {
     return '';
   }
@@ -267,4 +294,6 @@ module.exports = {
   TALK_NOTE_CLASSIC, TALK_NOTE_CASUAL, EXPLAIN_NOTE_CLASSIC, EXPLAIN_NOTE_CASUAL,
   TRUST_LISTENER_NOTE, trustListenerNoteFor, SOL_CHARACTER_NOTE, isSolCharacterBody,
   KIANA_SOL_REGISTER_NOTE, isKianaSolInstructionBody,
+  VOICE_LICENCE_PAIRS, TALK_NOTE_CLASSIC_LICENSED, TALK_NOTE_CASUAL_LICENSED,
+  SOL_CHARACTER_NOTE_LICENSED, KIANA_SOL_REGISTER_NOTE_LICENSED,
 };

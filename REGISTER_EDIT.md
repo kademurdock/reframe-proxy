@@ -46,6 +46,12 @@ a number, a name, a pet name or a hedge (usually, maybe, I reckon...), deletes a
 scaffolding, adds a laugh, or grows past its sentence. The whole result is refused if it cuts more
 than 45% or loses a tag or number. Any failure, timeout or bad JSON keeps the reply as it was.
 
+Nov 12 2026, the voice guard (`voice-lexicon.js`): the editor may cut, it may not translate. An
+edit is also refused (`voice dropped`) when a dialect word, a swear or a spoken lead-in goes while
+the words around it stay, and (`tic added`) when it brings in a house tic the reply did not have.
+A whole clause may still be cut. The prompt's own example and lead-in list no longer use the word
+"honestly", and that word now counts toward the two-new-words limit.
+
 Skipped: replies under 280 or over 7,000 characters, code, JSON, and requests for writing where
 the page shape is the point (essay, story, poem, letter, toast, rap, lyrics...).
 
@@ -63,6 +69,9 @@ Io Net, then DeepInfra; the first usable answer wins and the rest are cancelled.
 - `KADE_REGISTER_EDIT_MODEL` (default `xiaomi/mimo-v2.6-flash`), `KADE_REGISTER_EDIT_HOSTS`
   (default `Makora,Io Net,DeepInfra`), `KADE_REGISTER_EDIT_HEDGE_MS` (1500),
   `KADE_REGISTER_EDIT_TIMEOUT_MS` (6000), `KADE_REGISTER_EDIT_BUDGET_MS` (9000).
+- `KADE_VOICE_GUARD=0` turns the voice guard off here and in the phrase repair, and sends the
+  editor prompt as it was before Nov 12. `KADE_VOICE_GUARD_MAXIM=1` (off by default) also keeps
+  a saying in the character's own words from being deleted as a maxim.
 
 Log line: `[register-edit] {id,status,character,elapsedMs,chars,passes:[{status,ms,host,kinds,rejected}],usage}`.
 `/health` (with the bearer) shows `registerEdit.counts`.

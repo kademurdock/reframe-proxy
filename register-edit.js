@@ -42,7 +42,7 @@ For each sentence you catch, write how THIS character would actually say it out 
 - Keep every hedge exactly as strong as it was (usually, often, maybe, probably, might, kind of, I think, I reckon). Never turn a "usually" into a flat claim.
 - Keep every pet name and term of address (hon, sugar, cara, girl, man, dude, y'all) and every name.
 - Keep the joke in a joke. A funny line keeps its funny idea, said the way this character would blurt it. Only a tidy closing line that repeats a joke or point the reply already made goes away.
-- Short spoken lead-ins people really say ("Well,", "Okay so", "Honestly?", "I'll tell you where I land") are fine. Leave them.
+- Short spoken lead-ins people really say ("Well,", "Okay so", "I'll tell you where I land") are fine. Leave them.
 - After your edits every remaining sentence must still make sense where it sits. If a later sentence leans on one you change, keep the link.
 - Keep the character's dialect words, asides and swearing.
 - The replacement itself must contain none of the five shapes.
@@ -51,10 +51,21 @@ Examples of the kind of change (not lines to reuse):
 - "Okay so, the classic grocery-store meltdown. There are real reasons it happens." -> "Grocery stores are loud and bright, and kids hit their limit fast in there."
 - "That's not laziness, that's his joints." -> "It's his joints."
 - "Here's the part nobody tells you: the battery is the problem." -> "The battery's the problem."
-- "Your dog's not ignoring you, he's retired." -> "He's just retired, honestly."
+- "Your dog's not ignoring you, he's retired." -> "He's retired."
 
 Return JSON only: {"edits":[{"kind":"restate|contrast|setup|maxim|padding","before":"exact text copied from the reply","after":"replacement"}]}
 "before" must be copied exactly from the reply, character for character, must change, and must not overlap another edit. An empty "after" deletes the sentence. If nothing needs fixing, return {"edits":[]}.`;
+
+const { voiceLoss, voiceTokens, ticAdded, guardOn: voiceGuardOn } = require('./voice-lexicon');
+
+/* Nov 12 2026 — this prompt taught the word it was meant to stop. Its last worked example ended
+ * on "honestly" and its list of fine lead-ins named it, so the editor wrote it into replies (her
+ * Oct 29 yes to fixing the example never landed). Both are gone from SYSTEM above. With
+ * KADE_VOICE_GUARD=0 the editor is sent the prompt as it was before, byte for byte. */
+const SYSTEM_BEFORE_NOV12 = SYSTEM
+  .replace('("Well,", "Okay so", "I\'ll tell you where I land")', '("Well,", "Okay so", "Honestly?", "I\'ll tell you where I land")')
+  .replace('he\'s retired." -> "He\'s retired."', 'he\'s retired." -> "He\'s just retired, honestly."');
+const systemFor = (env = process.env) => (voiceGuardOn(env) ? SYSTEM : SYSTEM_BEFORE_NOV12);
 
 const KINDS = new Set(['restate', 'contrast', 'setup', 'maxim', 'padding']);
 const DELETABLE = new Set(['restate', 'setup', 'padding', 'maxim']);
@@ -192,20 +203,33 @@ function checkEdit(before, after, kind, rest = '') {
   if (/[\r\n]/.test(after) && !/[\r\n]/.test(before)) return 'new line break';
   if (after.length > before.length * 1.5 + 40) return 'grew';
   if (newWords(after, before + ' ' + rest) > MAX_NEW_WORDS) return 'new words';
+  /* Nov 12 2026 — the editor may cut, it may not translate. A dialect word, a swear or a spoken
+   * lead-in that disappears while the words around it stay was standardised, not cut; and the
+   * editor never adds a house tic the reply did not have. Kill: KADE_VOICE_GUARD=0.
+   * Opt-in (KADE_VOICE_GUARD_MAXIM=1): a saying with the character's own words in it is not
+   * deleted as a "maxim". Off by default because maxims are her named peeve. */
+  if (voiceGuardOn()) {
+    if (process.env.KADE_VOICE_GUARD_MAXIM === '1' && after === '' && kind === 'maxim' && voiceTokens(before).length) return 'voice dropped';
+    if (voiceLoss(before, after)) return 'voice dropped';
+    if (ticAdded(before + ' ' + rest, after)) return 'tic added';
+  }
   return '';
 }
 
 /* A rewrite says the same thing in other words, so a few new words are normal ("ain't" for "isn't",
  * "reckon"); a handful of new content words means it added something ("and honestly? Respect"). */
 const MAX_NEW_WORDS = 2;
-const COMMON = new Set(('that this with from have just like they them then than what when where which while your about would could should there their really also only even still very much more most some because been being into over such kind sort thing things stuff gets getting going gonna wanna gotta know think yeah okay well honestly actually basically pretty little whole part point mean means said says make makes made take takes good real right sure maybe probably usually often other another every each both same different first last next back down here time times people folks somebody someone something anything nothing everything').split(' '));
+const COMMON = new Set(('that this with from have just like they them then than what when where which while your about would could should there their really also only even still very much more most some because been being into over such kind sort thing things stuff gets getting going gonna wanna gotta know think yeah okay well actually basically pretty little whole part point mean means said says make makes made take takes good real right sure maybe probably usually often other another every each both same different first last next back down here time times people folks somebody someone something anything nothing everything').split(' '));
+/* Nov 12 2026: "honestly" left the free list above, so an edit that brings it in spends one of its
+ * two new words. KADE_VOICE_GUARD=0 counts it as free again. */
 function newWords(after, source) {
+  const honestlyFree = !voiceGuardOn();
   const have = new Set((String(source).toLowerCase().match(/[a-z][a-z'’]+/g) || []).map((w) => w.replace(/['’]/g, '')));
   const stems = new Set([...have].map((w) => w.slice(0, 5)));
   let n = 0;
   for (const raw of String(after).replace(TAG_RE, ' ').toLowerCase().match(/[a-z][a-z'’]+/g) || []) {
     const w = raw.replace(/['’]/g, '');
-    if (w.length < 4 || COMMON.has(w) || have.has(w) || stems.has(w.slice(0, 5))) continue;
+    if (w.length < 4 || COMMON.has(w) || (honestlyFree && w === 'honestly') || have.has(w) || stems.has(w.slice(0, 5))) continue;
     n++;
   }
   return n;
@@ -348,7 +372,7 @@ async function registerEdit(text, body, opts = {}) {
       response_format: { type: 'json_object' },
       provider: { order: hosts, allow_fallbacks: true, zdr: true, data_collection: 'deny' },
       messages: [
-        { role: 'system', content: SYSTEM },
+        { role: 'system', content: systemFor(env) },
         { role: 'user', content: `Character: ${name || 'the character in this chat'}\n\nHow the character's own instructions describe their talk:\n${voice || '(not given)'}\n\nThe person said:\n${person}\n\nThe reply to edit:\n<<<\n${current}\n>>>` },
       ],
     };
@@ -381,4 +405,4 @@ async function registerEdit(text, body, opts = {}) {
   return { text: current, status: current === text ? 'kept' : 'edited', passes: log, name, elapsedMs: Date.now() - started, usage };
 }
 
-module.exports = { registerEdit, characterOf, eligible, applyEdits, checkEdit, finalCheck, SYSTEM, WRITING_RE, on, passesFor };
+module.exports = { registerEdit, characterOf, eligible, applyEdits, checkEdit, finalCheck, SYSTEM, SYSTEM_BEFORE_NOV12, systemFor, WRITING_RE, on, passesFor };

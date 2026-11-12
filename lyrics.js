@@ -116,9 +116,17 @@ function isLyricBody(body) {
 
 const LYRIC_OUTPUT_NOTE = 'LYRIC OUTPUT: The user is working with a songwriter. For lyrics, verses, hooks, revisions, and production fields, preserve the requested format and line breaks. Do not add chat voice directions, percent-sign tags, reset tags, introductions, commentary, or a closing offer. The songwriting instructions govern these artifacts, including when the shared platform voice guidance asks for a direction. Normal music conversation may use your ordinary voice. Do not call a paid generation tool unless the user asks for audio.';
 
+/* Nov 12 2026: the Sound Booth song desk's own last message (server.js appendReminder). The desk
+ * prompt already carries the craft and the format; the last thing it reads only has to say
+ * "the finished work, nothing around it". The chat songwriter (MARKER) keeps the long note. */
+const SONG_DESK_NOTE = 'SONG DESK: answer with the finished work only, in the format this request asks for. No greeting, commentary, chat voice directions, percent-sign tags, reset tags or closing offer.';
+const isSongDeskBody = (body) => systemTexts(body).some((content) => content.startsWith(SONG_DESK));
+
 module.exports = {
   isLyricBody,
   learnLyricBody,
   LYRIC_OUTPUT_NOTE,
+  SONG_DESK_NOTE,
+  isSongDeskBody,
   _internals: { LYRIC_PROMPT_Q, LOOKS_MUSICAL, fingerprint, learned, systemTexts },
 };

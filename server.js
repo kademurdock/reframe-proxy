@@ -138,6 +138,10 @@ if (!PROXY_SHARED_SECRET) {
 }
 
 const { voiceNoteFor } = require('./voice-anchors');
+const { withVoiceReel, voiceCardFor, reelOnWire, reelLinesFor, reelInfo } = require('./voice-reel');
+const voiceMeter = require('./voice-meter');
+const { ticsOf } = require('./voice-lexicon');
+const { characterOf: voiceMeterCharacterOf } = require('./register-edit');
 const { talkRegisterNoteFor, trustListenerNoteFor, isSolCharacterBody } = require('./talk-register');
 const { casualHouseOn } = require('./casual-house');
 const { voicePerformanceNoteFor } = require('./voice-performance');
@@ -825,7 +829,7 @@ async function callOpenRouterOnce(body, timeoutMs, signal) {
   body = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(body)))))));
   let upstream = await fetchWithTimeout(
     chatCompletionsUrl(body.model),
-    { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(body), signal },
+    { method: 'POST', headers: chatHeaders(body.model), body: JSON.stringify(typeof reelOnWire === 'function' ? reelOnWire(body) : body), signal },
     timeoutMs
   );
   /* Same predicate chatCompletionsUrl just routed on — deliberately not a
@@ -1261,7 +1265,7 @@ function collectMatches(content, upstreamBody) {
   if (ECHO_GUARD_ON) {
     try {
       const humanText = stripContextReplay(autoThinkPersonText(upstreamBody));
-      const echo = detectEchoGuard(content, upstreamBody, { humanText });
+      const echo = detectEchoGuard(content, upstreamBody, { humanText, exampleLines: typeof reelLinesFor === 'function' ? reelLinesFor(upstreamBody) : [] });
       if (echo.length > 0) {
         console.log(`[echo-guard] ${echo.map((m) => `${m.pattern}: "${m.text}"`).join(' | ')}`);
         matches.push(...echo);
@@ -1306,7 +1310,15 @@ async function rewritePass(originalBody, offendingText, matches, hasProtectedTag
 // proxy -- all models, all agents, not just Kiana -- so it must stay
 // persona-neutral. It's the "lightly discouraged" layer; the detect-and-
 // rewrite pass above is the backstop for the worst tics.
-const STYLE_REMINDER = "Companionship is a full use of this platform. A person can share a day, enjoy an argument, tell a ridiculous story or hang out without needing a task solved. Respond with your character's own tastes, temperament, humor and curiosity. You may tease, disagree, riff, laugh or bring an interesting connection. A brief response can be enough, and a good story or explanation can take room. Match their interest, not a sentence count. Keep each character distinct. Do not borrow another character's slang, background or attitude. Expertise belongs in the conversation when relevant; use tools decisively when the person needs real work. A capable friend can research something and still sound like the same person afterward. React to the actual detail, then follow what interests you. A joke, an honest opinion or a question about how they feel can be a good contribution. Ordinary uncertainty does not automatically need a plan. Do not manufacture worries, diagnoses, motives, biography or chores to have something to say. Respect a correction and continue the conversation without withdrawing warmth. Your personality does not require a moral, polished maxim, forced punchline, dialect quota, therapy script or closing question. Let an emotional tone continue as long as it fits. Keep laughter and supported vocal sounds. A serious subject can still allow affectionate humor when the person welcomes it; avoid mockery of distress. Requested creative performances keep their own style. Remain truthful about facts, capabilities and actions. The Kade-AI phone number is 1-833-530-0313; callers can ask for any character by name.";
+const STYLE_REMINDER_BASE = "Companionship is a full use of this platform. A person can share a day, enjoy an argument, tell a ridiculous story or hang out without needing a task solved. Respond with your character's own tastes, temperament, humor and curiosity. You may tease, disagree, riff, laugh or bring an interesting connection. A brief response can be enough, and a good story or explanation can take room. Match their interest, not a sentence count. Keep each character distinct. Do not borrow another character's slang, background or attitude. Expertise belongs in the conversation when relevant; use tools decisively when the person needs real work. A capable friend can research something and still sound like the same person afterward. React to the actual detail, then follow what interests you. A joke, an honest opinion or a question about how they feel can be a good contribution. Ordinary uncertainty does not automatically need a plan. Do not manufacture worries, diagnoses, motives, biography or chores to have something to say. Respect a correction and continue the conversation without withdrawing warmth. Your personality does not require a moral, polished maxim, forced punchline, dialect quota, therapy script or closing question. Let an emotional tone continue as long as it fits. Keep laughter and supported vocal sounds. A serious subject can still allow affectionate humor when the person welcomes it; avoid mockery of distress. Requested creative performances keep their own style. Remain truthful about facts, capabilities and actions. The Kade-AI phone number is 1-833-530-0313; callers can ask for any character by name.";
+/* Nov 12 2026, the voice licence (casual-house.js): the reminder listed a "dialect quota" among
+ * the things a personality does not need, which reads as a brake on a character's own dialect.
+ * Those two words leave the list; every other word is the same. Read once at load, like the
+ * casual house, so the text is the same bytes every turn. KADE_VOICE_LICENCE=0 sends the
+ * reminder as it was. */
+const STYLE_REMINDER = process.env.KADE_VOICE_LICENCE === '0'
+  ? STYLE_REMINDER_BASE
+  : STYLE_REMINDER_BASE.replace('forced punchline, dialect quota, therapy script', 'forced punchline, therapy script');
 
 /* THE CASUAL HOUSE (Part 293, Sep 25 2026; casual-house.js has the story and
  * the measurement). The tail notes below each keep their earlier text beside
@@ -1680,14 +1692,19 @@ const {
   isDiaryRepairShapedBody,
 } = require('./machines.js');
 
-const { isLyricBody, learnLyricBody, LYRIC_OUTPUT_NOTE } = require('./lyrics');
+const { isLyricBody, learnLyricBody, LYRIC_OUTPUT_NOTE, isSongDeskBody, SONG_DESK_NOTE } = require('./lyrics');
 const { writingDeskFor, WRITING_STYLE_NOTE } = require('./writing');
 
 function appendReminder(body) {
   const writingDesk = writingDeskFor(body);
   if (writingDesk) {
     console.log(`[writing] ${writingDesk}: shared craft guidance; artifact format preserved`);
-    const note = WRITING_STYLE_NOTE + (writingDesk === 'lyrics' ? '\n' + LYRIC_OUTPUT_NOTE : '');
+    /* Nov 12 2026: the Sound Booth song desk gets one sentence as its last message in place of
+     * the prose-writing note, whose advice (specific details over emotional labels, revise only
+     * weak passages) is for prose and sat after the desk's own format rules. The chat songwriter
+     * and the other desks keep the long note. Kill: KADE_SONG_DESK_NOTE=0. */
+    const songDesk = writingDesk === 'lyrics' && typeof isSongDeskBody === 'function' && isSongDeskBody(body) && process.env.KADE_SONG_DESK_NOTE !== '0';
+    const note = songDesk ? SONG_DESK_NOTE : WRITING_STYLE_NOTE + (writingDesk === 'lyrics' ? '\n' + LYRIC_OUTPUT_NOTE : '');
     return { ...body, messages: [...body.messages, { role: 'system', content: note }] };
   }
   if (isLyricBody(body)) {
@@ -1746,6 +1763,31 @@ function appendReminder(body) {
     ...body,
     messages: [...body.messages, { role: 'system', content: (guidance ? '' : STYLE_REMINDER) + (FORMAT_NOTE_ON ? FORMAT_NOTE : '') + MONEY_NOTE + laneNoteFor(body) + driftNoteFor(body) + (guidance ? '' : voiceNoteFor(body) + voicePerformanceNoteFor(body)) + currentTimeNote() + toolNotes + focusNote + deepseekHabitNoteFor(body) + (guidance ? '\n\n' + guidance.performance + '\n\n' + guidance.conversation : '') + trustListenerNoteFor(body) + talkRegisterNoteFor(body) }],
   };
+}
+
+/* Nov 12 2026 -- THE CHARACTER'S OWN VOICE AS PAST TURNS (voice-reel.js). OFF by default.
+ * Runs on the body appendReminder returns. A person-facing talk or explain turn is recognised by
+ * its tail ending on the talk-register note; every carved-out lane (compaction, keeper, machine
+ * lanes, titles, desks) ends on something else or has no tail, so none of them is touched.
+ *   KADE_VOICE_REEL=1  a few approved exchanges are attached under a Symbol and spliced in as
+ *                      user/assistant turns only at the wire (reelOnWire), after the system head.
+ *                      Typed turns only: a call has no parrot check, so a phone turn goes without
+ *                      unless KADE_VOICE_REEL_CALLS=1 as well.
+ *   KADE_VOICE_CARD=1  the character's first-person card becomes the last words of the tail.
+ * Both need a pool for that character with "approved": true. Anything throws -> the body as it was. */
+function withCharacterVoice(body) {
+  try {
+    const msgs = Array.isArray(body && body.messages) ? body.messages : [];
+    const last = msgs[msgs.length - 1];
+    const note = talkRegisterNoteFor(body);
+    if (!note || !last || last.role !== 'system' || typeof last.content !== 'string' || !last.content.endsWith(note)) return body;
+    const card = voiceCardFor(body);
+    const next = card ? { ...body, messages: [...msgs.slice(0, -1), { ...last, content: last.content + card }] } : body;
+    return (isPhoneTurn(body) && process.env.KADE_VOICE_REEL_CALLS !== '1') ? next : withVoiceReel(next);
+  } catch (e) {
+    console.error('[voice-reel] skipped:', e.message);
+    return body;
+  }
 }
 
 // -- TOOL SHIM (July 9 2026, "the reframe tool-shim") -------------------------
@@ -2378,9 +2420,10 @@ async function detectAndRewrite(result, upstreamBody) {
     }
   }
 
+  const voiceDraft = content; // the reply before any editor, for the voice meter's draftPer100
   const observedMatches = collectMatches(content, upstreamBody);
   const matches = typeof conversationalRewriteMatches === 'function'
-    ? conversationalRewriteMatches(observedMatches) : observedMatches;
+    ? conversationalRewriteMatches(observedMatches, upstreamBody) : observedMatches;
   if (matches.length < observedMatches.length) {
     console.log(`[style-observation] ${observedMatches.length - matches.length} broad structure flag(s) retained as observations; ${matches.length} actionable flag(s)`);
   }
@@ -2413,6 +2456,7 @@ async function detectAndRewrite(result, upstreamBody) {
     // Keep utility receipts separate from the original model's token billing.
     console.log('[phrase-repair] ' + JSON.stringify({ id: result.id, status: repaired.status,
       patterns: [...new Set(matches.map(m => m.pattern))], edits: repaired.edits.length,
+      voiceKept: repaired.voiceKept || undefined,
       elapsedMs: repaired.elapsedMs, errorType: repaired.errorType, model: PHRASE_REPAIR_MODEL,
       usage: repaired.usage, judgment: repaired.judgment, verification: repaired.verification }));
   } else if (matches.length > 0 && content.length > SLOP_REWRITE_MAX_CHARS) {
@@ -2555,7 +2599,32 @@ async function detectAndRewrite(result, upstreamBody) {
     }
   }
 
+  if (typeof voiceMeterLog === 'function') {
+    voiceMeterLog(result.id, upstreamBody, 'text', choice.message.content,
+      { think: !!(upstreamBody.reasoning && upstreamBody.reasoning.enabled === true) }, voiceDraft);
+  }
   return result;
+}
+
+/* Nov 12 2026 -- THE VOICE METER (voice-meter.js). One [voice-meter] line per character reply
+ * with counts only: the character's own grammar, word choice, swears and stated positions, and
+ * how many house tics are left in it. No reply text is logged. Typed turns are measured after
+ * every editor (draftPer100 is the same count before them, when they changed anything); calls are
+ * measured as streamed, since no editor runs there. A character turn is one whose persona names
+ * it. Kill: KADE_VOICE_METER=0. */
+function voiceMeterLog(id, upstreamBody, lane, text, extra = {}, draft) {
+  try {
+    if (!voiceMeter.meterOn() || typeof text !== 'string' || !text.trim()) return;
+    const who = voiceMeterCharacterOf(upstreamBody).name;
+    if (!who) return;
+    const reel = reelInfo(upstreamBody);
+    console.log(voiceMeter.logLine(id, who, lane, text, {
+      tics: ticsOf(text).length,
+      ...(reel ? { reel: reel.ids } : {}),
+      ...extra,
+      ...(typeof draft === 'string' && draft !== text ? { draftPer100: voiceMeter.measure(draft).dialectPer100 } : {}),
+    }));
+  } catch (e) { /* a meter never breaks a reply */ }
 }
 
 /* Nov 10 2026 (review): a re-ask's finish_reason is copied onto a reply that carries words
@@ -3710,7 +3779,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     try {
       upstream = await fetchWithTimeout(
         chatCompletionsUrl(upstreamBody.model),
-        { method: 'POST', headers: chatHeaders(upstreamBody.model), body: JSON.stringify(upstreamBody), signal: hangup },
+        { method: 'POST', headers: chatHeaders(upstreamBody.model), body: JSON.stringify(typeof reelOnWire === 'function' ? reelOnWire(upstreamBody) : upstreamBody), signal: hangup },
         STREAM_IDLE_TIMEOUT_MS
       );
     } catch (err) {
@@ -3950,6 +4019,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let streamAbortWhy = ''; // GW-2: why the read ended early, for the stall notice's log line
   let usage = null;
   let upstreamProvider = null;
+  let upstreamModel = null; // Nov 12 2026: the model the host says it served, for the log line below
   let sawDone = false;      // phoneLive: whether upstream's [DONE] was already forwarded
   let phoneFirstWrite = 0;  // phoneLive: t of first live content byte (latency logging)
   /* GW-2: 0 until the host's first visible character on a phone turn, then the time of its last data event. */
@@ -4248,6 +4318,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           // to prove the fp8 pin is holding, and to re-test the logged
           // model grievances against a KNOWN machine instead of a draw.
           if (!upstreamProvider && chunk.provider) upstreamProvider = chunk.provider;
+          if (!upstreamModel && chunk.model) upstreamModel = chunk.model;
           if (addedUsage && chunk.usage && (!Array.isArray(chunk.choices) || chunk.choices.length === 0)) {
             handledLive = true; // usage-only frame we asked for ourselves -- logged at loop end, never forwarded
           }
@@ -4468,7 +4539,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     streamAborted = false;
   }
   console.log(`[req ${reqId}] read loop ended at ${Date.now() - t0}ms, toolMode=${toolMode}, contentAccum.length=${contentAccum.length}, reasoningAccum.length=${reasoningAccum.length}, finishReason=${finishReason}`);
-  console.log(`[req ${reqId}] served by provider=${upstreamProvider || '(not reported)'}`);
+  /* Nov 12 2026: the served model and the sampler that was sent ride the same line, so a silent
+   * fall to another model shows in the log. Settings only, no text. */
+  console.log(`[req ${reqId}] served by provider=${upstreamProvider || '(not reported)'} model=${upstreamModel || '(not reported)'}` +
+    ` sent: temp=${upstreamBody.temperature ?? '-'} top_p=${upstreamBody.top_p ?? '-'} max_tokens=${upstreamBody.max_tokens ?? '-'}`);
+  if (phoneLive && !toolMode) voiceMeterLog(reqId, upstreamBody, 'call', contentAccum, { think: reasoningAccum.length > 0, host: upstreamProvider || undefined });
   if (toolMode && !usage) usage = usageFromSseTail(toolTail);
   if (usage) {
     const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;
@@ -5219,7 +5294,7 @@ app.post('/chat/completions', async (req, res) => {
   if (shim.active) console.log(`[req ${reqId}] TOOL SHIM active for ${req.body.model} (${_toolNames.length} tools -> prompt)`);
 
   if (wantsStream) {
-    const upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: true, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId, { live: !shim.active && screenLivePossible(req, shim.body) }) })));
+    const upstreamBody = withReasoningIncluded(withProviderExclusion(withCharacterVoice(appendReminder({ ...shim.body, stream: true, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId, { live: !shim.active && screenLivePossible(req, shim.body) }) }))));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
     // Deep-Think shim turns need the buffered path (their reply is one big
@@ -5235,7 +5310,7 @@ app.post('/chat/completions', async (req, res) => {
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  let upstreamBody = withReasoningIncluded(withProviderExclusion(appendReminder({ ...shim.body, stream: false, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId) })));
+  let upstreamBody = withReasoningIncluded(withProviderExclusion(withCharacterVoice(appendReminder({ ...shim.body, stream: false, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId) }))));
   // Part 63: the router moved out of callOpenRouterOnce (see the comment
   // there). Non-stream person/room turns route here, same policy as the
   // streaming path at handleStreaming -- and now with a reqId in the logs.

@@ -1,4 +1,9 @@
 'use strict';
+/* Nov 12 2026: this file pins the house notes as they were on Nov 11. The voice licence
+ * (KADE_VOICE_LICENCE) and the pet-name sentence (KADE_OWN_ADDRESS) are on by default and are
+ * pinned in voice-licence.test.js. Here both are switched off, which must give the old bytes. */
+process.env.KADE_VOICE_LICENCE = '0';
+process.env.KADE_OWN_ADDRESS = '0';
 
 const test = require('node:test');
 const assert = require('node:assert');

@@ -19,6 +19,7 @@ Configuration:
 - `KADE_PHRASE_REPAIR=0`: restore the previous whole-reply style pass and omit the new detector families.
 - `KADE_JEV_PHRASE_REPAIR=0`: keep local editing, without the Jev gates. Global `KADE_JEV=0` and a missing Typesafe key also disable them.
 - `KADE_PHRASE_REPAIR_MODEL`: utility model override; default `deepseek/deepseek-v4.1-flash`. It does not change any character's model or persona.
+- `KADE_VOICE_GUARD=0`: turn off the voice guard (Nov 12 2026, `voice-lexicon.js`). With it on, one edit that standardises the speaker's dialect, drops a swear from a sentence it keeps, or adds a house tic is skipped and counted as `voiceKept` in the log; the other edits still apply.
 
 `[phrase-repair]` logs decisions, counts, model-specific usage and Jev probabilities without logging the draft or edited passages. Utility costs are separate from original-model token billing. `/slop-stats` distinguishes local edits, contextual keeps and failures. Counters reset on deploy.
 
