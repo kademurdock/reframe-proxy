@@ -143,18 +143,26 @@ const { casualHouseOn } = require('./casual-house');
 const { voicePerformanceNoteFor } = require('./voice-performance');
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
 
 // -- auth guard for everything except /health --------------------------------
+/* Nov 12 2026 (gateway audit GW-8): checked BEFORE the body is read. This service sits on a public domain
+ * and used to buffer and JSON.parse up to 10 MB for anyone first; the voice proxy closed the same door on
+ * Nov 8 (body-limits.js afterSecret). Only a GET or HEAD of /health skips the bearer: a POST /health would
+ * otherwise walk past this guard into the body parser below. The 401 closes the connection, so a caller
+ * without the secret cannot keep pouring an unread body into a kept-alive socket. */
 app.use((req, res, next) => {
-  if (req.path === '/health') return next();
+  if (req.path === '/health' && (req.method === 'GET' || req.method === 'HEAD')) return next();
   const auth = req.headers['authorization'] || '';
   const ok = auth === `Bearer ${PROXY_SHARED_SECRET}`;
   if (!ok) {
+    res.set('Connection', 'close');
     return res.status(401).json({ error: { message: 'Unauthorized' } });
   }
   next();
 });
+
+// Body parsing only for callers that passed the guard above (or a body-less GET/HEAD /health).
+app.use(express.json({ limit: '10mb' }));
 
 app.get('/health', (req, res) => {
   const out = { status: 'ok', service: 'reframe-proxy', reframeLevel: REFRAME_LEVEL };
