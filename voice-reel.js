@@ -17,10 +17,14 @@
  *   THE REEL   KADE_VOICE_REEL=1. A few short exchanges, picked per conversation from an
  *              owner-approved pool of at least 12, ride as real user/assistant turns between the
  *              system head and the real history. Chosen by a hash of the conversation's first
- *              message, so one conversation always carries the same reel (the cached prefix holds)
- *              and two conversations carry different ones (no single line can become a tic).
+ *              message, so one conversation carries the same reel from turn to turn and two
+ *              conversations carry different ones (no single line can become a tic).
  *              A line whose subject overlaps what the person just said sits that turn out: the
  *              recorded failure is content copy on a topic match.
+ *              COST, to settle before this is ever switched on (review, Nov 12): the reel sits
+ *              right after the system head, so on a turn where a line sits out, and on the turn
+ *              after it, everything behind the head is billed uncached. The prefix holds only on
+ *              turns whose reel is the same as the turn before.
  *
  *   THE CARD   KADE_VOICE_CARD=1. About 80 words in the character's own first person and grammar,
  *              as the very last words of the gateway tail, after the talk note. It holds no sample

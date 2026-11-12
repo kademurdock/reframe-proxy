@@ -4544,6 +4544,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   console.log(`[req ${reqId}] served by provider=${upstreamProvider || '(not reported)'} model=${upstreamModel || '(not reported)'}` +
     ` sent: temp=${upstreamBody.temperature ?? '-'} top_p=${upstreamBody.top_p ?? '-'} max_tokens=${upstreamBody.max_tokens ?? '-'}`);
   if (phoneLive && !toolMode) voiceMeterLog(reqId, upstreamBody, 'call', contentAccum, { think: reasoningAccum.length > 0, host: upstreamProvider || undefined });
+  // A live screen turn (KADE_SCREEN_LIVE, off by default) skips the editors, so the typed lane's
+  // line never runs for it. It is measured as streamed, like a call.
+  if (screenLive && !toolMode) voiceMeterLog(reqId, upstreamBody, 'screen-live', contentAccum, { think: reasoningAccum.length > 0, host: upstreamProvider || undefined });
   if (toolMode && !usage) usage = usageFromSseTail(toolTail);
   if (usage) {
     const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;

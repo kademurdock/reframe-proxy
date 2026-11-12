@@ -23,6 +23,46 @@ test('standard English scores zero, whatever it is about', () => {
   }
 });
 
+test('review: the plain sentences the meter used to read as dialect score zero', () => {
+  for (const t of [
+    'She got the job, and it got her out of that house.',
+    'He got home late. She got it fixed.',
+    'He is not coming. She got the tickets though.',
+    'Let me tell you something about that pump.',
+    'I\'ll give you everything I have on it, and it will cost you nothing.',
+    'I\'ll call you during lunch. Good morning, you darling thing.',
+    'Yo-yo dieting never works for real people. For real estate, yes.',
+    'Doesn\'t it look good? Why can\'t he go? Didn\'t she say so? Won\'t it take long?',
+    'That makes it look cheap. I have never seen it go that fast. It helps it get started.',
+    'Does it get cold? It does get cold, and she did do it.',
+  ]) {
+    const m = measure(t);
+    assert.strictEqual(m.grammar + m.wordChoice + m.swears, 0, t + ' -> ' + JSON.stringify(m.kinds));
+  }
+  // a long plain reply that says "she got it fixed" in every sentence used to score 5 per 100
+  assert.strictEqual(measure('She got it fixed and went home for the night. '.repeat(150)).dialectPer100, 0);
+});
+
+test('review: the same kinds still count the real thing', () => {
+  const n = (t, kind) => measure(t).kinds[kind] || 0;
+  assert.strictEqual(n('She do that every time. He get mad about it.', 'plain_third'), 2);
+  assert.strictEqual(n('Oh, he know exactly what he doing.', 'plain_third'), 1);
+  assert.strictEqual(n('Who we talking about? You riding with her?', 'no_copula'), 2);
+  assert.strictEqual(n('Nah, for real, yo, that was wild.', 'street_words'), 3);
+  assert.strictEqual(n('He trippin, for real. For real though, I mean it. You for real?', 'street_words'), 3);
+});
+
+test('review: a reply stuck printing blank space costs the meter nothing, and counts the same', () => {
+  for (const pad of ['\n', ' ', ' \n', '\t']) {
+    const t0 = Date.now();
+    const m = measure('Okay.' + pad.repeat(40000) + 'Lord, he ain\'t coming.');
+    assert.ok(Date.now() - t0 < 2000, 'measure took ' + (Date.now() - t0) + ' ms on ' + JSON.stringify(pad));
+    assert.deepStrictEqual(m.kinds, { aint: 1, interjection: 1 });
+    assert.strictEqual(m.words, 5);
+  }
+  assert.deepStrictEqual(measure('Okay.\n\n\nLord, that boy can eat.').kinds, measure('Okay.\nLord, that boy can eat.').kinds);
+});
+
 test('each kind counts its own feature', () => {
   const one = (t, kind) => assert.ok(measure(t).kinds[kind] >= 1, kind + ' missed in: ' + t + ' ' + JSON.stringify(measure(t).kinds));
   one('Half of them ain\'t even thirsty.', 'aint');
@@ -128,6 +168,9 @@ test('server.js calls the meter on the typed lane after the editors and on the c
   const src = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
   assert.ok(src.includes("voiceMeterLog(result.id, upstreamBody, 'text', choice.message.content,"));
   assert.ok(src.includes("if (phoneLive && !toolMode) voiceMeterLog(reqId, upstreamBody, 'call', contentAccum,"));
+  // a live screen turn skips the editors, so it is measured as streamed too
+  assert.ok(src.includes("if (screenLive && !toolMode) voiceMeterLog(reqId, upstreamBody, 'screen-live', contentAccum,"));
+  assert.ok(src.indexOf('const screenLive = screenLiveFor(') < src.indexOf("if (screenLive && !toolMode) voiceMeterLog("));
   assert.ok(src.includes('const voiceDraft = content;'));
   assert.ok(src.indexOf('const voiceDraft = content;') < src.indexOf('const observedMatches = collectMatches(content, upstreamBody);'));
   const line = src.split('\n').find((l) => l.includes('served by provider='));

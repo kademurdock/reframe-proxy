@@ -30,8 +30,8 @@ const BLOCKLIST = [
   { phrase: 'im here for it', category: 'validation_slop' },
   { phrase: "i'm here for you", category: 'validation_slop' },
   { phrase: 'im here for you', category: 'validation_slop' },
-  { phrase: "i've got you", category: 'validation_slop' },
-  { phrase: 'ive got you', category: 'validation_slop' },
+  { phrase: "i've got you", category: 'validation_slop', whole: true },
+  { phrase: 'ive got you', category: 'validation_slop', whole: true },
   { phrase: "you're not alone", category: 'validation_slop' },
   { phrase: 'youre not alone', category: 'validation_slop' },
   { phrase: "that's so valid", category: 'validation_slop' },
@@ -266,9 +266,11 @@ function detectBlocklist(text) {
   for (const entry of BLOCKLIST) {
     let idx = lower.indexOf(entry.phrase);
     while (idx !== -1) {
-      // Nov 12 2026: a phrase ends at a word end. "i've got you" used to match "I've got your
-      // back"; KADE_SLOP_WORD_BOUNDARY=0 restores the old substring match.
-      if (process.env.KADE_SLOP_WORD_BOUNDARY !== '0' && /[a-z]$/.test(entry.phrase) &&
+      // Nov 12 2026: an entry marked whole ends at a word end. "i've got you" used to match
+      // "I've got your back"; KADE_SLOP_WORD_BOUNDARY=0 restores the old substring match. Only the
+      // marked entries: others are prefixes on purpose ("let me know if you have any" catches
+      // "anything", "chaos goblin" catches "goblins"), and a whole-word rule for all dropped those.
+      if (entry.whole && process.env.KADE_SLOP_WORD_BOUNDARY !== '0' &&
           /[a-z]/.test(lower[idx + entry.phrase.length] || '')) {
         idx = lower.indexOf(entry.phrase, idx + entry.phrase.length);
         continue;

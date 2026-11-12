@@ -211,7 +211,8 @@ function checkEdit(before, after, kind, rest = '') {
   if (voiceGuardOn()) {
     if (process.env.KADE_VOICE_GUARD_MAXIM === '1' && after === '' && kind === 'maxim' && voiceTokens(before).length) return 'voice dropped';
     if (voiceLoss(before, after)) return 'voice dropped';
-    if (ticAdded(before + ' ' + rest, after)) return 'tic added';
+    // against the sentence being edited only: a tic elsewhere in the reply does not pay for a second one
+    if (ticAdded(before, after)) return 'tic added';
   }
   return '';
 }

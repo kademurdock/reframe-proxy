@@ -57,8 +57,10 @@ function casualHouseOn(env = process.env) {
  *
  * KADE_VOICE_LICENCE, on by default; =0 sends the text these notes had before, byte for byte
  * (voice-licence.test.js pins both). KADE_OWN_ADDRESS, on by default, is the pet-name sentence
- * alone (conversation-judgment.js); =0 puts that sentence back. Like the casual house, an env
- * object that does not name a switch falls back to the process environment. */
+ * alone (conversation-judgment.js); =0 puts that sentence back. The conversation note as it was
+ * on Nov 11, byte for byte, takes BOTH switches at 0. A child or teen turn keeps the old pet-name
+ * sentence whatever the switch says (KADE_OWN_ADDRESS_CHILD=1 undoes that). Like the casual
+ * house, an env object that does not name a switch falls back to the process environment. */
 function houseSwitchOn(name, env = process.env) {
   const own = env ? env[name] : undefined;
   const value = own !== undefined && own !== null ? own : process.env[name];

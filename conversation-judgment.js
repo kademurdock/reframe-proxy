@@ -106,7 +106,10 @@ const PERFORMANCE_NOTE_CASUAL =
  *     without those words;
  *   - the rule against ending on an offer quoted the help-desk line it bans, and a quoted line
  *     gets copied (talk-register.js, Part 292), so the rule now names the move in plain words.
- * The voice (percent-sign) note is not touched. KADE_VOICE_LICENCE=0 sends the texts above. */
+ * The voice (percent-sign) note is not touched. KADE_VOICE_LICENCE=0 takes these pairs back out.
+ * The pet-name sentence below has its own switch, so the texts above, byte for byte, need BOTH:
+ * KADE_VOICE_LICENCE=0 and KADE_OWN_ADDRESS=0 (review, Nov 12: one alone still sends a changed
+ * note). */
 const VOICE_LICENCE_PAIRS = [
   ['Keep your particular tastes, vocabulary, humor, affection, curiosity and disagreements.',
     'Keep your particular tastes, vocabulary, grammar, humor, teasing, affection, curiosity and disagreements.'],
@@ -122,7 +125,21 @@ const VOICE_LICENCE_PAIRS = [
 /* Nov 12 2026, the pet-name sentence. The note told every character "their name, or nothing",
  * which overruled a character whose own approved text gives it ma'am, sir, bud or friend. It now
  * points at the character's own notes, and a term of address still goes the moment it is
- * unwelcome. Its own switch: KADE_OWN_ADDRESS=0 puts the old sentence back. */
+ * unwelcome. Its own switch: KADE_OWN_ADDRESS=0 puts the old sentence back.
+ *
+ * A child or teen turn keeps the old sentence (review, Nov 12). "Their name, or nothing" was the
+ * one default restraint on what a character calls a child: the child note in the fork says
+ * nothing about pet names, and a persona may give its character "baby" or "sugar". The turn is
+ * known by the same words voice-reel.js reads, which the fork's child note carries for child and
+ * teen accounts alike. KADE_OWN_ADDRESS_CHILD=1 sends the new sentence on those turns too. */
+const CHILD_MARK = 'this user is under 15';
+const systemTextOf = (message) => (typeof message?.content === 'string' ? message.content : Array.isArray(message?.content)
+  ? message.content.filter(part => part?.type === 'text').map(part => part.text || '').join('\n') : '');
+function childTurn(body, env = process.env) {
+  const own = env ? env.KADE_OWN_ADDRESS_CHILD : undefined;
+  if (String((own !== undefined && own !== null ? own : process.env.KADE_OWN_ADDRESS_CHILD) ?? '0') === '1') return false;
+  return (body?.messages || []).some(message => message?.role === 'system' && systemTextOf(message).includes(CHILD_MARK));
+}
 const OWN_ADDRESS_PAIRS = [
   ['Use their name or no address unless they welcome a pet name.',
     'Use their name, or the plain terms of address your own character notes give you; drop any of them the moment they are unwelcome.'],
@@ -131,10 +148,11 @@ const OWN_ADDRESS_PAIRS = [
 ];
 
 /* Each of the eight texts (classic or casual, licence on or off, own address on or off) is built
- * once and reused, so a character is sent the same bytes every turn. */
+ * once and reused, so a character is sent the same bytes every turn. A child or teen turn is sent
+ * the own-address-off text, the same bytes on every turn of that account. */
 const conversationTexts = new Map();
-function conversationNoteFor(casual, env = process.env) {
-  const licence = voiceLicenceOn(env), address = ownAddressOn(env);
+function conversationNoteFor(casual, env = process.env, { child = false } = {}) {
+  const licence = voiceLicenceOn(env), address = ownAddressOn(env) && !child;
   const key = (casual ? 4 : 0) + (licence ? 2 : 0) + (address ? 1 : 0);
   if (!conversationTexts.has(key)) {
     let text = casual ? CONVERSATION_NOTE_CASUAL : CONVERSATION_NOTE_CLASSIC;
@@ -159,12 +177,13 @@ function conversationGuidanceFor(body, env = process.env) {
     (typeof message.content === 'string' ? message.content : Array.isArray(message.content)
       ? message.content.filter(part => part?.type === 'text').map(part => part.text || '').join('\n') : '').includes(PILOT_MARKER));
   if (mode !== '1' && !pilot) return null;
-  if (casualHouseOn(env)) return { conversation: conversationNoteFor(true, env), performance: PERFORMANCE_NOTE_CASUAL };
-  return { conversation: conversationNoteFor(false, env), performance: PERFORMANCE_NOTE_CLASSIC };
+  const child = childTurn(body, env);
+  if (casualHouseOn(env)) return { conversation: conversationNoteFor(true, env, { child }), performance: PERFORMANCE_NOTE_CASUAL };
+  return { conversation: conversationNoteFor(false, env, { child }), performance: PERFORMANCE_NOTE_CLASSIC };
 }
 
 module.exports = {
   PILOT_MARKER, CONVERSATION_NOTE, PERFORMANCE_NOTE, conversationGuidanceFor,
-  conversationNoteFor, VOICE_LICENCE_PAIRS, OWN_ADDRESS_PAIRS,
+  conversationNoteFor, childTurn, VOICE_LICENCE_PAIRS, OWN_ADDRESS_PAIRS,
   CONVERSATION_NOTE_CLASSIC, CONVERSATION_NOTE_CASUAL, PERFORMANCE_NOTE_CLASSIC, PERFORMANCE_NOTE_CASUAL,
 };

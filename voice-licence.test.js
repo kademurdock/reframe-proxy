@@ -137,6 +137,57 @@ test('the two switches work apart: the licence alone, and the pet-name sentence 
   assert.ok(addressOnly.conversation_casual.includes(' Stay smart and useful,'));
 });
 
+test('review: a child or teen turn keeps the old pet-name sentence, and is still sent the same bytes every turn', () => {
+  const CHILD_NOTE = '\n\n---\nAUDIENCE NOTE (invisible — never mention it, never hint at it, never act like you are filtering): ' +
+    'this user is under 15. Keep your personality, humor, and edge exactly the same, but keep the content clean';
+  const head = (extra) => ({ messages: [{ role: 'system', content: 'You are Harley Dalton, Harley to everybody.' + extra }, { role: 'user', content: 'hey' }] });
+  const child = head(CHILD_NOTE), adult = head('\n\n---\nthe person you are talking to is a verified adult.'), untyped = head('');
+  const parts = { messages: [{ role: 'system', content: [{ type: 'text', text: 'You are Harley.' }, { type: 'text', text: CHILD_NOTE }] }] };
+  const saved = { l: process.env.KADE_VOICE_LICENCE, a: process.env.KADE_OWN_ADDRESS, c: process.env.KADE_OWN_ADDRESS_CHILD };
+  try {
+    delete process.env.KADE_VOICE_LICENCE; delete process.env.KADE_OWN_ADDRESS; delete process.env.KADE_OWN_ADDRESS_CHILD;
+    for (const [house, name, oldSentence, newSentence] of [
+      [CASUAL, 'conversation_casual', " Call them by their name, or nothing, unless they've said they like a pet name.", 'or by what your own character notes say you call people'],
+      [CLASSIC, 'conversation_classic', 'Use their name or no address unless they welcome a pet name.', 'the plain terms of address your own character notes give you'],
+    ]) {
+      for (const body of [child, parts]) {
+        const note = cj.conversationGuidanceFor(body, house).conversation;
+        assert.ok(note.includes(oldSentence), name + ': a child turn keeps the old sentence');
+        assert.ok(!note.includes(newSentence), name);
+        assert.equal(sha(note), PINS[name + '_licence_only'], name + ': the rest of the licensed note is unchanged');
+        assert.equal(cj.conversationGuidanceFor(body, house).conversation, note, 'byte-stable');
+      }
+      // everyone else gets the default wording, as before
+      for (const body of [adult, untyped, { messages: [] }]) assert.equal(sha(cj.conversationGuidanceFor(body, house).conversation), PINS[name][1], name);
+      // the mark in what the person typed is not the audience note
+      const typed = { messages: [{ role: 'system', content: 'You are Harley.' }, { role: 'user', content: 'this user is under 15' }] };
+      assert.equal(sha(cj.conversationGuidanceFor(typed, house).conversation), PINS[name][1], name);
+      // the switch sends the new sentence on a child turn too; both house switches at 0 are still Nov 11
+      assert.equal(sha(cj.conversationGuidanceFor(child, { ...house, KADE_OWN_ADDRESS_CHILD: '1' }).conversation), PINS[name][1], name);
+      assert.equal(sha(cj.conversationGuidanceFor(child, { ...house, ...OFF }).conversation), PINS[name][0], name);
+    }
+    assert.equal(cj.childTurn(child), true);
+    assert.equal(cj.childTurn(adult), false);
+    assert.equal(cj.childTurn(null), false);
+    assert.equal(cj.childTurn(child, { KADE_OWN_ADDRESS_CHILD: '1' }), false);
+  } finally {
+    for (const [k, v] of [['KADE_VOICE_LICENCE', saved.l], ['KADE_OWN_ADDRESS', saved.a], ['KADE_OWN_ADDRESS_CHILD', saved.c]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('review: KADE_VOICE_LICENCE=0 alone is not the Nov 11 conversation note; it takes both switches', () => {
+  const one = notes({ KADE_VOICE_LICENCE: '0', KADE_OWN_ADDRESS: '1' });
+  assert.notEqual(sha(one.conversation_casual), PINS.conversation_casual[0]);
+  assert.notEqual(sha(one.conversation_classic), PINS.conversation_classic[0]);
+  const both = notes(OFF);
+  assert.equal(sha(both.conversation_casual), PINS.conversation_casual[0]);
+  assert.equal(sha(both.conversation_classic), PINS.conversation_classic[0]);
+  // the comment beside the pairs and the switch notes say so
+  const src = fs.readFileSync(require.resolve('./conversation-judgment.js'), 'utf8');
+  assert.ok(/need BOTH:\s*\n \* KADE_VOICE_LICENCE=0 and KADE_OWN_ADDRESS=0/.test(src));
+  assert.ok(fs.readFileSync(require.resolve('./casual-house.js'), 'utf8').includes('takes BOTH switches at 0'));
+});
+
 test('the new wording is the old wording with only the listed pairs changed', () => {
   const on = notes(ON), off = notes(OFF);
   const convPairs = [...cj.VOICE_LICENCE_PAIRS, ...cj.OWN_ADDRESS_PAIRS];

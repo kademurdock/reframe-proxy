@@ -81,6 +81,22 @@ test('every line and card reads clean on the platform\'s own detectors and shows
   }
 });
 
+/* Review, Nov 12: three drafts said what the speaker is NOT doing and then what they are ("I ain't
+ * saying don't. I'm saying ...", "I ain't writing nothing down, I'm talking"). The detectors above
+ * do not see that shape, and a seed turn is where a model copies from. */
+test('review: no line or card knocks an idea down and then says the real one', () => {
+  const DENY_THEN_SAY = /\b(?:ain't|isn't|not|don't|wasn't)\b[^.!?]*[,.;]\s+(?:i'm|i am|it's|that's|he's|she's|they're|you're)\s/i;
+  const SAY_THEN_DENY = /\b(?:i'm|it's|that's|he's|she's)\b[^.!?,]*,\s+(?:i|it|that|he|she)\s+(?:ain't|isn't|am not|is not)\b/i;
+  assert.ok(DENY_THEN_SAY.test("I ain't saying don't. I'm saying I'd wanna know."), 'the pattern sees the old k10');
+  assert.ok(DENY_THEN_SAY.test("I ain't writing nothing down, I'm talking"), 'the pattern sees the old Kiana card');
+  assert.ok(SAY_THEN_DENY.test("I'm talking across a tailgate, I ain't writing for the paper"), 'the pattern sees the old Harley card');
+  for (const p of POOLS) {
+    for (const text of [...p.lines.map((l) => l.you), p.card]) {
+      assert.ok(!DENY_THEN_SAY.test(text) && !SAY_THEN_DENY.test(text), p.id + ' / ' + text.slice(0, 60));
+    }
+  }
+});
+
 test('no line calls the listener by a pet name, and no clean line or card swears', () => {
   const PET = /\b(?:girl|sis|baby|babe|hon|honey|sugar|darlin'?|boo|bro|man|dude|buddy|kiddo)\b[,.!?]/i;
   for (const p of POOLS) {

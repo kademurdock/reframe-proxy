@@ -140,7 +140,7 @@ function applyEdits(text, targets, raw) {
     // Nov 12 2026: cut, never translate. An edit that standardises the speaker's dialect, drops a
     // swear from a sentence it keeps, or adds a house tic is skipped; the other edits still apply.
     // Kill: KADE_VOICE_GUARD=0.
-    if (voiceGuardOn() && (voiceLoss(e.before, e.after) || ticAdded(text, e.after))) { voiceKept++; continue; }
+    if (voiceGuardOn() && (voiceLoss(e.before, e.after) || ticAdded(e.before, e.after))) { voiceKept++; continue; }
     // Models often copy the whole target, including unchanged words or tags.
     // Narrow that proposal to its actual difference before checking/applying it.
     let prefix = 0, suffix = 0;

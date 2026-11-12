@@ -72,6 +72,15 @@ Io Net, then DeepInfra; the first usable answer wins and the rest are cancelled.
 - `KADE_VOICE_GUARD=0` turns the voice guard off here and in the phrase repair, and sends the
   editor prompt as it was before Nov 12. `KADE_VOICE_GUARD_MAXIM=1` (off by default) also keeps
   a saying in the character's own words from being deleted as a maxim.
+  What the guard lets through (review, Nov 12): a whole clause cut with the rest left word for
+  word ("It ain't about the money, it's about respect." to "It's about respect."), and a swear
+  or dialect word that only gained a contraction ("That shit is broken" to "That shit's broken").
+  A tic counts as added when the edited sentence did not have it, wherever else the reply says it.
+- House notes: `KADE_VOICE_LICENCE=0` and `KADE_OWN_ADDRESS=0` TOGETHER send the conversation
+  note as it was on Nov 11. One alone still sends a changed note. A child or teen turn always
+  keeps the old pet-name sentence; `KADE_OWN_ADDRESS_CHILD=1` (off by default) undoes that.
+- `KADE_SLOP_WORD_BOUNDARY=0` restores substring matching for the two "I've got you" entries of
+  the blocklist and for the hedge count. Every other blocklist entry still matches as a prefix.
 
 Log line: `[register-edit] {id,status,character,elapsedMs,chars,passes:[{status,ms,host,kinds,rejected}],usage}`.
 `/health` (with the bearer) shows `registerEdit.counts`.

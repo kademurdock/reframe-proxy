@@ -5,11 +5,11 @@
  * (slop-filter.js). Run: node --test voice-guard.test.js   (no network, no model) */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { voiceLoss, ticAdded, voiceTokens, licensedWords } = require('./voice-lexicon');
+const { voiceLoss, clauseCut, ticAdded, voiceTokens, licensedWords } = require('./voice-lexicon');
 const { checkEdit, SYSTEM, SYSTEM_BEFORE_NOV12, systemFor, registerEdit } = require('./register-edit');
 const phrase = require('./phrase-repair');
 const { conversationalRewriteMatches, DEFAULT_VOICE_ALLOW } = require('./conversation-style');
-const { detectSlop } = require('./slop-filter');
+const { detectSlop, BLOCKLIST } = require('./slop-filter');
 
 const withEnv = (vars, fn) => {
   const old = {};
@@ -183,6 +183,118 @@ test('whole-word fixes: got-your-back and mighty/couldn\'t are no longer flagged
     assert.ok(pats("That's a mighty fine truck, and I couldn't tell you a thing wrong with it.").includes('over_hedging'));
     assert.ok(pats('I might could get out there Thursday.').includes('over_hedging'));
   });
+});
+
+/* ── After the Nov 12 review ───────────────────────────────────────────────── */
+
+test('review: a clause cut whole is a cut, even when the two halves of the contrast are built alike', () => {
+  const rest = 'Other words.';
+  for (const [before, after] of [
+    ["It ain't about the money, it's about respect.", "It's about respect."],
+    ["She ain't mad at you, she's mad at herself.", "She's mad at herself."],
+    ["That ain't your fault, your boss set you up.", 'Your boss set you up.'],
+    ["He ain't being lazy, he's being careful.", "He's being careful."],
+    ["You ain't losing your mind, you're losing your patience.", "You're losing your patience."],
+    ["It ain't that he don't care, it's that he don't know how to say it.", "He don't know how to say it."],
+    ["He's being careful, he ain't being lazy.", "He's being careful."],
+  ]) {
+    assert.equal(checkEdit(before, after, 'contrast', rest), '', before + ' -> ' + after);
+    assert.equal(clauseCut(before, after), true, before);
+  }
+  // the phrase repair too: the dialect contrast is cut there as its standard twin is
+  const text = "It ain't about the money, it's about respect. He knows that.";
+  const targets = [{ id: 0, start: 0, end: 45, text: text.slice(0, 45), flags: ['x'] }];
+  const out = phrase.applyEdits(text, targets, JSON.stringify({ edits: [{ id: 0, before: text.slice(0, 45), after: "It's about respect." }] }));
+  assert.equal(out.status, 'edited');
+  assert.equal(out.voiceKept, 0);
+  assert.equal(out.text, "It's about respect. He knows that.");
+});
+
+test('review: what is not a clause cut still goes to the token test and is refused', () => {
+  // one word went, not a clause
+  assert.equal(clauseCut('Lord, that boy can eat.', 'That boy can eat.'), false);
+  assert.equal(voiceLoss('Lord, that boy can eat.', 'That boy can eat.'), 'lord');
+  // a lead-in with no subject and verb of its own
+  assert.equal(clauseCut("What the hell, y'all, the truck can't just leave like that.", "The truck can't just leave like that."), false);
+  assert.ok(voiceLoss("What the hell, y'all, the truck can't just leave like that.", "The truck can't just leave like that."));
+  // a clause went, and a swear went with it from the half that stays
+  assert.equal(clauseCut('I get it, that damn truck rattles all night.', 'Truck rattles all night.'), false);
+  assert.equal(voiceLoss('I get it, that damn truck rattles all night.', 'Truck rattles all night.'), 'damn');
+  // not one unbroken piece of the original
+  assert.equal(clauseCut("It ain't about the money, it's about respect.", "It isn't about the money, it's about respect."), false);
+  assert.equal(voiceLoss("It ain't about the money, it's about respect.", "It isn't about the money, it's about respect."), "ain't");
+  assert.equal(voiceLoss("It ain't about the money, it's about respect.", 'It is not about the money.'), "ain't");
+  // the same piece found inside a longer word is not the piece
+  assert.equal(clauseCut("She ain't sure, she's guessing.", "He's guessing."), false);
+  // nothing cut at all
+  assert.equal(clauseCut('He know better.', 'He know better.'), false);
+});
+
+test('review: standard English is not read as dialect, so a plain cut around it passes', () => {
+  assert.equal(checkEdit('Let me tell you something: the battery is the problem.', "The battery's the problem.", 'setup', 'Other words.'), '');
+  assert.equal(checkEdit('What are you going to do now, and where are you going to stay?', 'Where are you going to stay?', 'padding', 'Other words.'), '');
+  for (const t of [
+    'What are you going to do now, and where are you going to stay?', 'Were they coming to the lake?', "Aren't you going?",
+    'Let me tell you something about that pump.', "I'll give you everything I have, and it will cost you nothing.", "I'll call you during lunch.",
+    "I'll call you right back.", 'That would drive you crazy.', 'It serves you right.', 'I saw you coming.',
+    "Doesn't he know?", "Why can't she go?", "Didn't it look good?",
+  ]) assert.deepEqual(voiceTokens(t).map((x) => x.t), [], t);
+  // and the real thing is still seen
+  assert.deepEqual(voiceTokens('You good? We riding with her.').map((x) => x.t), ['zero-copula', 'zero-copula', 'no-copula']);
+  assert.deepEqual(voiceTokens('Oh, he know exactly what he doing out there.').map((x) => x.t).includes('plain-third'), true);
+  assert.equal(checkEdit('You good with that plan, or you want another?', 'Are you good with that plan?', 'padding', 'Other words.'), 'voice dropped');
+});
+
+test('review: a contraction on a swear or dialect word keeps the word', () => {
+  const rest = 'Other words.';
+  assert.equal(checkEdit("That shit is broken, and that's the truth of it.", "That shit's broken.", 'maxim', rest), '');
+  assert.equal(checkEdit('Asshole is about the messenger.', "Asshole's about the messenger.", 'padding', rest), '');
+  assert.equal(checkEdit("Y'all are late again, and that's a fact.", "Y'all're late again.", 'maxim', rest), '');
+  assert.deepEqual(voiceTokens("That shit's broken and y'all're late.").map((x) => x.t), ['shit', "y'all"]);
+  assert.equal(checkEdit('That shit is broken again.', 'That thing is broken again.', 'padding', rest), 'voice dropped');
+});
+
+test('review: a tic somewhere else in the reply does not pay for a second one', () => {
+  const rest = 'Honestly, I would let him sleep on the porch all day.';
+  assert.equal(checkEdit("Your dog's not ignoring you, he's retired.", "He's just retired, honestly.", 'contrast', rest), 'tic added');
+  assert.equal(checkEdit('That is the part of the trip that wears on you.', 'Honestly the trip wears on you.', 'setup', 'I honestly liked the food.'), 'tic added');
+  assert.equal(checkEdit('That is the plain fact of it.', "Here's the thing, it is a fact.", 'padding', "Here's the thing about him."), 'tic added');
+  // a sentence that had the tic may keep it
+  assert.equal(checkEdit('Honestly, the trip wears on you, and that is the whole of it.', 'Honestly, the trip wears on you.', 'maxim', rest), '');
+  // phrase repair: the reply opens on the word, the edit may not add another
+  const text = 'Honestly, I would not worry. That matters because he is old.';
+  const targets = [{ id: 0, start: 29, end: text.length, text: text.slice(29), flags: ['x'] }];
+  const raw = JSON.stringify({ edits: [{ id: 0, before: 'That matters because he is old.', after: 'He is old, honestly.' }] });
+  const out = phrase.applyEdits(text, targets, raw);
+  assert.equal(out.voiceKept, 1);
+  assert.equal(out.text, text);
+  withEnv({ KADE_VOICE_GUARD: '0' }, () => assert.equal(phrase.applyEdits(text, targets, raw).text, 'Honestly, I would not worry. He is old, honestly.'));
+});
+
+test('review: the whole-word rule is for the got-you entries only; entries that work as prefixes still catch', () => {
+  const pats = (t) => detectSlop(t, { userText: '' }).matches.map((m) => m.pattern);
+  assert.deepEqual(BLOCKLIST.filter((e) => e.whole).map((e) => e.phrase), ["i've got you", 'ive got you']);
+  assert.ok(pats('Let me know if you have anything else you need.').includes('blocklist:assistant_register'));
+  assert.ok(pats('You two are chaos goblins and I love it.').includes('blocklist:twee_whimsy'));
+  assert.ok(pats('You should lean into their strengths.').includes('blocklist:consultant_verb'));
+  assert.ok(!pats("I've got your back on this one.").includes('blocklist:validation_slop'));
+  // with the switch at 0 the filter is the substring match it was, for every entry
+  withEnv({ KADE_SLOP_WORD_BOUNDARY: '0' }, () => {
+    assert.ok(pats('Let me know if you have anything else you need.').includes('blocklist:assistant_register'));
+    assert.ok(pats("I've got your back on this one.").includes('blocklist:validation_slop'));
+  });
+});
+
+test('review: a reply stuck printing blank space costs the guard nothing', () => {
+  for (const pad of ['\n', ' ', ' \n', '\t']) {
+    const stuck = 'Okay.' + pad.repeat(40000) + 'Lord, done.';
+    const t0 = Date.now();
+    const tokens = voiceTokens(stuck);
+    assert.ok(Date.now() - t0 < 2000, 'voiceTokens took ' + (Date.now() - t0) + ' ms on ' + JSON.stringify(pad));
+    assert.deepEqual(tokens.map((x) => x.t), ['lord']);
+  }
+  // positions still line up after the run is folded: the cut is still judged right
+  assert.equal(voiceLoss('Lord,\n\n\n   that boy can eat.', 'That boy can eat.'), 'lord');
 });
 
 test('the lexicon reads a licence from persona text and counts nothing in standard English', () => {
