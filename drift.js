@@ -169,4 +169,50 @@ function applyDrift(text, opts = {}) {
   };
 }
 
-module.exports = { findDrift, applyDrift, userAskedForDraft, DRIFT_MARKERS };
+/**
+ * GW-12 (Nov 12 2026): the per-delta watch, throttled.
+ *
+ * The read loop used to call findDrift on the whole reply, and userAskedForDraft
+ * on the person's whole last message, on EVERY content delta: 1.7 s of
+ * synchronous CPU on the shared event loop for a 24k reply. This sweeps once
+ * per `every` new characters and once more at the end, and reads the person's
+ * message once per turn, lazily, so a short reply never pays for it and nothing
+ * runs ahead of the first byte.
+ *
+ * No line-break trigger, on purpose: lists and lyrics carry a newline in most
+ * deltas, and a sweep per newline is the per-delta scan all over again
+ * (measured: 2,952 sweeps / 241 ms on a 24k reply of short lines).
+ *
+ * Detect-only callers lose nothing: the final check sees the whole reply, and a
+ * marker found up to `every` characters later reports the same seam.
+ */
+function createDriftWatch(userText, opts = {}) {
+  const every = Number.isFinite(opts.every) && opts.every > 0 ? opts.every : 256;
+  const minLength = Number.isFinite(opts.minLength) ? opts.minLength : 400;
+  let off = null;      // null = the person's message has not been read yet
+  let checkedAt = 0;   // reply length at the last sweep
+  let sweeps = 0;
+  return {
+    /** How many full sweeps this turn has cost. For tests and logs. */
+    get sweeps() { return sweeps; },
+    /**
+     * @param {string} text   the reply so far
+     * @param {boolean} [final]  true once, after the stream has ended
+     * @returns the findDrift hit, or null
+     */
+    check(text, final = false) {
+      const s = typeof text === 'string' ? text : String(text || '');
+      if (off === true || s.length <= minLength) return null;
+      if (final ? s.length === checkedAt : s.length - checkedAt < every) return null;
+      if (off === null) {
+        off = userAskedForDraft(userText);
+        if (off) return null;
+      }
+      checkedAt = s.length;
+      sweeps += 1;
+      return findDrift(s, { userText: '' });
+    },
+  };
+}
+
+module.exports = { findDrift, applyDrift, userAskedForDraft, DRIFT_MARKERS, createDriftWatch };

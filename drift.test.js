@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { findDrift, applyDrift, userAskedForDraft } = require('./drift');
+const { findDrift, applyDrift, userAskedForDraft, createDriftWatch } = require('./drift');
 
 /* The real thing, trimmed but structurally faithful: a good answer, a clean
  * natural ending, then the seam. Verbatim fragments from the Aug 25 reply so
@@ -106,4 +106,52 @@ test('the earliest marker wins when several are present', () => {
   const hit = findDrift(CASIO);
   const firstMarkerAt = CASIO.indexOf('second post here');
   assert.ok(hit.cut < firstMarkerAt, 'cut must precede the earliest marker');
+});
+
+/* GW-12: feed a reply through the watch the way the read loop does. */
+function streamThrough(watch, reply, deltaLen) {
+  let acc = '';
+  let hit = null;
+  for (let i = 0; i < reply.length; i += deltaLen) {
+    acc += reply.slice(i, i + deltaLen);
+    if (!hit) hit = watch.check(acc);
+  }
+  if (!hit) hit = watch.check(acc, true);
+  return hit;
+}
+
+test('GW-12: the watch finds the Casio seam at any delta size, same cut as findDrift', () => {
+  const full = findDrift(CASIO);
+  for (const deltaLen of [1, 4, 37, 5000]) {
+    const hit = streamThrough(createDriftWatch('why did cereal box prizes go away'), CASIO, deltaLen);
+    assert.ok(hit, `delta ${deltaLen}: should have found the seam`);
+    assert.strictEqual(hit.cut, full.cut, `delta ${deltaLen}: same seam as the unthrottled check`);
+    assert.strictEqual(hit.marker, full.marker);
+  }
+});
+
+test('GW-12: the watch stands down when the person asked for a draft, without sweeping', () => {
+  const w = createDriftWatch('write me a reddit post about my casio');
+  assert.strictEqual(streamThrough(w, CASIO, 4), null);
+  assert.strictEqual(w.sweeps, 0);
+});
+
+test('GW-12: a short reply never sweeps and never reads the user text', () => {
+  const w = createDriftWatch('x'.repeat(60000));
+  assert.strictEqual(streamThrough(w, CASIO.slice(0, 400), 4), null);
+  assert.strictEqual(w.sweeps, 0);
+});
+
+test('GW-12: sweeps are bounded by length, not by deltas or line breaks', () => {
+  const user = 'tell me more about that. '.repeat(2400); // 60k
+  const prose = 'The quick brown fox jumps over the lazy dog and keeps going. '.repeat(400).slice(0, 24000);
+  const lines = 'a short\n'.repeat(3000); // 24k, a newline in every other delta
+  for (const [name, reply] of [['prose', prose], ['lines', lines]]) {
+    const w = createDriftWatch(user);
+    const t0 = process.hrtime.bigint();
+    assert.strictEqual(streamThrough(w, reply, 4), null);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(w.sweeps <= Math.ceil(reply.length / 256) + 1, `${name}: ${w.sweeps} sweeps for ${reply.length} chars`);
+    assert.ok(ms < 250, `${name}: took ${ms.toFixed(1)} ms (was ~1,700 ms per-delta)`);
+  }
 });

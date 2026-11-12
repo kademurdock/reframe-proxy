@@ -1,6 +1,6 @@
 const { createGistFilter } = require('./gist');
 const { conversationGuidanceFor } = require('./conversation-judgment');
-const { findDrift } = require('./drift');
+const { createDriftWatch } = require('./drift');
 const GIST_ON = process.env.KADE_GIST !== '0';
 /* Part 92.27 — the Casio watch. Detect-and-log only; there is no cut to
  * disable, which is the point. KADE_DRIFT=0 silences it entirely. */
@@ -3915,6 +3915,19 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
                    * malformed body must never break a turn over a guard */ }
     return '';
   })();
+  /* GW-12 (Nov 12 2026): one throttled watch per turn instead of a whole-reply,
+   * whole-message rescan on every delta. See drift.js createDriftWatch. */
+  const driftWatch = DRIFT_WATCH ? createDriftWatch(lastUserText) : null;
+  const noteDrift = (final) => {
+    if (!driftWatch || driftSeen) return;
+    const d = driftWatch.check(contentAccum, final);
+    if (!d) return;
+    driftSeen = true;
+    console.warn(
+      `⚠️ [req ${reqId}] DRIFT: reply left its own voice at char ${d.cut} ` +
+      `(kept ${d.kept}, would drop ${d.dropped}) marker=${d.marker} — DETECT ONLY, nothing cut`,
+    );
+  };
   /* Part 92.19 — the thinking bubble shows a GIST now, not the raw chain.
  * Her ask: "we need some kind of gist if the model is thinking, so people at
  * least feel like they know what's going on… but without divulging prompting."
@@ -4347,21 +4360,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
              * and no session can test that wiring from a sandbox. A guard
              * that eats a real reply is worse than the bug it was built for.
              *
-             * So this logs and nothing else. It costs one regex sweep per
-             * turn and it buys the number nobody has: how often this happens
+             * So this logs and nothing else. It costs one regex sweep per 256
+             * new characters (GW-12) and it buys the number nobody has: how often this happens
              * across ALL seats, not just the one whose transcripts a session
              * is allowed to read. Turn the cut on only when that number and
              * Kade both say so. Kill: KADE_DRIFT=0. */
-            if (DRIFT_WATCH && !driftSeen && contentAccum.length > 400) {
-              const d = findDrift(contentAccum, { userText: lastUserText });
-              if (d) {
-                driftSeen = true;
-                console.warn(
-                  `⚠️ [req ${reqId}] DRIFT: reply left its own voice at char ${d.cut} ` +
-                  `(kept ${d.kept}, would drop ${d.dropped}) marker=${d.marker} — DETECT ONLY, nothing cut`,
-                );
-              }
-            }
+            noteDrift(false);
             if (shimLive && delta.content.length > 0) {
               drainShim(false);
               handledLive = true;
@@ -4453,6 +4457,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
 
   stopHeartbeat();
   stopThinkTimer();
+  /* GW-12: the last sweep, over whatever arrived since the previous one. */
+  noteDrift(true);
   /* The deadline's own cut is a thought that ran out of time, the same as a thought that ran out
    * of tokens: the wordless guard takes it as finish=length, and it is no dead connection, so the
    * truncation retry (which would think again from the start) never sees it. */
