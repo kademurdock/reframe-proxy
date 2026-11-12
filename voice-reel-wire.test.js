@@ -89,11 +89,12 @@ test('the reel survives the think router and a later turn keeps the same reel', 
   assert.deepEqual(m2.slice(0, 9), m1.slice(0, 9), 'head and reel are byte for byte the same on a later turn');
 });
 
-test('KADE_VOICE_REEL=1 alone does nothing: the shipped pools are drafts until a pool says approved', async () => {
-  const r = await run({ env: { KADE_VOICE_REEL: '1', KADE_VOICE_CARD: '1' } });
-  assert.deepEqual(r.wire[0].messages.map((x) => x.role), ['system', 'user', 'system']);
-  assert.ok(r.wire[0].messages[2].content.endsWith(TALK_NOTE_CASUAL));
-  assert.ok(!JSON.stringify(r.wire).includes('VOICE REEL'));
+test('KADE_VOICE_REEL=1 alone: Kiana\'s approved pool rides without the drafts switch, and the card stays off', async () => {
+  const r = await run({ env: { KADE_VOICE_REEL: '1' } });
+  const msgs = r.wire[0].messages;
+  assert.equal(msgs.filter((x) => x.role === 'user' && x.content.startsWith(HEADER)).length, 4, 'four reel exchanges');
+  assert.equal(msgs[msgs.length - 1].role, 'system');
+  assert.ok(msgs[msgs.length - 1].content.endsWith(TALK_NOTE_CASUAL), 'no card without KADE_VOICE_CARD');
 });
 
 test('typed turns only: a phone turn goes without the reel unless KADE_VOICE_REEL_CALLS=1', async () => {

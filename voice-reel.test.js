@@ -23,10 +23,13 @@ const body = (said, head = KIANA_HEAD, extra = {}) => ({
   ...extra,
 });
 
-test('both draft pools load, are big enough clean, and are NOT approved', () => {
+// Kiana's pool approved by Kade in chat, Nov 12 2026 ("Yes, turn them on"). Harley's is still a draft.
+const DRAFTS = POOLS.map((p) => ({ ...p, approved: false }));
+
+test('both pools load and are big enough clean; Kiana is approved, Harley is still a draft', () => {
   assert.deepStrictEqual(POOLS.map((p) => p.id).sort(), ['harley', 'kiana']);
   for (const p of POOLS) {
-    assert.strictEqual(p.approved, false, p.id + ' ships as a draft: her word turns it on');
+    assert.strictEqual(p.approved, p.id === 'kiana', p.id + ': only her word turns a pool on');
     assert.ok(p.lines.filter((l) => !l.salty).length >= MIN_POOL, p.id + ' has too few clean lines');
   }
 });
@@ -41,8 +44,8 @@ test('no more than half of a pool\'s lines end on a question, for the whole pool
   }
 });
 
-test('with nothing switched on, the shipped (unapproved) pools change no request and add no parrot lines', () => {
-  reel._setPoolsForTest(POOLS);
+test('with nothing switched on, unapproved pools change no request and add no parrot lines', () => {
+  reel._setPoolsForTest(DRAFTS);
   const b = body('hey you');
   for (const env of [{}, { KADE_VOICE_REEL: '1' }, { KADE_VOICE_CARD: '1' }, { KADE_VOICE_REEL: '1', KADE_VOICE_CARD: '1' }]) {
     assert.strictEqual(withVoiceReel(b, env), b);
@@ -118,7 +121,7 @@ test('a pool with an undeclared swear, a raw tag or a duplicate id is refused wh
 });
 
 test('off by default, off for an unapproved pool, off for other characters, JSON output and Sol', () => {
-  reel._setPoolsForTest(POOLS);
+  reel._setPoolsForTest(DRAFTS);
   const b = body('hey you');
   assert.strictEqual(withVoiceReel(b, {}), b);
   assert.strictEqual(voiceCardFor(b, {}), '');
