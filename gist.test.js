@@ -88,3 +88,29 @@ test('a real mixed stream keeps the thinking and loses the rules', () => {
   assert.ok(!/persona|permission to feel/.test(out), 'rule talk gone');
   assert.ok(!/Holly/.test(out), 'other person gone');
 });
+
+// Nov 12 2026 (gateway audit GW-1): the filter looks only at new characters, judges full-width sentence ends,
+// and drops an over-long sentence whole.
+test('an unfinished run never makes the filter rescan everything it holds', () => {
+  const f = createGistFilter({});
+  const run = 'weighing x, y and z, then a, b, c; '.repeat(600); // 21,000 chars, no sentence end
+  const t0 = process.hrtime.bigint();
+  let alive = 0;
+  for (let i = 0; i < run.length; i += 6) if (f.push(run.slice(i, i + 6))) alive++;
+  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 250);
+  assert.ok(alive >= 5, 'keep-alives arrive during the run, got ' + alive);
+});
+test('full-width sentence ends are judged', () => {
+  const f = createGistFilter({ blockNames: NAMES });
+  assert.strictEqual(f.push('我在想这个问题。'), '我在想这个问题。');
+  assert.strictEqual(f.push('Holly说她的预约改了！'), '');
+});
+test('the tail of an over-long sentence is dropped with its head', () => {
+  const g = mk();
+  const s = 'The system prompt says ' + 'she likes tea, and coffee, and long walks, '.repeat(16)
+    + 'and her sister had a biopsy on Thursday. She wants the short answer. ';
+  let out = '';
+  for (let i = 0; i < s.length; i += 6) out += g.push(s.slice(i, i + 6));
+  assert.ok(!/biopsy|long walks/.test(out), 'no fragment of the dropped sentence: ' + out);
+  assert.match(out, /short answer/);
+});

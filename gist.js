@@ -68,6 +68,13 @@ function isSafeSentence(s, blockNames) {
   return true;
 }
 
+const MAX_PENDING = 600;
+
+/* ASCII . ! ? newline, plus full-width 。！？ (a model thinking in Chinese ends sentences with these). */
+function isSentenceEnd(c) {
+  return c === 46 || c === 33 || c === 63 || c === 10 || c === 0x3002 || c === 0xff01 || c === 0xff1f;
+}
+
 /**
  * Streaming filter. Feed it reasoning deltas; it returns only text that is
  * safe to show, on sentence boundaries.
@@ -75,39 +82,63 @@ function isSafeSentence(s, blockNames) {
  * Buffers partial sentences the same way the speech splitter does, and for the
  * same reason: a chunk boundary is not a thought boundary, and judging a half
  * sentence gets the judgement wrong.
+ *
+ * Nov 12 2026 (gateway audit GW-1): each push looks only at the NEW characters,
+ * so an unfinished run costs O(chunk). The old regex re-walked everything held
+ * from every start position on every push: 3,000 held characters blocked the
+ * event loop ~1 s, 5,000 ~7 s, and every phone stream on the gateway with it.
+ * A sentence that runs past maxPending with no end is dropped WHOLE: the filter
+ * skips until the next sentence end and drops that fragment too. Judging the
+ * tail alone would show half of a sentence whose head carried the marker.
+ * Every maxPending skipped characters count as one dropped sentence, so the
+ * keep-alive below still arrives during a long run.
  */
 function createGistFilter(opts) {
   const o = opts || {};
   const blockNames = nameMatcher(o.blockNames);
   const maxChars = o.maxChars || 600;      // texture, not a transcript
+  const maxPending = o.maxPending || MAX_PENDING;
   let buffer = '';
   let emitted = 0;
   let droppedRun = 0;
   let sawAny = false;
+  let skipping = false;   // inside an over-long sentence that was dropped
+  let skipped = 0;
+
+  function judge(sent) {
+    if (emitted >= maxChars) { droppedRun++; return ''; }
+    if (isSafeSentence(sent, blockNames)) {
+      emitted += sent.length;
+      droppedRun = 0;
+      sawAny = true;
+      return sent;
+    }
+    droppedRun++;
+    return '';
+  }
 
   return {
     /** @returns {string} text to forward downstream (may be '') */
     push(chunk) {
-      buffer += String(chunk == null ? '' : chunk);
+      const add = String(chunk == null ? '' : chunk);
       let out = '';
+      let start = 0;
       // Only complete sentences are judged.
-      let m;
-      const RE = /[^.!?\n]*[.!?\n]/g;
-      let consumed = 0;
-      while ((m = RE.exec(buffer)) !== null) {
-        const sent = m[0];
-        consumed = m.index + sent.length;
-        if (emitted >= maxChars) { droppedRun++; continue; }
-        if (isSafeSentence(sent, blockNames)) {
-          out += sent;
-          emitted += sent.length;
-          droppedRun = 0;
-          sawAny = true;
-        } else {
-          droppedRun++;
-        }
+      for (let i = 0; i < add.length; i++) {
+        if (!isSentenceEnd(add.charCodeAt(i))) continue;
+        if (skipping) { skipping = false; skipped = 0; }   // tail of a dropped sentence: dropped with it
+        else out += judge(buffer + add.slice(start, i + 1));
+        buffer = '';
+        start = i + 1;
       }
-      buffer = buffer.slice(consumed);
+      const tail = start ? add.slice(start) : add;
+      if (skipping) {
+        skipped += tail.length;
+        if (skipped >= maxPending) { skipped = 0; droppedRun++; }
+      } else {
+        buffer += tail;
+        if (buffer.length > maxPending) { buffer = ''; skipping = true; skipped = 0; droppedRun++; }
+      }
       /* Never go quiet just because the safe half ran out. Two dropped
        * sentences in a row and the bubble gets a neutral sign of life — the
        * point of the bubble is that something is moving. */
@@ -121,6 +152,8 @@ function createGistFilter(opts) {
      *  sentence was never judged, and unjudged text does not ship. */
     flush() {
       buffer = '';
+      skipping = false;
+      skipped = 0;
       return '';
     },
     stats() { return { emitted, sawAny }; },
