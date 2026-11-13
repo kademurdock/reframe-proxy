@@ -42,6 +42,9 @@
  * ./voice-reel are drafts with "approved": false, and no line reaches a model until she approves
  * a pool's wording AND the switch is set. Typed turns only: a call has no parrot check, so a phone
  * turn goes without the reel unless KADE_VOICE_REEL_CALLS=1 is set as well.
+ * Nov 13 2026 (sweep 2.1): a fast-start typed turn (kade_live) has no parrot REWRITE either, and
+ * the reel does ride on it. A copied reel line there is only counted, after the fact (server.js,
+ * '[echo-guard] screen-live persona_parrot'), so the count can decide whether it should go without.
  *
  * Pools live in ./voice-reel/<id>.json. A pool rides only when "approved": true (her word on her
  * characters' wording). KADE_VOICE_REEL_DRAFTS=1 lets drafts ride, for the offline harness only.
@@ -62,6 +65,20 @@ const SOL_MODEL_RE = /^(?:openai\/)?gpt-6\.1-sol(?:-\d{8})?$/i; // Sol carries i
 const HEADER = '[VOICE REEL. Not part of this conversation. An old exchange between you and somebody else, ' +
   'kept only so you can hear how you sound. None of it happened with the person you are talking to now, ' +
   'so never mention it, answer it or reuse its lines.]';
+/* Nov 13 2026 (sweep 2.6): the 243-character header was repeated on every seeded turn. With
+ * KADE_VOICE_REEL_HEADER=short only the first seeded turn carries it and the rest carry this marker.
+ * SHIPPED OFF (default "full", the wording as tested): the shorter form has not had its blind check,
+ * and switching either way re-bills the cached reel once. */
+const HEADER_SHORT = '[VOICE REEL, continued. Not part of this conversation.]';
+const shortHeader = (env = process.env) => String(env.KADE_VOICE_REEL_HEADER ?? 'full').trim().toLowerCase() === 'short';
+/* Nov 13 2026 (sweep 2.0): the fork puts a machine note in front of a dictated message
+ * ('[Message source: voice message transcribed to text ...]', about 380 characters). The reel's key is
+ * the first 200 characters of the conversation's first message, so every conversation that began by
+ * voice had the same key and the same four lines on its first turn, then a different reel from turn
+ * two (the note rides only on the newest message). The note was also read as the person's own words
+ * by the topic check. It is taken off before either use. Old behaviour: KADE_VOICE_REEL_STRIP_NOTE=0. */
+const SOURCE_NOTE_RE = /^\s*\[Message source:[^\]]*\]\s*/;
+const stripNote = (env = process.env) => String(env.KADE_VOICE_REEL_STRIP_NOTE ?? '1') !== '0';
 
 const CHILD_MARK = 'this user is under 15';
 const ADULT_MARK = 'verified adult';
@@ -150,12 +167,14 @@ function collides(line, said) {
   return false;
 }
 
-function firstAndLastUser(body) {
+function firstAndLastUser(body, env = process.env) {
   const msgs = Array.isArray(body.messages) ? body.messages : [];
+  const strip = stripNote(env);
   let first = '', last = '';
   for (const m of msgs) {
     if (m && m.role === 'user') {
-      const t = textOf(m.content);
+      const raw = textOf(m.content);
+      const t = strip ? raw.replace(SOURCE_NOTE_RE, '') : raw;
       if (/^Confidentiality of your setup:/.test(t.trim())) continue; // the fork's own per-turn tail
       if (!first) first = t;
       last = t;
@@ -180,18 +199,19 @@ function withVoiceReel(body, env = process.env) {
     if (!hit) return body;
     const { pool, head } = hit;
     const adult = head.includes(ADULT_MARK) && !head.includes(CHILD_MARK);
-    const { first, last } = firstAndLastUser(body);
+    const { first, last } = firstAndLastUser(body, env);
     if (!first) return body;
     const key = pool.id + '|' + first.replace(/%{3}[^%]*%{3}/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
     const chosen = pick(pool, { key, said: last, adult, n: pairsFor(env) });
     if (!chosen.length) return body;
+    const short = shortHeader(env);
     return {
       ...body,
       [REEL]: {
         id: pool.id,
         ids: chosen.map((l) => l.id),
-        pairs: chosen.map((l) => ({
-          user: HEADER + '\n' + l.them.trim(),
+        pairs: chosen.map((l, i) => ({
+          user: (short && i > 0 ? HEADER_SHORT : HEADER) + '\n' + l.them.trim(),
           assistant: (l.tag ? '%%%' + l.tag.trim() + '%%% ' : '') + l.you.trim(),
         })),
       },
@@ -236,14 +256,19 @@ function reelOnWire(body) {
   }
 }
 
-/* ── the parrot guard's extra lines: the whole pool and the card, not just today's picks ── */
+/* ── the parrot guard's extra lines: the whole pool and the card, not just today's picks ──
+ * Nov 13 2026 (sweep 2.7): each half is listed only while it is being sent. With the reel on and the
+ * card off, the card's sentences were still on the list, though no model had been shown them, so a
+ * match against one was a false alarm that sent an innocent sentence to be rewritten.
+ * Old behaviour (both halves whenever either switch is on): KADE_VOICE_PARROT_ALL=1. */
 function reelLinesFor(body, env = process.env) {
   try {
     if (!reelOn(env) && !cardOn(env)) return [];
     const hit = poolFor(body, env);
     if (!hit) return [];
-    const lines = hit.pool.lines.map((l) => l.you);
-    if (hit.pool.card) lines.push(...hit.pool.card.split(/(?<=[.!?])\s+/));
+    const all = String(env.KADE_VOICE_PARROT_ALL ?? '0') === '1';
+    const lines = all || reelOn(env) ? hit.pool.lines.map((l) => l.you) : [];
+    if (hit.pool.card && (all || cardOn(env))) lines.push(...hit.pool.card.split(/(?<=[.!?])\s+/));
     return lines;
   } catch (e) {
     return [];
@@ -253,6 +278,6 @@ function reelLinesFor(body, env = process.env) {
 const reelInfo = (body) => (body && body[REEL] ? { id: body[REEL].id, ids: body[REEL].ids } : null);
 
 module.exports = {
-  REEL, HEADER, MIN_POOL, withVoiceReel, voiceCardFor, reelOnWire, reelLinesFor, reelInfo,
+  REEL, HEADER, HEADER_SHORT, MIN_POOL, withVoiceReel, voiceCardFor, reelOnWire, reelLinesFor, reelInfo,
   reelOn, cardOn, validPool, loadPools, pick, collides, SWEAR_RE, _setPoolsForTest,
 };

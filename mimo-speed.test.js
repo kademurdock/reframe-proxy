@@ -52,6 +52,7 @@ function runAutoThink({ tier, model = 'xiaomi/mimo-v2.6-pro', env = {}, reasonin
     autoThinkRunLen: () => 1,
     autoThinkPersonPick: () => ({ skipped: 0 }),
     excerptReceipt: (s) => s,
+    textReceipt: (s) => JSON.stringify(s), // Nov 13 2026 (sweep 8.6): the log line carries a receipt, not the excerpt
   });
   vm.runInContext(fn + '\nthis.run = maybeAutoThink;', ctx);
   const body = { model, messages: [{ role: 'system', content: 'x' }, { role: 'user', content: 'y' }], ...(reasoning ? { reasoning } : {}) };

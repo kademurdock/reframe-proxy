@@ -184,3 +184,70 @@ test('the editor prompt shows the shapes it removes, and the persona prompts do 
   assert.match(SYSTEM, /Keep every hedge/);
   assert.match(SYSTEM, /Never add new information/);
 });
+
+/* Nov 13 2026 (sweep 2.5): the hedge starts one spare call, not two, and every call is counted. */
+function hostComplete(delays, seen, { fail = {} } = {}) {
+  return async (body, timeoutMs, signal) => {
+    const host = body.provider.order[0];
+    seen.push(host);
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(resolve, delays[host]);
+      signal.addEventListener('abort', () => { clearTimeout(t); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+    });
+    if (fail[host]) throw Object.assign(new Error('OpenRouter 503'), { status: 503 });
+    return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ edits: [] }) } }],
+      usage: { prompt_tokens: 2000, completion_tokens: 10, cost: 0.0002 }, provider: host };
+  };
+}
+
+test('sweep 2.5: with three slow hosts the hedge clock starts two calls, not three, and the usage says so', async () => {
+  const seen = [];
+  const r = await registerEdit(REPLY, PERSONA_BODY, { complete: hostComplete({ Makora: 400, 'Io Net': 400, DeepInfra: 400 }, seen), env: {}, hedgeMs: 60 });
+  assert.equal(r.status, 'kept');
+  assert.deepEqual(seen, ['Makora', 'Io Net']);
+  assert.equal(r.usage.legs, 2);
+  assert.equal(r.usage.uncounted, 1, 'the cancelled call is named, since its cost cannot be read');
+  assert.equal(r.usage.prompt_tokens, 2000);
+  assert.equal(r.usage.cost, 0.0002);
+});
+
+test('sweep 2.5: KADE_REGISTER_EDIT_MAX_LEGS=3 is the old three calls', async () => {
+  const seen = [];
+  const r = await registerEdit(REPLY, PERSONA_BODY, { complete: hostComplete({ Makora: 400, 'Io Net': 400, DeepInfra: 400 }, seen),
+    env: { KADE_REGISTER_EDIT_MAX_LEGS: '3' }, hedgeMs: 60 });
+  assert.deepEqual(seen, ['Makora', 'Io Net', 'DeepInfra']);
+  assert.equal(r.usage.legs, 3);
+  assert.equal(r.usage.uncounted, 2);
+});
+
+test('sweep 2.5: a host that fails is still followed by the next one at once, past the two-call limit', async () => {
+  const seen = [];
+  const t0 = Date.now();
+  const r = await registerEdit(REPLY, PERSONA_BODY, { complete: hostComplete({ Makora: 20, 'Io Net': 20, DeepInfra: 20 }, seen, { fail: { Makora: true, 'Io Net': true } }),
+    env: {}, hedgeMs: 5000 });
+  assert.equal(r.status, 'kept');
+  assert.deepEqual(seen, ['Makora', 'Io Net', 'DeepInfra']);
+  assert.ok(Date.now() - t0 < 1500);
+  assert.equal(r.usage.legs, 3);
+  assert.equal(r.usage.uncounted, 2);
+});
+
+test('sweep 2.5: usage is the sum over passes, and a turn where every call failed still reports its calls', async () => {
+  let n = 0;
+  const complete = async (body) => {
+    n++;
+    const edits = n === 1 ? [{ kind: 'setup', before: "There's real reasons for it.", after: '' }] : [];
+    return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ edits }) } }], usage: { prompt_tokens: 100, completion_tokens: 5, cost: 0.001 }, provider: body.provider.order[0] };
+  };
+  const r = await registerEdit(REPLY, PERSONA_BODY, { complete, env: {}, passes: 2 });
+  assert.equal(r.status, 'edited');
+  assert.equal(n, 2);
+  assert.equal(r.usage.prompt_tokens, 200);
+  assert.ok(Math.abs(r.usage.cost - 0.002) < 1e-9);
+  assert.equal(r.usage.legs, 2);
+  assert.equal(r.usage.uncounted, 0);
+  const failed = await registerEdit(REPLY, PERSONA_BODY, { complete: fakeComplete([], { fail: true }), env: {} });
+  assert.equal(failed.passes[0].status, 'failed');
+  assert.equal(failed.usage.legs, 3);
+  assert.equal(failed.usage.uncounted, 3);
+});

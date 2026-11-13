@@ -263,3 +263,46 @@ test('the retention fields ride on every MiMo turn, with or without audio', () =
     }
   }
 });
+
+test('sweep: a background run takes the background order, thinking or not, and a caller order still wins', () => {
+  const saved = { a: process.env.KADE_MIMO_PROVIDER_ORDER, b: process.env.KADE_MIMO_THINK_PROVIDER_ORDER, c: process.env.KADE_MIMO_BACKGROUND_ORDER };
+  const path = require.resolve('./mimo');
+  const restore = () => {
+    for (const [key, value] of [['KADE_MIMO_PROVIDER_ORDER', saved.a], ['KADE_MIMO_THINK_PROVIDER_ORDER', saved.b], ['KADE_MIMO_BACKGROUND_ORDER', saved.c]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    delete require.cache[path];
+  };
+  try {
+    process.env.KADE_MIMO_PROVIDER_ORDER = 'PrimaLabs,DeepInfra';
+    process.env.KADE_MIMO_THINK_PROVIDER_ORDER = 'PrimaLabs,DeepInfra';
+    delete process.env.KADE_MIMO_BACKGROUND_ORDER;
+    delete require.cache[path];
+    let fresh = require('./mimo');
+    const BG = fresh.BACKGROUND;
+    const pro = { model: 'xiaomi/mimo-v2.6-pro' };
+    // Someone waiting: the two orders as set, untouched.
+    assert.deepEqual(fresh.adaptForMimo({ ...pro, reasoning: { effort: 'none' } }).provider.order, ['PrimaLabs', 'DeepInfra']);
+    assert.deepEqual(fresh.adaptForMimo({ ...pro, reasoning: { effort: 'high' } }).provider.order, ['PrimaLabs', 'DeepInfra']);
+    // Nobody waiting: DeepInfra, with the filter and the Flash backup as ever.
+    const quiet = fresh.adaptForMimo({ ...pro, reasoning: { effort: 'none' }, [BG]: true });
+    assert.deepEqual(quiet.provider, { order: ['DeepInfra'], allow_fallbacks: true, zdr: true, data_collection: 'deny' });
+    assert.deepEqual(quiet.models, ['xiaomi/mimo-v2.6-pro', 'xiaomi/mimo-v2.6-flash']);
+    assert.deepEqual(fresh.adaptForMimo({ ...pro, reasoning: { effort: 'high' }, [BG]: true }).provider.order, ['DeepInfra']);
+    assert.equal(JSON.stringify(quiet).includes('background'), false, 'the mark never reaches the wire');
+    // A caller's own order wins, and Flash is not touched.
+    assert.deepEqual(fresh.adaptForMimo({ ...pro, provider: { order: ['Xiaomi'] }, [BG]: true }).provider.order, ['Xiaomi']);
+    assert.deepEqual(fresh.adaptForMimo({ model: 'xiaomi/mimo-v2.6-flash', [BG]: true }).provider.order, ['DeepInfra']);
+    // The list is tunable, and empty turns the rule off.
+    process.env.KADE_MIMO_BACKGROUND_ORDER = 'DeepInfra, Makora';
+    delete require.cache[path];
+    fresh = require('./mimo');
+    assert.deepEqual(fresh.adaptForMimo({ ...pro, [BG]: true }).provider.order, ['DeepInfra', 'Makora']);
+    process.env.KADE_MIMO_BACKGROUND_ORDER = '';
+    delete require.cache[path];
+    fresh = require('./mimo');
+    assert.deepEqual(fresh.adaptForMimo({ ...pro, reasoning: { effort: 'none' }, [BG]: true }).provider.order, ['PrimaLabs', 'DeepInfra']);
+  } finally {
+    restore();
+  }
+});

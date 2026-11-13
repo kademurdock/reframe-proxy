@@ -29,6 +29,16 @@ const orderFrom = (name, fallback) =>
 const PRO_ORDER_INSTANT = orderFrom('KADE_MIMO_PROVIDER_ORDER', 'DeepInfra');
 const PRO_ORDER_THINKING = orderFrom('KADE_MIMO_THINK_PROVIDER_ORDER', 'DeepInfra');
 const FLASH_ORDER = ['DeepInfra'];
+/* Nov 13 2026 (sweep): a BACKGROUND run has nobody waiting on it (a character's day, a reach-out
+ * draft, a server-built hidden turn). When KADE_MIMO_PROVIDER_ORDER put a faster host first, those
+ * runs moved with the replies people wait for and paid that host's price (about ten times
+ * DeepInfra's on a cold cache) for speed nobody hears. A body the gateway has marked as background
+ * (server.js: the x-kade-background: 1 header or kade_background: true in the body) takes this
+ * order instead, thinking or not, whatever the two orders above say. A caller's own
+ * provider.order still wins. Pro only. Default DeepInfra; KADE_MIMO_BACKGROUND_ORDER= (empty)
+ * turns the rule off, so a background run goes where every other turn goes. */
+const BACKGROUND = Symbol.for('kade.background');
+const PRO_ORDER_BACKGROUND = orderFrom('KADE_MIMO_BACKGROUND_ORDER', 'DeepInfra');
 /* A DeepInfra outage would fail every Pro turn under the rule above, so Pro
  * carries OpenRouter's model fallback: if no zdr host can serve Pro, the same
  * turn goes to MiMo Flash, which has four zdr hosts (proved Oct 16 with
@@ -70,8 +80,9 @@ function withMimoProvider(body, thinking = false) {
   const flash = isMimoFlashModel(body.model);
   // An upstream order is kept; the retention rule is not negotiable.
   const existing = body.provider || {};
+  const background = body[BACKGROUND] === true && PRO_ORDER_BACKGROUND.length > 0;
   const order = existing.order
-    || (isMimoProModel(body.model) ? (thinking ? PRO_ORDER_THINKING : PRO_ORDER_INSTANT)
+    || (isMimoProModel(body.model) ? (background ? PRO_ORDER_BACKGROUND : thinking ? PRO_ORDER_THINKING : PRO_ORDER_INSTANT)
       : flash ? (media ? FLASH_MEDIA_ORDER : FLASH_ORDER) : []);
   const provider = { ...existing, ...(order.length ? { order } : {}), allow_fallbacks: true, zdr: true, data_collection: 'deny' };
   if (provider.order) delete provider.sort; // OpenRouter rejects sort together with order
@@ -109,4 +120,4 @@ function adaptForMimo(body) {
   return withMimoProvider(next, true);
 }
 
-module.exports = { isMimoModel, carriesMedia, withMimoProvider, adaptForMimo };
+module.exports = { isMimoModel, carriesMedia, withMimoProvider, adaptForMimo, BACKGROUND };

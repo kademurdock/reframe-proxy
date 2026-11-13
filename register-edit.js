@@ -286,20 +286,32 @@ function finalCheck(original, edited) {
 /* MiMo Flash speed swings by host and hour (Oct 18 03:38Z, one call at a time: Io Net 10.3 s
  * median, DeepInfra 3.7 s, Makora 1.5 s; an hour earlier Io Net was the fast one at 1.5 s). So a
  * pass asks the first host, and if it has not answered after `hedgeMs` asks the next as well; the
- * first usable answer wins and the others are cancelled. Every host keeps the retention rule. */
-async function hedged(complete, req, hosts, timeoutMs, hedgeMs) {
+ * first usable answer wins and the others are cancelled. Every host keeps the retention rule.
+ *
+ * Nov 13 2026 (sweep 2.5). With the hedge at 700 ms and the fastest host's median at 1.5 s, three
+ * paid calls were in flight on most passes and only the winner was counted. Two changes:
+ *  - the hedge clock starts a call only while fewer than `maxLegs` are in flight (default 2, so one
+ *    spare instead of two). A host that FAILS is still followed by the next one at once, as before.
+ *    Old behaviour: KADE_REGISTER_EDIT_MAX_LEGS=3.
+ *  - the answer carries `legs` (calls started), `spent` (the usage of every call that came back and
+ *    lost) and `uncounted` (calls cancelled or failed with no usage to read: a host that had already
+ *    read the prompt may still bill it, and nothing in its answer says so). */
+async function hedged(complete, req, hosts, timeoutMs, hedgeMs, maxLegs = 2) {
   const list = hosts.length ? hosts : [undefined];
   const controllers = [];
   let settled = false;
   return new Promise((resolve, reject) => {
     let pending = 0, launched = 0, lastError = null;
     const timers = [];
+    const spent = [];
+    const tally = () => ({ legs: launched, spent, uncounted: Math.max(0, launched - spent.length) });
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
       timers.forEach(clearTimeout);
       controllers.forEach((c) => { try { c.abort(); } catch (_) {} });
-      fn(value);
+      if (fn === resolve) fn({ result: value, ...tally(), uncounted: Math.max(0, launched - spent.length - 1) });
+      else fn(Object.assign(value instanceof Error ? value : new Error(String(value)), { hedge: tally() }));
     };
     const launch = () => {
       if (settled || launched >= list.length) return;
@@ -314,7 +326,11 @@ async function hedged(complete, req, hosts, timeoutMs, hedgeMs) {
           pending--;
           const content = result?.choices?.[0]?.message?.content;
           if (typeof content === 'string' && content.trim()) finish(resolve, result);
-          else { lastError = new Error('empty'); if (!pending) launched < list.length ? launch() : finish(reject, lastError); }
+          else {
+            if (!settled && result?.usage) spent.push(result.usage); // an empty answer was still paid for
+            lastError = new Error('empty');
+            if (!pending) launched < list.length ? launch() : finish(reject, lastError);
+          }
         }, (error) => {
           pending--;
           lastError = error;
@@ -322,11 +338,21 @@ async function hedged(complete, req, hosts, timeoutMs, hedgeMs) {
           if (launched < list.length) launch();
           else if (!pending) finish(reject, lastError);
         });
-      if (launched < list.length) timers.push(setTimeout(launch, hedgeMs));
+      if (launched < list.length) timers.push(setTimeout(() => { if (pending < maxLegs) launch(); }, hedgeMs));
     };
     timers.push(setTimeout(() => finish(reject, Object.assign(new Error('timeout'), { name: 'AbortError' })), timeoutMs));
     launch();
   });
+}
+
+/* Sweep 2.5: one total for every editor call of a turn, not the last winner's figure alone. */
+function addUsage(total, u) {
+  if (!u || typeof u !== 'object') return total;
+  const out = total ? { ...total } : {};
+  for (const k of ['prompt_tokens', 'completion_tokens', 'total_tokens', 'cost']) {
+    if (typeof u[k] === 'number' && Number.isFinite(u[k])) out[k] = (out[k] || 0) + u[k];
+  }
+  return out;
 }
 
 function parse(raw) {
@@ -353,6 +379,8 @@ async function registerEdit(text, body, opts = {}) {
   const model = opts.model || env.KADE_REGISTER_EDIT_MODEL || 'xiaomi/mimo-v2.6-flash';
   const hosts = opts.hosts || (env.KADE_REGISTER_EDIT_HOSTS || 'Makora,Io Net,DeepInfra').split(',').map((h) => h.trim()).filter(Boolean);
   const hedgeMs = opts.hedgeMs || parseInt(env.KADE_REGISTER_EDIT_HEDGE_MS || '', 10) || 1500;
+  const legsAsked = opts.maxLegs || parseInt(env.KADE_REGISTER_EDIT_MAX_LEGS || '', 10);
+  const maxLegs = Number.isFinite(legsAsked) && legsAsked >= 1 ? legsAsked : 2;
   const passes = opts.passes || passesFor(env);
   const timeoutMs = opts.timeoutMs || parseInt(env.KADE_REGISTER_EDIT_TIMEOUT_MS || '', 10) || 6000;
   const budgetMs = opts.budgetMs || parseInt(env.KADE_REGISTER_EDIT_BUDGET_MS || '', 10) || 9000;
@@ -361,6 +389,14 @@ async function registerEdit(text, body, opts = {}) {
   let current = text;
   const log = [];
   let usage = null;
+  let legs = 0, uncounted = 0;
+  const count = (h) => {
+    if (!h) return;
+    legs += h.legs || 0;
+    uncounted += h.uncounted || 0;
+    for (const u of h.spent || []) usage = addUsage(usage, u);
+  };
+  const totals = () => (legs ? { ...(usage || {}), legs, uncounted } : usage);
   for (let p = 0; p < passes; p++) {
     const left = budgetMs - (Date.now() - started);
     if (left < 1200) { log.push({ pass: p + 1, status: 'no time' }); break; }
@@ -379,12 +415,15 @@ async function registerEdit(text, body, opts = {}) {
     };
     let result;
     try {
-      result = await hedged(opts.complete, req, hosts, Math.min(timeoutMs, left), hedgeMs);
+      const won = await hedged(opts.complete, req, hosts, Math.min(timeoutMs, left), hedgeMs, maxLegs);
+      result = won.result;
+      count(won);
     } catch (error) {
+      count(error?.hedge);
       log.push({ pass: p + 1, status: 'failed', errorType: error?.status || error?.name || 'error', ms: Date.now() - t0 });
       break;
     }
-    usage = result?.usage || usage;
+    usage = addUsage(usage, result?.usage);
     const choice = result?.choices?.[0];
     if (choice?.finish_reason === 'length' || choice?.finish_reason === 'content_filter') {
       log.push({ pass: p + 1, status: choice.finish_reason, ms: Date.now() - t0 });
@@ -402,8 +441,8 @@ async function registerEdit(text, body, opts = {}) {
     current = applied.text;
   }
   const bad = current === text ? '' : finalCheck(text, current);
-  if (bad) return { text, status: 'refused', reason: bad, passes: log, name, elapsedMs: Date.now() - started, usage };
-  return { text: current, status: current === text ? 'kept' : 'edited', passes: log, name, elapsedMs: Date.now() - started, usage };
+  if (bad) return { text, status: 'refused', reason: bad, passes: log, name, elapsedMs: Date.now() - started, usage: totals() };
+  return { text: current, status: current === text ? 'kept' : 'edited', passes: log, name, elapsedMs: Date.now() - started, usage: totals() };
 }
 
 module.exports = { registerEdit, characterOf, eligible, applyEdits, checkEdit, finalCheck, SYSTEM, SYSTEM_BEFORE_NOV12, systemFor, WRITING_RE, on, passesFor };

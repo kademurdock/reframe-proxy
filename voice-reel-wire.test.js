@@ -69,7 +69,9 @@ test('switches on: reel after the head, real turn after the reel, card last, rep
 
 test('a reply that repeats a reel line is caught by the parrot guard', async () => {
   const r = await run({ env: ON, reply: PARROT });
-  assert.match(r.log, /\[echo-guard\] persona_parrot: "nice don't tell you nothing about the car/);
+  // Nov 13 2026 (sweep 8.6): the log names the match by length and hash, never by the reply's words.
+  assert.match(r.log, /\[echo-guard\] persona_parrot: \(\d+ chars, sha [0-9a-f]{8}\)/);
+  assert.doesNotMatch(r.log, /nice don't tell you nothing about the car/);
 });
 
 test('another character gets neither piece', async () => {

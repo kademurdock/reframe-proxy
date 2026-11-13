@@ -236,3 +236,83 @@ test('a conversation the character opened goes without the reel on the wire', ()
   const wire = reelOnWire(withVoiceReel(b, ON));
   assert.deepStrictEqual(wire.messages, b.messages);
 });
+
+/* Nov 13 2026 (post-release sweep). The fork's note in front of a dictated message. */
+const VOICE_NOTE = '[Message source: voice message transcribed to text, possibly edited or mixed with typing. Names, punctuation and repeated words may be transcription errors. Use the intended meaning and established names when clear; ask only when ambiguity affects the answer. This is text from a recording, not a live call or access to the speaker’s audio, tone or surroundings.]';
+const HARLEY_HEAD = 'house notes\n\nYou are Harley Dalton, Harley to everybody, one of the companions of Kade-AI.\n...';
+const REEL_ONLY = { KADE_VOICE_REEL: '1' };
+
+test('sweep 2.0: two conversations that start with a voice message get different reels, and turn one matches turn two', () => {
+  reel._setPoolsForTest(POOLS);
+  const a = 'so I finally got the truck back from the shop this morning';
+  const b = 'do you remember what we said about the garden last week';
+  for (const head of [KIANA_HEAD, HARLEY_HEAD]) {
+    const idsA = withVoiceReel(body(VOICE_NOTE + '\n' + a, head), REEL_ONLY)[REEL].ids;
+    const idsB = withVoiceReel(body(VOICE_NOTE + '\n' + b, head), REEL_ONLY)[REEL].ids;
+    assert.notDeepStrictEqual(idsA, idsB, 'the note is not the key');
+    // Turn two: the first message is stored bare and the note rides on the newest one only.
+    const turnTwo = { model: 'xiaomi/mimo-v2.6-pro', messages: [
+      { role: 'system', content: head }, { role: 'user', content: a },
+      { role: 'assistant', content: 'Good, about time.' }, { role: 'user', content: VOICE_NOTE + '\nyeah it was' },
+    ] };
+    assert.deepStrictEqual(withVoiceReel(turnTwo, REEL_ONLY)[REEL].ids, idsA, 'the reel does not flip after the first turn');
+    // The same words typed pick the same reel as the same words dictated.
+    assert.deepStrictEqual(withVoiceReel(body(a, head), REEL_ONLY)[REEL].ids, idsA);
+  }
+});
+
+test('sweep 2.0: the note is not read as the person\'s own words by the topic check', () => {
+  reel._setPoolsForTest(POOLS);
+  // Every clean line must be able to ride on a turn that says nothing but the note and a hello.
+  for (const p of POOLS) {
+    const blocked = p.lines.filter((l) => reel.collides(l, VOICE_NOTE));
+    if (!blocked.length) continue; // this pool never collided with the note
+    const head = p.id === 'harley' ? HARLEY_HEAD : KIANA_HEAD;
+    const seen = new Set();
+    for (let i = 0; i < 400; i++) {
+      const first = 'opening number ' + i + ' about nothing in particular';
+      const r = withVoiceReel({ model: 'xiaomi/mimo-v2.6-pro', messages: [
+        { role: 'system', content: head + ADULT }, { role: 'user', content: first },
+        { role: 'assistant', content: 'Mm.' }, { role: 'user', content: VOICE_NOTE + '\nhey' },
+      ] }, REEL_ONLY);
+      for (const id of r[REEL].ids) seen.add(id);
+    }
+    for (const l of blocked) assert.ok(seen.has(l.id), p.id + ' ' + l.id + ' can ride on a voice turn');
+  }
+});
+
+test('sweep 2.0: KADE_VOICE_REEL_STRIP_NOTE=0 is the old key', () => {
+  reel._setPoolsForTest(POOLS);
+  const old = { ...REEL_ONLY, KADE_VOICE_REEL_STRIP_NOTE: '0' };
+  const idsA = withVoiceReel(body(VOICE_NOTE + '\nfirst thing'), old)[REEL].ids;
+  const idsB = withVoiceReel(body(VOICE_NOTE + '\na different thing entirely'), old)[REEL].ids;
+  assert.deepStrictEqual(idsA, idsB);
+});
+
+test('sweep 2.7: the parrot list holds the card\'s sentences only while the card is sent', () => {
+  reel._setPoolsForTest(POOLS);
+  const kiana = POOLS.find((p) => p.id === 'kiana');
+  const cardLines = kiana.card.split(/(?<=[.!?])\s+/);
+  const reelOnly = reelLinesFor(body('hey'), REEL_ONLY);
+  assert.strictEqual(reelOnly.length, kiana.lines.length);
+  for (const c of cardLines) assert.ok(!reelOnly.includes(c));
+  const cardOnly = reelLinesFor(body('hey'), { KADE_VOICE_CARD: '1' });
+  assert.deepStrictEqual(cardOnly, cardLines);
+  assert.strictEqual(reelLinesFor(body('hey'), { KADE_VOICE_REEL: '1', KADE_VOICE_CARD: '1' }).length, kiana.lines.length + cardLines.length);
+  assert.strictEqual(reelLinesFor(body('hey'), { ...REEL_ONLY, KADE_VOICE_PARROT_ALL: '1' }).length, kiana.lines.length + cardLines.length);
+});
+
+test('sweep 2.6: the header is whole on every seeded turn by default, and only on the first with KADE_VOICE_REEL_HEADER=short', () => {
+  reel._setPoolsForTest(POOLS);
+  const full = withVoiceReel(body('tell me about your day'), REEL_ONLY)[REEL];
+  assert.ok(full.pairs.length >= 2);
+  for (const p of full.pairs) assert.ok(p.user.startsWith(HEADER + '\n'));
+  const short = withVoiceReel(body('tell me about your day'), { ...REEL_ONLY, KADE_VOICE_REEL_HEADER: 'short' })[REEL];
+  assert.deepStrictEqual(short.ids, full.ids, 'the same lines either way');
+  assert.ok(short.pairs[0].user.startsWith(HEADER + '\n'));
+  for (const p of short.pairs.slice(1)) {
+    assert.ok(p.user.startsWith(reel.HEADER_SHORT + '\n'));
+    assert.ok(!p.user.includes(HEADER));
+  }
+  assert.deepStrictEqual(short.pairs.map((p) => p.assistant), full.pairs.map((p) => p.assistant));
+});

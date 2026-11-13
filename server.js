@@ -87,7 +87,8 @@ const { repairRepetition: repairRepetitionGlm } = require('./reply-focus');
 const repairRepetition = (body, draft, options) => repairRepetitionGlm(body, draft, {
   ...options, judge: jev.enabled('KADE_JEV_REPLY_FOCUS') ? jev.replayProbability : undefined,
 });
-const { detectEchoGuard, echoShare } = require('./echo-guard');
+const { detectEchoGuard, detectPersonaParrot, echoShare } = require('./echo-guard');
+const { textReceipt } = require('./log-text'); // sweep 8.6: lengths and hashes, not chat words (KADE_LOG_TEXT=1 for the words)
 /* Part 178 (Sep 11 2026): the two echoes read off the persona battery and
  * her own Sep 8 chat -- a copied persona example line, and a near-verbatim
  * restatement of the person's message. Kill: KADE_ECHO_GUARD=0. */
@@ -522,7 +523,7 @@ const { adaptForXai } = require('./xai.js');
 // -- DEEPSEEK PROVIDER PIN (Sep 19 2026, Part 213): US zero-retention hosts only, see deepseek.js --
 const { adaptForDeepseek, deepseekHabitNoteFor } = require('./deepseek.js');
 const { adaptForSol } = require('./sol.js');
-const { adaptForMimo, isMimoModel } = require('./mimo.js');
+const { adaptForMimo, isMimoModel, BACKGROUND: MIMO_BACKGROUND } = require('./mimo.js');
 
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
@@ -1267,7 +1268,7 @@ function collectMatches(content, upstreamBody) {
       const humanText = stripContextReplay(autoThinkPersonText(upstreamBody));
       const echo = detectEchoGuard(content, upstreamBody, { humanText, exampleLines: typeof reelLinesFor === 'function' ? reelLinesFor(upstreamBody) : [] });
       if (echo.length > 0) {
-        console.log(`[echo-guard] ${echo.map((m) => `${m.pattern}: "${m.text}"`).join(' | ')}`);
+        console.log(`[echo-guard] ${echo.map((m) => `${m.pattern}: ${textReceipt(m.text)}`).join(' | ')}`);
         matches.push(...echo);
       }
       const share = echoShare(content, humanText);
@@ -1919,7 +1920,7 @@ function parseShimToolCalls(result) {
         try { parsed = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')); } catch { parsed = null; }
       }
       if (!parsed || typeof parsed.name !== 'string' || !parsed.name) {
-        console.warn('[tool-shim] unparseable <tool_call> block, leaving turn as text:', raw.slice(0, 120));
+        console.warn('[tool-shim] unparseable <tool_call> block, leaving turn as text:', textReceipt(raw.slice(0, 120), raw));
         return false; // partial garble -> safer to show the raw text than half-execute
       }
       calls.push({
@@ -2578,7 +2579,8 @@ async function detectAndRewrite(result, upstreamBody) {
       console.log('[register-edit] ' + JSON.stringify({ id: result.id, status, reason: edited.reason, character: edited.name,
         elapsedMs: edited.elapsedMs, chars: [before.length, choice.message.content.length],
         passes: (edited.passes || []).map((p) => ({ status: p.status, ms: p.ms, host: p.host, kinds: p.kinds, rejected: p.rejected, errorType: p.errorType })),
-        usage: edited.usage && { prompt: edited.usage.prompt_tokens, completion: edited.usage.completion_tokens, cost: edited.usage.cost } }));
+        usage: edited.usage && { prompt: edited.usage.prompt_tokens, completion: edited.usage.completion_tokens, cost: edited.usage.cost,
+          legs: edited.usage.legs, uncounted: edited.usage.uncounted } }));
     }
   }
   // Review the final prose, after cleanup. Nothing rewrites an accepted
@@ -3403,7 +3405,7 @@ async function maybeAutoThink(body, reqId = '??????', decision = null) {
        * no line at all — which read as "auto-think is broken" the first time
        * anyone checked the logs after the excerpt fix made real excerpts
        * short again. The file's own promise is one line per decision. */
-      console.log(`[auto-think][req ${reqId}] -> instant (${heur === 'classify' ? 'classifier' : 'heuristic'}, len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
+      console.log(`[auto-think][req ${reqId}] -> instant (${heur === 'classify' ? 'classifier' : 'heuristic'}, len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) ${textReceipt(excerptReceipt(excerpt), excerpt)}`);
       /* INSTANT MUST BE SAID OUT LOUD ON THE GLM LANE (Aug 17 2026). On kimi,
        * returning the body untouched is safe: adaptForKimi's else-branch pins
        * reasoning_effort:'none' on every non-thinking turn, so instant really
@@ -3418,7 +3420,7 @@ async function maybeAutoThink(body, reqId = '??????', decision = null) {
         ? { ...cleaned, reasoning: { ...(cleaned.reasoning || {}), effort: 'none', enabled: false, exclude: false } }
         : cleaned; // kimi call turns keep the effort:'none' they arrived with
     }
-    console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) "${excerptReceipt(excerpt)}"`);
+    console.log(`[auto-think][req ${reqId}] -> ${tier} (len ${excerpt.length}, run ${autoThinkRunLen(body)}, skipped ${autoThinkPersonPick(body).skipped}) ${textReceipt(excerptReceipt(excerpt), excerpt)}`);
     /* ⚠️⚠️ BOTH TIERS SET `effort` EXPLICITLY. DO NOT GO BACK TO INHERITING IT.
      *
      * THE BUG THIS FIXES (Aug 19 2026, found in the live logs): the deep
@@ -3656,6 +3658,28 @@ const PHONE_IDLE_MS = (() => {
   return Number.isFinite(n) && n >= 0 ? n : 20000;
 })();
 const PHONE_STALL_NOTICE = process.env.KADE_PHONE_STALL_NOTICE ?? ' Sorry, I lost my train of thought there. Go ahead.';
+/* Nov 13 2026 (sweep 2.3): the same for a fast-start screen turn (kade_live). It skips the truncation
+ * retry, so a reply that died part-way was stored and spoken as the whole reply after up to 90 s of
+ * nothing, and a listener cannot tell a cut from an ending. After its first word a screen-live turn
+ * now gets KADE_SCREEN_IDLE_MS (default 30000) without a data event, then ends with a short notice and
+ * finish_reason 'length' (never 'stop'), so the client can tell the reply is not whole. A dropped
+ * connection after words ends the same way at once. Old behaviour: KADE_SCREEN_IDLE_MS=0.
+ * Limit kept, no words: KADE_SCREEN_STALL_NOTICE= (empty). */
+const SCREEN_IDLE_MS = (() => {
+  const n = parseInt(process.env.KADE_SCREEN_IDLE_MS ?? '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 30000;
+})();
+const SCREEN_STALL_NOTICE = process.env.KADE_SCREEN_STALL_NOTICE ?? ' Sorry, I lost my train of thought there. Ask me again and I will pick it up.';
+/* The last two events of a live reply that was cut short: the notice (when there is one), then the
+ * finish. A cut screen reply ends as 'length', with or without the words, so it is never taken for a
+ * finished one. The phone keeps 'stop' (the bridge reads nothing from it). Never throws. */
+function writeStallNotice(res, { reqId, model, notice, screen }) {
+  const base = { id: `stall-${reqId}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model };
+  try {
+    if (notice.trim()) res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: notice }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: screen ? 'length' : 'stop' }] })}\n\n`);
+  } catch (e) {}
+}
 
 async function handleStreaming(req, res, upstreamBody, shimActive = false, shimDeepThink = false) {
   const reqId = req._reqId || '??????';
@@ -3693,7 +3717,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       if (msgs[i] && msgs[i].role === 'user') {
         const c = msgs[i].content;
         const shape = typeof c === 'string' ? 'string' : Array.isArray(c) ? `array[${c.map((p) => p && p.type).join(',')}]` : typeof c;
-        console.log(`[req ${reqId}] lastUser shape=${shape} tail=${JSON.stringify(messageTextOf(c).slice(-90))}`);
+        const lastText = messageTextOf(c);
+        console.log(`[req ${reqId}] lastUser shape=${shape} phoneMarker=${/\[PHONE CALL/i.test(lastText.slice(-400)) ? 'yes' : 'no'} tail=${textReceipt(lastText.slice(-90), lastText)}`);
         break;
       }
     }
@@ -3716,6 +3741,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   const liveContent = phoneLive || screenLive; // content is forwarded as it arrives
   const liveLane = screenLive ? 'screen-live' : 'phone-live';
   if (screenLive) console.log(`[req ${reqId}] SCREEN turn -> live content passthrough (editors skipped)`);
+  const liveIdleMs = screenLive ? SCREEN_IDLE_MS : PHONE_IDLE_MS; // GW-2 and sweep 2.3: the stall limit after the first word
+  const liveStallNotice = screenLive ? SCREEN_STALL_NOTICE : PHONE_STALL_NOTICE;
   // Session 22 (Kade: "Check caching, because that saves money in multiple
   // places"): Moonshot k2.6 has AUTOMATIC prefix caching (proven live:
   // repeated ~9K-token prefix -> cached_tokens 8192, hit rate $0.16/M vs
@@ -3759,7 +3786,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
         const t = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
         if (t.length >= big) {
           const heads = t.split('\n').filter((l) => /^#{1,3}\s|^\[[A-Z]/.test(l.trim())).slice(0, 12).map((l) => l.trim().slice(0, 70));
-          console.log(`[req ${reqId}] big-msg #${i} ${m.role} ${t.length}ch opens "${t.slice(0, 90).replace(/\s+/g, ' ')}" headings: ${heads.join(' || ') || '(none)'}`);
+          /* Sweep 8.6: the system head's own headings are the platform's text and still print. The
+           * opening words, and the headings of anything else (a tool result, a pasted document), are
+           * the person's material and print as a receipt. */
+          const ours = m.role === 'system' || m.role === 'developer';
+          console.log(`[req ${reqId}] big-msg #${i} ${m.role} ${t.length}ch opens ${textReceipt(t.slice(0, 90).replace(/\s+/g, ' '), t)} headings: ${ours ? (heads.join(' || ') || '(none)') : textReceipt(heads.join(' || ') || '(none)')}`);
         }
       });
     } catch {}
@@ -4241,8 +4272,8 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     /* GW-2: once a phone turn has spoken, the limit runs from the host's last data event. Tool mode
      * forwards raw bytes without parsing events, so it keeps the per-read 90 s limit. */
     const phoneStall = phoneSpokeAt > 0 && !toolMode;
-    const idleMs = phoneStall ? phoneSpokeAt + PHONE_IDLE_MS - Date.now() : STREAM_IDLE_TIMEOUT_MS;
-    const idleError = () => Object.assign(new Error(phoneStall ? `idle timeout (phone, ${PHONE_IDLE_MS}ms after the last word)` : 'idle timeout'), { name: 'IdleTimeout' });
+    const idleMs = phoneStall ? phoneSpokeAt + liveIdleMs - Date.now() : STREAM_IDLE_TIMEOUT_MS;
+    const idleError = () => Object.assign(new Error(phoneStall ? `idle timeout (${screenLive ? 'screen' : 'phone'}, ${liveIdleMs}ms after the last word)` : 'idle timeout'), { name: 'IdleTimeout' });
     if (idleMs <= 0) return Promise.reject(idleError());
     const idle = new Promise((_, reject) => {
       // The literal 'idle timeout' stays in this callback: chat-think-deadline.test.js finds the read timers by it.
@@ -4414,7 +4445,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
           }
           if (typeof delta.content === 'string') {
             contentAccum += delta.content;
-            if (phoneLive && PHONE_IDLE_MS > 0 && !phoneSpokeAt && /\S/.test(delta.content)) phoneSpokeAt = Date.now(); // GW-2
+            if (liveContent && liveIdleMs > 0 && !phoneSpokeAt && /\S/.test(delta.content)) phoneSpokeAt = Date.now(); // GW-2, sweep 2.3
             /* Part 92.27 — THE CASIO WATCH. DETECT ONLY, ON PURPOSE.
              *
              * Aug 25 2026: a reply answered Kade's question, ended cleanly,
@@ -4547,6 +4578,19 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   // A live screen turn (KADE_SCREEN_LIVE, off by default) skips the editors, so the typed lane's
   // line never runs for it. It is measured as streamed, like a call.
   if (screenLive && !toolMode) voiceMeterLog(reqId, upstreamBody, 'screen-live', contentAccum, { think: reasoningAccum.length > 0, host: upstreamProvider || undefined });
+  /* Nov 13 2026 (sweep 2.1): the voice reel rides on a fast-start turn, and a fast-start turn skips
+   * the editors, so a reel line the model copied went out unseen and unlogged. The words are already
+   * spoken, so this only COUNTS: one line when a reply repeats a run from the character's reel pool.
+   * No rewrite, no model call, no reply text. Off: KADE_SCREEN_LIVE_PARROT_LOG=0. */
+  if (screenLive && !toolMode && ECHO_GUARD_ON && process.env.KADE_SCREEN_LIVE_PARROT_LOG !== '0') {
+    try {
+      const reelLines = reelLinesFor(upstreamBody);
+      if (reelLines.length && contentAccum.trim()) {
+        const copied = detectPersonaParrot(contentAccum, '', { exampleLines: reelLines });
+        if (copied.length) console.log(`[echo-guard][req ${reqId}] screen-live persona_parrot count=${copied.length} longest=${Math.max(...copied.map((m) => m.detail.split(' ').length))} words (detect only)`);
+      }
+    } catch (e) { /* a count never breaks a reply */ }
+  }
   if (toolMode && !usage) usage = usageFromSseTail(toolTail);
   if (usage) {
     const cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ?? usage.cached_tokens ?? 0;
@@ -4753,13 +4797,9 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     /* GW-2: words went out, then the host went quiet or dropped before it finished the reply: say so
      * instead of ending in silence. Not after a finish_reason or [DONE]: that reply was whole, and a
      * notice after it would be the gateway talking over a finished answer. */
-    if (streamAborted && phoneSpokeAt && !sawFinish && !sawDone && !phoneReplaced && PHONE_STALL_NOTICE.trim() && !res.writableEnded) {
-      const base = { id: `stall-${reqId}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: template?.model || upstreamBody.model };
-      try {
-        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: PHONE_STALL_NOTICE }, finish_reason: null }] })}\n\n`);
-        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
-      } catch (e) {}
-      console.warn(`[req ${reqId}] phone stream ${streamAbortWhy || 'aborted'} after ${contentAccum.length} chars -- ended with the stall notice`);
+    if (streamAborted && phoneSpokeAt && !sawFinish && !sawDone && !phoneReplaced && !res.writableEnded && (liveStallNotice.trim() || screenLive)) {
+      writeStallNotice(res, { reqId, model: template?.model || upstreamBody.model, notice: liveStallNotice, screen: screenLive });
+      console.warn(`[req ${reqId}] ${screenLive ? 'screen-live' : 'phone'} stream ${streamAbortWhy || 'aborted'} after ${contentAccum.length} chars -- ended with ${liveStallNotice.trim() ? 'the stall notice' : 'finish=length, no notice'}`);
     }
     if (liveBeat) clearInterval(liveBeat);
     console.log(`[req ${reqId}] ${screenLive ? 'screen-live stream ended' : 'phone live-stream ended'} at ${Date.now() - t0}ms, ${contentAccum.length} chars streamed, first byte at ${phoneFirstWrite ? phoneFirstWrite - t0 : -1}ms`);
@@ -5185,7 +5225,7 @@ function scrubSpecialTokensFromTitleReply(result, originalBody) {
            * version of this line is why the delimiter behaviour above went
            * undiagnosed the first time -- the token itself fell off the end
            * of the log. Titles are short; this costs nothing. */
-          console.log(`[title-scrub] raw=${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+          console.log(`[title-scrub] raw=${textReceipt(before)} -> ${textReceipt(after)}`);
         }
       }
     }
@@ -5272,6 +5312,17 @@ app.post('/chat/completions', async (req, res) => {
     req.body = rest;
     req._liveAsked = liveAsked === true;
   }
+  /* Nov 13 2026 (sweep): "nobody is waiting on this one". The caller says so with the header
+   * x-kade-background: 1 or with kade_background: true in the body (the same door kade_live uses);
+   * the field is taken off here so no provider sees it. The only thing it changes is which host a
+   * MiMo Pro run is sent to (mimo.js, KADE_MIMO_BACKGROUND_ORDER). */
+  req._background = String(req.headers['x-kade-background'] || '').trim() === '1';
+  if (req.body && typeof req.body === 'object' && Object.hasOwn(req.body, 'kade_background')) {
+    const { kade_background: backgroundAsked, ...rest } = req.body;
+    req.body = rest;
+    if (backgroundAsked === true) req._background = true;
+  }
+  if (req._background) console.log(`[req ${reqId}] BACKGROUND run (nobody waiting)`);
 
   /* Part 97: the tool-fumble escalator — must sit BEFORE the tool shim so the
    * shim's model-specific decision sees the model this call will actually run. */
@@ -5297,7 +5348,7 @@ app.post('/chat/completions', async (req, res) => {
   if (shim.active) console.log(`[req ${reqId}] TOOL SHIM active for ${req.body.model} (${_toolNames.length} tools -> prompt)`);
 
   if (wantsStream) {
-    const upstreamBody = withReasoningIncluded(withProviderExclusion(withCharacterVoice(appendReminder({ ...shim.body, stream: true, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId, { live: !shim.active && screenLivePossible(req, shim.body) }) }))));
+    const upstreamBody = withReasoningIncluded(withProviderExclusion(withCharacterVoice(appendReminder({ ...shim.body, stream: true, ...(req._background ? { [MIMO_BACKGROUND]: true } : {}), [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId, { live: !shim.active && screenLivePossible(req, shim.body) }) }))));
     // ask OpenRouter to include usage in the stream when possible
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
     // Deep-Think shim turns need the buffered path (their reply is one big
@@ -5313,7 +5364,7 @@ app.post('/chat/completions', async (req, res) => {
 
   // -- non-streaming path: original buffered behaviour, now with the Novita
   // provider exclusion (see withProviderExclusion above) -----------------------
-  let upstreamBody = withReasoningIncluded(withProviderExclusion(withCharacterVoice(appendReminder({ ...shim.body, stream: false, [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId) }))));
+  let upstreamBody = withReasoningIncluded(withProviderExclusion(withCharacterVoice(appendReminder({ ...shim.body, stream: false, ...(req._background ? { [MIMO_BACKGROUND]: true } : {}), [Symbol.for('kade.jevOpinions')]: await jevPrePass(shim.body, reqId) }))));
   // Part 63: the router moved out of callOpenRouterOnce (see the comment
   // there). Non-stream person/room turns route here, same policy as the
   // streaming path at handleStreaming -- and now with a reqId in the logs.
