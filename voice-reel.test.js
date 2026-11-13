@@ -27,12 +27,45 @@ const body = (said, head = KIANA_HEAD, extra = {}) => ({
 // lines: "handle how you see best"). The draft-path tests use unapproved copies.
 const DRAFTS = POOLS.map((p) => ({ ...p, approved: false }));
 
-test('both pools load, are big enough clean, and are approved', () => {
-  assert.deepStrictEqual(POOLS.map((p) => p.id).sort(), ['harley', 'kiana']);
+// Nov 13 2026: five more pools, written and judged by Claude helpers, none of them hers yet. They
+// stay "approved": false until she says so in chat, so they ride for nobody.
+const APPROVED = ['harley', 'kiana'];
+const DRAFT_IDS = ['angel', 'della', 'earl', 'lilly', 'witherspoon'];
+const ALL_CLEAN = ['angel', 'lilly', 'witherspoon']; // a child may be on the other end, or the character is a child
+
+test('every pool loads and is big enough clean; only the two she approved are approved', () => {
+  assert.deepStrictEqual(POOLS.map((p) => p.id).sort(), [...APPROVED, ...DRAFT_IDS].sort());
   for (const p of POOLS) {
-    assert.strictEqual(p.approved, true, p.id + ': approved by her word on Nov 12 2026');
+    if (APPROVED.includes(p.id)) assert.strictEqual(p.approved, true, p.id + ': approved by her word on Nov 12 2026');
+    else assert.strictEqual(p.approved, false, p.id + ': a draft until she approves it');
     assert.ok(p.lines.filter((l) => !l.salty).length >= MIN_POOL, p.id + ' has too few clean lines');
   }
+});
+
+test('the Nov 13 drafts: found by their own persona opening, silent until approved, and three of them wholly clean', () => {
+  const HEADS = {
+    angel: 'You are Angel, an original fictional AI cherub girl: a tiny, sparkly child angel',
+    della: '1. WHO YOU ARE\n\nYou are Della. Della Mae Whitfield, if somebody wants the whole thing',
+    earl: 'You are Earl, 72, a retired long-haul trucker out of the Ozarks.',
+    lilly: '# Lilly\n\n## Who You Are\nYou are Lilly, a 12-year-old girl from the Missouri Ozarks, in sixth grade this year.',
+    witherspoon: "You are Mrs. Olivia Witherspoon, the librarian of Kade-AI's shared collection.",
+  };
+  reel._setPoolsForTest(POOLS);
+  for (const id of DRAFT_IDS) {
+    const p = POOLS.find((x) => x.id === id);
+    const b = body('hey you', 'house notes\n\n' + HEADS[id] + ADULT);
+    assert.strictEqual(withVoiceReel(b, { KADE_VOICE_REEL: '1' }), b, id + ' must not ride while unapproved');
+    assert.deepStrictEqual(reelLinesFor(b, { KADE_VOICE_REEL: '1' }), []);
+    const out = withVoiceReel(b, { KADE_VOICE_REEL: '1', KADE_VOICE_REEL_DRAFTS: '1' });
+    assert.strictEqual(out[REEL].id, id, id + ' is matched by its own persona opening and by no other pool');
+    assert.strictEqual(out[REEL].pairs.length, 4);
+    assert.ok(p.lines.length >= 20 && p.lines.length <= 25, id + ' has ' + p.lines.length + ' lines');
+    if (ALL_CLEAN.includes(id)) assert.strictEqual(p.lines.filter((l) => l.salty).length, 0, id + ' must have no adult-only line');
+    // the website's cleaner deletes these sentences, so a line that leans on them would teach a hole
+    for (const l of p.lines) assert.ok(!/\bI(?:'m| am) an AI\b|(?:^|[.!?]\s+)I don't have (?:a body|feelings|opinions|experiences)/i.test(l.you), l.id);
+  }
+  // Kiana's and Harley's heads still find their own pools with seven on disk
+  assert.strictEqual(withVoiceReel(body('hey you'), { KADE_VOICE_REEL: '1' })[REEL].id, 'kiana');
 });
 
 test('no more than half of a pool\'s lines end on a question, for the whole pool and for the clean lines alone', () => {
