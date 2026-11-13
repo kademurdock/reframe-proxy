@@ -27,22 +27,23 @@ const body = (said, head = KIANA_HEAD, extra = {}) => ({
 // lines: "handle how you see best"). The draft-path tests use unapproved copies.
 const DRAFTS = POOLS.map((p) => ({ ...p, approved: false }));
 
-// Nov 13 2026: five more pools, written and judged by Claude helpers, none of them hers yet. They
-// stay "approved": false until she says so in chat, so they ride for nobody.
-const APPROVED = ['harley', 'kiana'];
-const DRAFT_IDS = ['angel', 'della', 'earl', 'lilly', 'witherspoon'];
+// Nov 13 2026: five more pools, written and judged by Claude helpers. Kade approved all five in chat
+// the same day ("just switch the samples on"), so all seven are approved. The draft path (a pool that
+// is not approved rides for nobody) is still tested, with unapproved copies.
+const APPROVED = ['angel', 'della', 'earl', 'harley', 'kiana', 'lilly', 'witherspoon'];
+const NOV13_IDS = ['angel', 'della', 'earl', 'lilly', 'witherspoon'];
 const ALL_CLEAN = ['angel', 'lilly', 'witherspoon']; // a child may be on the other end, or the character is a child
 
-test('every pool loads and is big enough clean; only the two she approved are approved', () => {
-  assert.deepStrictEqual(POOLS.map((p) => p.id).sort(), [...APPROVED, ...DRAFT_IDS].sort());
+test('every pool loads and is big enough clean; all seven are approved', () => {
+  assert.deepStrictEqual(POOLS.map((p) => p.id).sort(), APPROVED);
   for (const p of POOLS) {
-    if (APPROVED.includes(p.id)) assert.strictEqual(p.approved, true, p.id + ': approved by her word on Nov 12 2026');
-    else assert.strictEqual(p.approved, false, p.id + ': a draft until she approves it');
+    assert.strictEqual(p.approved, true, p.id + ': approved by her word (Kiana and Harley Nov 12 2026, the other five Nov 13 2026)');
+    assert.ok(!/not approved/.test(p.note || ''), p.id + ': the note does not say it is unapproved');
     assert.ok(p.lines.filter((l) => !l.salty).length >= MIN_POOL, p.id + ' has too few clean lines');
   }
 });
 
-test('the Nov 13 drafts: found by their own persona opening, silent until approved, and three of them wholly clean', () => {
+test('the Nov 13 pools: found by their own persona opening, silent while unapproved, riding once approved, and three of them wholly clean', () => {
   const HEADS = {
     angel: 'You are Angel, an original fictional AI cherub girl: a tiny, sparkly child angel',
     della: '1. WHO YOU ARE\n\nYou are Della. Della Mae Whitfield, if somebody wants the whole thing',
@@ -50,21 +51,28 @@ test('the Nov 13 drafts: found by their own persona opening, silent until approv
     lilly: '# Lilly\n\n## Who You Are\nYou are Lilly, a 12-year-old girl from the Missouri Ozarks, in sixth grade this year.',
     witherspoon: "You are Mrs. Olivia Witherspoon, the librarian of Kade-AI's shared collection.",
   };
-  reel._setPoolsForTest(POOLS);
-  for (const id of DRAFT_IDS) {
+  for (const id of NOV13_IDS) {
     const p = POOLS.find((x) => x.id === id);
     const b = body('hey you', 'house notes\n\n' + HEADS[id] + ADULT);
+    // The draft path, with unapproved copies: nothing rides and nothing is listed for the parrot guard.
+    reel._setPoolsForTest(DRAFTS);
     assert.strictEqual(withVoiceReel(b, { KADE_VOICE_REEL: '1' }), b, id + ' must not ride while unapproved');
     assert.deepStrictEqual(reelLinesFor(b, { KADE_VOICE_REEL: '1' }), []);
-    const out = withVoiceReel(b, { KADE_VOICE_REEL: '1', KADE_VOICE_REEL_DRAFTS: '1' });
+    const draft = withVoiceReel(b, { KADE_VOICE_REEL: '1', KADE_VOICE_REEL_DRAFTS: '1' });
+    assert.strictEqual(draft[REEL].id, id);
+    // As shipped (approved Nov 13 2026): the live switch alone is enough.
+    reel._setPoolsForTest(POOLS);
+    const out = withVoiceReel(b, { KADE_VOICE_REEL: '1' });
     assert.strictEqual(out[REEL].id, id, id + ' is matched by its own persona opening and by no other pool');
     assert.strictEqual(out[REEL].pairs.length, 4);
+    assert.strictEqual(reelLinesFor(b, { KADE_VOICE_REEL: '1' }).length, p.lines.length, id + ': its whole pool is on the parrot list');
     assert.ok(p.lines.length >= 20 && p.lines.length <= 25, id + ' has ' + p.lines.length + ' lines');
     if (ALL_CLEAN.includes(id)) assert.strictEqual(p.lines.filter((l) => l.salty).length, 0, id + ' must have no adult-only line');
     // the website's cleaner deletes these sentences, so a line that leans on them would teach a hole
     for (const l of p.lines) assert.ok(!/\bI(?:'m| am) an AI\b|(?:^|[.!?]\s+)I don't have (?:a body|feelings|opinions|experiences)/i.test(l.you), l.id);
   }
   // Kiana's and Harley's heads still find their own pools with seven on disk
+  reel._setPoolsForTest(POOLS);
   assert.strictEqual(withVoiceReel(body('hey you'), { KADE_VOICE_REEL: '1' })[REEL].id, 'kiana');
 });
 
@@ -272,14 +280,14 @@ test('a conversation the character opened goes without the reel on the wire', ()
 
 /* Nov 13 2026 (post-release sweep). The fork's note in front of a dictated message. */
 const VOICE_NOTE = '[Message source: voice message transcribed to text, possibly edited or mixed with typing. Names, punctuation and repeated words may be transcription errors. Use the intended meaning and established names when clear; ask only when ambiguity affects the answer. This is text from a recording, not a live call or access to the speaker’s audio, tone or surroundings.]';
-const HARLEY_HEAD = 'house notes\n\nYou are Harley Dalton, Harley to everybody, one of the companions of Kade-AI.\n...';
 const REEL_ONLY = { KADE_VOICE_REEL: '1' };
 
 test('sweep 2.0: two conversations that start with a voice message get different reels, and turn one matches turn two', () => {
   reel._setPoolsForTest(POOLS);
   const a = 'so I finally got the truck back from the shop this morning';
   const b = 'do you remember what we said about the garden last week';
-  for (const head of [KIANA_HEAD, HARLEY_HEAD]) {
+  // Every approved pool (seven since Nov 13 2026), each found by its own persona opening.
+  for (const head of POOLS.map((p) => 'house notes\n\n' + p.match + '\n...')) {
     const idsA = withVoiceReel(body(VOICE_NOTE + '\n' + a, head), REEL_ONLY)[REEL].ids;
     const idsB = withVoiceReel(body(VOICE_NOTE + '\n' + b, head), REEL_ONLY)[REEL].ids;
     assert.notDeepStrictEqual(idsA, idsB, 'the note is not the key');
@@ -300,7 +308,7 @@ test('sweep 2.0: the note is not read as the person\'s own words by the topic ch
   for (const p of POOLS) {
     const blocked = p.lines.filter((l) => reel.collides(l, VOICE_NOTE));
     if (!blocked.length) continue; // this pool never collided with the note
-    const head = p.id === 'harley' ? HARLEY_HEAD : KIANA_HEAD;
+    const head = 'house notes\n\n' + p.match + '\n...';
     const seen = new Set();
     for (let i = 0; i < 400; i++) {
       const first = 'opening number ' + i + ' about nothing in particular';

@@ -75,17 +75,24 @@ test('a reply that repeats a reel line is caught by the parrot guard', async () 
 });
 
 test('another character gets neither piece', async () => {
-  // Nov 13 2026: Earl has a draft pool now, so the character with no pool is the barber.
+  // Nov 13 2026: Earl has a pool now, so the character with no pool is the barber.
   const other = await run({ env: ON, messages: [{ role: 'system', content: 'You are Dimitri, 47, a barber in the shop his grandfather opened.' }, { role: 'user', content: 'is he coming or not' }] });
   assert.deepEqual(other.wire[0].messages.map((x) => x.role), ['system', 'user', 'system']);
   assert.ok(other.wire[0].messages[2].content.endsWith(TALK_NOTE_CASUAL));
 });
 
-test('a character whose pool is still a draft gets neither piece on the live switches', async () => {
+// Nov 13 2026: Kade approved the five new pools in chat ("just switch the samples on"), so Earl rides on the
+// live switch alone, with no drafts switch. (The draft path itself is held by voice-reel.test.js.)
+test('a character approved on Nov 13 gets its reel on the live switch alone, and nothing without it', async () => {
   const earl = [{ role: 'system', content: 'You are Earl, 72, a retired long-haul trucker out of the Ozarks.' }, { role: 'user', content: 'is he coming or not' }];
-  const live = await run({ env: { KADE_VOICE_REEL: '1', KADE_VOICE_CARD: '1' }, messages: earl });
-  assert.deepEqual(live.wire[0].messages.map((x) => x.role), ['system', 'user', 'system']);
-  assert.ok(live.wire[0].messages[2].content.endsWith(TALK_NOTE_CASUAL));
+  const live = await run({ env: { KADE_VOICE_REEL: '1' }, messages: earl });
+  const m = live.wire[0].messages;
+  assert.deepEqual(m.map((x) => x.role), ['system', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user', 'system']);
+  for (const i of [1, 3, 5, 7]) assert.ok(m[i].content.startsWith(HEADER));
+  assert.equal(m[9].content, 'is he coming or not', 'the real turn follows the reel');
+  assert.ok(m[10].content.endsWith(TALK_NOTE_CASUAL), 'no card without KADE_VOICE_CARD');
+  const off = await run({ messages: earl });
+  assert.deepEqual(off.wire[0].messages.map((x) => x.role), ['system', 'user', 'system']);
 });
 
 test('the reel survives the think router and a later turn keeps the same reel', async () => {
