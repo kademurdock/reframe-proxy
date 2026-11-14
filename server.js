@@ -3820,6 +3820,14 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   let claudeUpstream = null;
   if (typeof claudeRoute !== 'undefined' && claudeRoute.on(process.env)) {
     claudeUpstream = await claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive });
+    /* Nov 14 2026: the lyric desk's Claude refused, and the call as sent (Claude on Bedrock) would be refused too, so
+     * MiMo Pro writes it: the same call with the model swapped and MiMo's own adapter (its hosts, zero retention,
+     * room to think). The caller's think deadline, kept since the start, holds MiMo's thought (isReasoningModel). */
+    if (claudeUpstream && claudeUpstream.swapModel) {
+      upstreamBody = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi({ ...upstreamBody, model: claudeUpstream.swapModel })))))));
+      console.log(`[claude][req ${reqId}] Claude refused this ${claudeLaneOf(req) || 'call'}: ${upstreamBody.model} writes it instead`);
+      claudeUpstream = null;
+    }
     if (claudeUpstream) upstream = claudeUpstream;
     else if (hangup.aborted) return; // nobody left to answer
   }
@@ -5177,11 +5185,16 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
  * it. Each returns null when the turn stays on MiMo (not a person's character turn, a child or teen account,
  * a cooldown, or Claude failed before its first word); the caller then sends the MiMo call it always sent.
  * Anything unexpected in here also returns null: Claude is never allowed to cost a turn its MiMo answer. */
+/* Nov 14 2026: a call its caller named as one of the writing lanes (claude-route.js THE WRITING LANES) is planned
+ * by the lane's own rules; every other call exactly as before. */
+function claudeLaneOf(req) {
+  return claudeRoute.isLane(req._claudeLane) ? req._claudeLane : '';
+}
 /* Nov 13 2026 (review): a person's lane is read on the body as it arrived (req.body) as well as on the wire.
  * On the wire a checkpoint call ends on the gateway's own date note, so the checkpoint prompt is no longer
  * its last message and the wire alone would take it for a conversation. */
 function claudePlanFor(req, wire, reqId, { phone = false, shimActive = false, lane = '?', t0 = Date.now(), onePiece = false } = {}) {
-  const plan = claudeRoute.planTurn(wire, {
+  const ctx = {
     personLane: screenLiveLane(wire) && screenLiveLane(req.body),
     background: req._background === true,
     shimActive,
@@ -5189,17 +5202,24 @@ function claudePlanFor(req, wire, reqId, { phone = false, shimActive = false, la
     phone,
     onePiece,
     deadlineLeftMs: req._thinkDeadlineMs ? req._thinkDeadlineMs - (Date.now() - t0) : undefined,
-  }, process.env);
+  };
+  const named = claudeLaneOf(req);
+  const plan = named
+    ? claudeRoute.planLane(wire, { ...ctx, lane: named, adult: req._claudeAdult === true }, process.env)
+    : claudeRoute.planTurn(wire, ctx, process.env);
   if (plan && plan.skip) {
     claudeRoute.noteSkip(plan.skip);
-    console.log(`[claude][req ${reqId}] stays on MiMo: ${plan.skip} (lane=${lane})`);
+    console.log(`[claude][req ${reqId}] stays on ${named ? claudeRoute.laneStays(named) : 'MiMo'}: ${plan.skip} (lane=${lane})`);
     return null;
   }
   return plan;
 }
+/* Returns Claude's stream, null (the call goes as it would have), or { swapModel } when a writing lane's Claude
+ * refused and the call as sent would only be refused again (the lyric desk): handleStreaming then sends the same
+ * call to that model. */
 async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive }) {
   try {
-    const lane = phoneLive ? 'phone' : screenLive ? 'screen-live' : 'buffered';
+    const lane = claudeLaneOf(req) || (phoneLive ? 'phone' : screenLive ? 'screen-live' : 'buffered');
     const plan = claudePlanFor(req, upstreamBody, reqId, { phone: phoneLive, shimActive, lane, t0 });
     if (!plan) return null;
     const got = await claudeRoute.openStream({
@@ -5207,7 +5227,9 @@ async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLiv
       url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
       signal: hangup, plan, reqId, lane, env: process.env, alert: alertClaude,
     });
-    return got.upstream || null;
+    if (got.upstream) return got.upstream;
+    if (got.fail === 'refusal' && plan.refusalModel) return { swapModel: plan.refusalModel };
+    return null;
   } catch (e) {
     console.error(`[claude][req ${reqId}] route error, MiMo answers: ${e && e.message}`);
     return null;
@@ -5216,12 +5238,13 @@ async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLiv
 async function claudeOnePiece(req, upstreamBody, reqId, hangup) {
   try {
     const wire = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(upstreamBody)))))));
-    const plan = claudePlanFor(req, wire, reqId, { phone: isPhoneTurn(wire), lane: 'one-piece', onePiece: true });
+    const lane = claudeLaneOf(req) || 'one-piece';
+    const plan = claudePlanFor(req, wire, reqId, { phone: isPhoneTurn(wire), lane, onePiece: true });
     if (!plan) return null;
     const got = await claudeRoute.complete({
       body: claudeRoute.buildBody(reelOnWire(wire), plan),
       url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
-      signal: hangup, plan, reqId, lane: 'one-piece', env: process.env, alert: alertClaude,
+      signal: hangup, plan, reqId, lane, env: process.env, alert: alertClaude,
     });
     return got.result || null;
   } catch (e) {
@@ -5423,6 +5446,19 @@ app.post('/chat/completions', async (req, res) => {
     if (backgroundAsked === true) req._background = true;
   }
   if (req._background) console.log(`[req ${reqId}] BACKGROUND run (nobody waiting)`);
+  /* Nov 14 2026: the writing lanes' marks (claude-route.js THE WRITING LANES). The caller names the lane with the
+   * header x-kade-claude-lane or kade_claude_lane in the body, and says the person is a verified adult with
+   * x-kade-adult: 1 or kade_adult: true. The body fields are taken off here, on both routes and whatever the switches
+   * say, so no host ever sees them; a body without them is left exactly as it came. */
+  req._claudeLane = String(req.headers['x-kade-claude-lane'] || '').trim().toLowerCase();
+  req._claudeAdult = String(req.headers['x-kade-adult'] || '').trim() === '1';
+  if (req.body && typeof req.body === 'object' && (Object.hasOwn(req.body, 'kade_claude_lane') || Object.hasOwn(req.body, 'kade_adult'))) {
+    const { kade_claude_lane: laneAsked, kade_adult: adultAsked, ...rest } = req.body;
+    req.body = rest;
+    if (typeof laneAsked === 'string' && laneAsked.trim()) req._claudeLane = laneAsked.trim().toLowerCase();
+    if (adultAsked === true) req._claudeAdult = true;
+  }
+  if (req._claudeLane) console.log(`[req ${reqId}] writing lane=${req._claudeLane.slice(0, 40).replace(/[^a-z0-9-]/g, '?')}${req._claudeAdult ? ' (verified adult)' : ''}`);
 
   /* Part 97: the tool-fumble escalator — must sit BEFORE the tool shim so the
    * shim's model-specific decision sees the model this call will actually run. */

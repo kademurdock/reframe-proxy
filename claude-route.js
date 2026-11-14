@@ -116,6 +116,45 @@
  * unset or 0: nothing in this file runs and every body leaves exactly as before, byte for byte
  * (claude-route-off-wire.test.js holds that against origin/main). */
 
+/* ── THE WRITING LANES (Nov 14 2026) ──────────────────────────────────────────────────────────────────────────
+ * Kade, once chat was live: "Change the lyric desk etc to it too, whatever benefits from better writing than Mimo".
+ * Five more jobs go to Claude through this same route. None of them can be told reliably from its prompt, so the
+ * caller names each call: the header x-kade-claude-lane (or kade_claude_lane in the body, which server.js takes off
+ * before any host sees it, on every call, whatever the switches say):
+ *   lyric-desk      the Sound Booth's song desk: songs, Seed and AuK scripts, the producer's audit, the repeat and
+ *                   tell rewrites, Surprise me. It has written with Claude Opus 5.5 since Oct 27, but because it asks
+ *                   for zero retention OpenRouter sends it to Amazon Bedrock and OpenRouter credit pays list price.
+ *                   Here only the payer changes: Anthropic, on her key. The desk keeps its own effort (the Think
+ *                   setting) and its own reply cap (already sized for thinking), its real cost is handed back as
+ *                   before (the website prices it: packages/api/src/utils/writing.ts writingCost), and the head gets
+ *                   a five-minute cache mark (a retry or a repeat rewrite reads it). Any failure sends the call just
+ *                   as the website sent it: Claude on Bedrock, the route it had. The one exception is a refusal:
+ *                   Claude on Bedrock would refuse the same words, so MiMo Pro writes that song (server.js swaps the
+ *                   model, and the caller's think deadline then holds MiMo's thought as it did on this desk before).
+ *   booth-edit      the booth's carry rewrite and Seed's cut-to-fit (KADE_SOUNDBOOTH_MODEL, MiMo Pro): both rework
+ *                   text Claude wrote, so MiMo could only lose quality.
+ *   persona-writer  the character builder's persona rounds.
+ *   spotter-draft   the Spotter's personality brief.
+ *   speak-first     a character's own message: a friend text, a research or errand write-up, a reach-out. One
+ *                   message only (the website leaves the mark off a background task's many rounds), and only on the
+ *                   website's verified-adult note, read from the head exactly as for chat, with five-minute cache
+ *                   marks (the throwaway chat ends with the message).
+ * WHO. A lane with no audience note in its prompt (all but speak-first) goes to Claude only when the website marks
+ * the person a verified adult (x-kade-adult: 1 or kade_adult: true), by the rule that gives a chat turn the note
+ * (build.js isKadeAdult after isChildLike). Children, teens, untyped accounts and anyone the website could not read
+ * stay where they were. A head that carries the under-15 note never goes, whatever a mark says.
+ * HOW. The MiMo lanes (booth-edit, persona-writer, spotter-draft) think at KADE_CLAUDE_EFFORT (low) with room to
+ * think added to their own cap, carry no cache mark (one call each, rarely repeated within minutes) and are billed
+ * as MiMo would have billed them. Every lane but speak-first reads Claude's whole answer before anything reaches the
+ * caller (`whole`), so a failure at any point (an error, a refusal, an empty answer, its time limit) is answered by
+ * the lane's own call with nothing lost. While Claude thinks, OpenRouter sends a comment line about every half
+ * second (measured Nov 14 2026), so the idle limit (KADE_CLAUDE_IDLE_MS) only trips on a dead stream. Time limits,
+ * leaving the lane's own call time to run: booth-edit 45 s (its caller waits 90), persona-writer 150 s (300),
+ * spotter-draft 25 s (45). The lyric desk has none: its fallback is the same model and no faster.
+ * SWITCHES. KADE_CLAUDE_CHAT=0 (or unset) turns every lane off with chat. KADE_CLAUDE_LANES picks the lanes: unset
+ * is all five; a list names the ones on ("lyric-desk,speak-first"); a name with a minus takes one off ("-lyric-desk"
+ * is every lane but the desk); "none" leaves chat alone on Claude. */
+
 const crypto = require('node:crypto');
 const { ReadableStream } = require('node:stream/web');
 const { realCostOf, costNote } = require('./usage-cost');
@@ -207,6 +246,50 @@ const DROP = ['models', 'provider', 'reasoning', 'reasoning_effort', 'include_re
   'logprobs', 'top_logprobs', 'transforms', 'route', 'max_completion_tokens', 'verbosity'];
 
 const isMimoProModel = (model) => /^(?:xiaomi\/)?mimo-v2\.6-pro$/i.test(String(model || ''));
+const isClaudeModel = (model) => /^anthropic\/claude-/i.test(String(model || ''));
+
+/* The writing lanes (see THE WRITING LANES above).
+ *   wire      the model the caller must have chosen for the lane to apply: 'claude' (the desk already writes with
+ *             Claude) or 'mimo' (MiMo Pro). Any other model means the caller moved the lane itself; it is left alone.
+ *   audience  'mark': the website's x-kade-adult mark; 'note': the verified-adult note in the head, as for chat.
+ *   whole     read Claude's whole answer before handing it on (false: hand on at the first word, as for chat).
+ *   effort    'own': the caller's own effort; 'plain': KADE_CLAUDE_EFFORT; 'chat': as a chat turn.
+ *   ownRoom   the caller's reply cap already leaves room to think, so none is added.
+ *   cache     the cache lifetime of the marks, or null for none.
+ *   billing   'real': Claude's own usage is handed back; 'mimo': the MiMo-equivalent usage, as for chat.
+ *   refusal   a model that answers instead when Claude refuses (the call as sent would only be refused again).
+ *   limitMs   the longest Claude may take before the lane's own call answers (0: no limit of its own).
+ *   stays     what answers when Claude does not, for the log line. */
+const LANES = Object.freeze({
+  'lyric-desk': Object.freeze({ wire: 'claude', audience: 'mark', whole: true, effort: 'own', ownRoom: true, cache: '5m',
+    billing: 'real', refusal: 'xiaomi/mimo-v2.6-pro', limitMs: 0, stays: 'the route it was sent on' }),
+  'booth-edit': Object.freeze({ wire: 'mimo', audience: 'mark', whole: true, effort: 'plain', cache: null, billing: 'mimo',
+    limitMs: 45000, stays: 'MiMo' }),
+  'persona-writer': Object.freeze({ wire: 'mimo', audience: 'mark', whole: true, effort: 'plain', cache: null, billing: 'mimo',
+    limitMs: 150000, stays: 'MiMo' }),
+  'spotter-draft': Object.freeze({ wire: 'mimo', audience: 'mark', whole: true, effort: 'plain', cache: null, billing: 'mimo',
+    limitMs: 25000, stays: 'MiMo' }),
+  'speak-first': Object.freeze({ wire: 'mimo', audience: 'note', whole: false, effort: 'chat', cache: '5m', billing: 'mimo',
+    stays: 'MiMo' }),
+});
+const LANE_NAMES = Object.freeze(Object.keys(LANES));
+const isLane = (name) => typeof name === 'string' && Object.hasOwn(LANES, name);
+/* "No limit of its own" (the lyric desk): an hour, past anything its caller waits. */
+const NO_LIMIT_MS = 3600000;
+/* The longest a writing lane waits for the host's headers (its own limit covers the whole answer). */
+const WHOLE_HEADERS_MS = 60000;
+/* KADE_CLAUDE_LANES: unset is every lane; "none" (or 0, off) none; otherwise the names listed, or every lane but
+ * those given with a minus. Unknown names are ignored. */
+function lanesFrom(raw) {
+  const text = String(raw ?? '').trim().toLowerCase();
+  if (!text) return [...LANE_NAMES];
+  if (['none', '0', 'off'].includes(text)) return [];
+  const parts = text.split(',').map((p) => p.trim()).filter(Boolean);
+  const off = parts.filter((p) => p.startsWith('-')).map((p) => p.slice(1).trim());
+  const on = parts.filter((p) => !p.startsWith('-'));
+  const base = on.length && !on.includes('all') ? on : LANE_NAMES;
+  return LANE_NAMES.filter((n) => base.includes(n) && !off.includes(n));
+}
 
 function num(raw, fallback, min) {
   if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
@@ -246,6 +329,7 @@ function settings(env = process.env) {
     minTokens: num(env.KADE_CLAUDE_MIN_TOKENS, 8000, 1),
     tokenRatio: Math.max(1, num(env.KADE_CLAUDE_TOKEN_RATIO, DEFAULT_RATIO, 0.01)),
     price: priceFrom(env.KADE_CLAUDE_MIMO_PRICE),
+    lanes: lanesFrom(env.KADE_CLAUDE_LANES),
   };
 }
 const on = (env = process.env) => settings(env).on;
@@ -319,7 +403,8 @@ function coolEveryone(reason, ms, now) {
 function scopeOf(reason, plan = {}) {
   if (['credit', 'key', 'bad_model', 'not_byok'].includes(reason)) return 'long';
   if (['rate_limit', 'network', 'not_a_stream', 'http_408'].includes(reason) || /^http_5\d\d$/.test(reason)) return 'platform';
-  if (reason === 'timeout') return plan.thinking ? 'none' : 'strike';
+  // A writing lane (plan.whole) that ran past its time limit is a long piece of writing, not a stall.
+  if (reason === 'timeout') return plan.thinking || plan.whole ? 'none' : 'strike';
   if (reason === 'stream_error' || reason === 'broke') return 'strike';
   return 'conversation'; // empty, refusal, flagged and every other 4xx: this conversation's own trouble
 }
@@ -429,6 +514,49 @@ function planTurn(wire, ctx = {}, env = process.env, now = Date.now()) {
   };
 }
 
+/* A writing lane's call (THE WRITING LANES). `ctx` as planTurn's, plus `lane` (the caller's name for the call) and
+ * `adult` (the website's verified-adult mark). Returns null (not a Claude call), { skip } (it stays where it was
+ * sent) or the plan. */
+function planLane(wire, ctx = {}, env = process.env, now = Date.now()) {
+  const s = settings(env);
+  const name = isLane(ctx.lane) ? ctx.lane : '';
+  const lane = name ? LANES[name] : null;
+  if (!s.on || !lane || !wire) return null;
+  // The caller chose another writer for this call: its choice stands.
+  if (lane.wire === 'claude' ? !isClaudeModel(wire.model) : !isMimoProModel(wire.model)) return null;
+  if (lane.audience === 'note' && (!ctx.personLane || ctx.shimActive || ctx.callerDeadline)) return null;
+  if (forcedToolChoice(wire.tool_choice) || endsOnAssistant(wire.messages)) return null;
+  if (!s.lanes.includes(name)) return { skip: `the ${name} lane is off (KADE_CLAUDE_LANES)` };
+  if (carriesMedia(wire)) return { skip: 'audio or video in the call' };
+  const audience = audienceOf(wire);
+  if (audience === 'child') return { skip: 'child or teen account' };
+  if (lane.audience === 'note') {
+    if (audience === 'adult-unknown') return { skip: 'an adult note this gateway does not know word for word' };
+    if (s.adultsOnly && audience !== 'adult') return { skip: 'not marked as a verified adult' };
+  } else if (ctx.adult !== true) {
+    return { skip: 'not marked as a verified adult' };
+  }
+  const left = cooldownLeftMs(now);
+  if (left > 0) return { skip: `Claude cooling down after ${cooldown.reason}, ${Math.ceil(left / 1000)} s left` };
+  const conversation = conversationKey(wire);
+  const h = conversationHeld(conversation, now);
+  if (h) return { skip: `Claude failed on this ${lane.audience === 'note' ? 'conversation' : 'request'} (${h.reason}), ${Math.ceil(h.ms / 1000)} s left` };
+  const r = (wire.reasoning && typeof wire.reasoning === 'object') ? wire.reasoning : {};
+  const thinking = r.enabled === true;
+  const effort = lane.effort === 'own' ? (thinking ? effortWord(r.effort, 'medium') : s.effort)
+    : lane.effort === 'chat' && thinking ? lowerEffort(effortWord(r.effort, 'medium'), s.maxEffort)
+      : s.effort;
+  let firstTokenMs = lane.whole ? (lane.limitMs || NO_LIMIT_MS) : thinking ? s.thinkFirstTokenMs : s.firstTokenMs;
+  if (!lane.whole && Number.isFinite(ctx.deadlineLeftMs)) firstTokenMs = Math.min(firstTokenMs, Math.max(1000, ctx.deadlineLeftMs - 500));
+  return {
+    model: s.model, effort, thinking, phone: false, firstTokenMs, lane: name, whole: lane.whole,
+    ttl: lane.cache || '5m', historyTtl: lane.cache || '5m', marks: !!lane.cache, ownRoom: lane.ownRoom === true,
+    billing: lane.billing, refusalModel: lane.refusal || null, minTokens: s.minTokens, conversation,
+  };
+}
+/* What answers a lane's call when Claude does not, for the log line. */
+const laneStays = (name) => (isLane(name) ? LANES[name].stays : 'MiMo');
+
 /* ── the body ───────────────────────────────────────────────────────────── */
 function hasText(content) {
   if (typeof content === 'string') return content.trim().length > 0;
@@ -488,6 +616,7 @@ function withCacheMarks(messages, ttl = '1h', historyTtl = ttl) {
 function maxTokensFor(wire, plan) {
   const asked = Number(wire.max_tokens ?? wire.max_completion_tokens);
   if (!Number.isFinite(asked) || asked <= 0) return plan.minTokens || 8000;
+  if (plan.ownRoom) return Math.round(asked); // the lyric desk's cap is already sized for thinking
   return Math.round(asked) + (THINK_ROOM[plan.effort] || THINK_ROOM.medium);
 }
 function buildBody(wire, plan) {
@@ -497,7 +626,10 @@ function buildBody(wire, plan) {
   out.provider = { only: ['anthropic'], allow_fallbacks: false };
   out.reasoning = { effort: plan.effort, exclude: true };
   out.max_tokens = maxTokensFor(wire, plan);
-  out.messages = withCacheMarks(softenAdultNotes(wire.messages), plan.ttl, plan.historyTtl || plan.ttl);
+  const soft = softenAdultNotes(wire.messages);
+  // A writing lane with no cache lifetime (plan.marks false) goes out with no marks at all.
+  out.messages = plan.marks === false ? (Array.isArray(soft) ? soft.map(unmarked) : soft)
+    : withCacheMarks(soft, plan.ttl, plan.historyTtl || plan.ttl);
   return out;
 }
 
@@ -611,6 +743,7 @@ function snapshot(env = process.env, now = Date.now()) {
   }
   return {
     enabled: s.on, model: s.model, effort: s.effort, max_effort: s.maxEffort, cache_ttl: s.cacheTtl,
+    writing_lanes_on: s.on ? [...s.lanes] : [],
     adults_only: s.adultsOnly, byok_only: s.byokOnly, token_ratio: s.tokenRatio, mimo_price_per_million: s.price,
     cooldown: left > 0 ? { reason: cooldown.reason, seconds_left: Math.ceil(left / 1000) } : null,
     conversations_held: holding,
@@ -664,7 +797,8 @@ function fail(reason, { reqId, lane, ms, status, env, log = console.log, now = D
       paid = ` gen=${state.genId} cost=not reported`;
     }
   }
-  log(`[claude][req ${reqId || '??????'}] fallback to MiMo: lane=${lane || '?'} reason=${reason}` +
+  const to = reason === 'refusal' && plan.refusalModel ? plan.refusalModel : laneStays(lane);
+  log(`[claude][req ${reqId || '??????'}] fallback to ${to}: lane=${lane || '?'} reason=${reason}` +
     `${status ? ` status=${status}` : ''} after ${Number.isFinite(ms) ? ms : '?'}ms${paid} -- ${effect}`);
   if (reason === 'key' && typeof alert === 'function') {
     try { alert('key', `Anthropic refused your key through OpenRouter (status ${status || '?'}). MiMo is answering; Claude is tried again every ${Math.round(settings(env).cooldownMs / 60000)} minutes.`); } catch {}
@@ -739,9 +873,12 @@ function transformEvent(raw, state) {
     }
     if (obj.usage && typeof obj.usage === 'object') {
       state.usage = obj.usage;
-      obj.usage = mimoEquivalentUsage(obj.usage, state.env, state.model || '');
-      state.billed = obj.usage;
-      changed = true;
+      // A lane billed at Claude's real cost (the lyric desk, billing 'real') hands its usage on as it came.
+      if (state.billing !== 'real') {
+        obj.usage = mimoEquivalentUsage(obj.usage, state.env, state.model || '');
+        state.billed = obj.usage;
+        changed = true;
+      }
     }
     if (changed) lines[i] = `data: ${JSON.stringify(obj)}`;
   }
@@ -754,14 +891,16 @@ function readWithin(reader, ms) {
   });
   return Promise.race([reader.read(), late]).finally(() => clearTimeout(timer));
 }
-function turnLine({ reqId, lane, effort, firstMs, state }) {
+/* `whole`: a writing lane read to its end before it was handed on, so the time is the whole call's (ms=). */
+function turnLine({ reqId, lane, effort, firstMs, state, whole = false }) {
   const gen = state.genId ? ` gen=${state.genId}` : '';
   const how = state.broke ? ' broke=after first word' : state.refusedAfterWords ? ' refused=after words' : state.error ? ' error=after first word' : '';
+  const timing = whole ? `ms=${firstMs}` : `first_token_ms=${firstMs}`;
   const u = state.usage;
-  if (!u) return `[claude][req ${reqId}] turn lane=${lane} effort=${effort} first_token_ms=${firstMs}${how} usage=not reported${gen} host=${state.provider || '?'}`;
+  if (!u) return `[claude][req ${reqId}] turn lane=${lane} effort=${effort} ${timing}${how} usage=not reported${gen} host=${state.provider || '?'}`;
   const n = claudeNumbers(u);
   const billed = state.billed && typeof state.billed.cost === 'number' ? ` billed_as_mimo=$${state.billed.cost.toFixed(6)}` : '';
-  return `[claude][req ${reqId}] turn lane=${lane} effort=${effort} first_token_ms=${firstMs}${how} prompt=${n.prompt} cached=${n.cached}` +
+  return `[claude][req ${reqId}] turn lane=${lane} effort=${effort} ${timing}${how} prompt=${n.prompt} cached=${n.cached}` +
     ` cache_write=${n.cacheWrite} reply=${n.reply} reasoning=${n.reasoning}${costNote(u) || ' cost=?'}${billed}${gen} host=${state.provider || '?'}`;
 }
 
@@ -773,7 +912,8 @@ function turnLine({ reqId, lane, effort, firstMs, state }) {
 async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '??????', lane = '?', env = process.env,
   log = console.log, now = Date.now, quiet = false, alert = null }) {
   const t0 = now();
-  const state = { env, text: false, tool: false, error: null, usage: null, billed: null, provider: null, model: null, genId: null };
+  const state = { env, text: false, tool: false, error: null, usage: null, billed: null, provider: null, model: null, genId: null,
+    billing: plan.billing === 'real' ? 'real' : 'mimo' };
   const guard = () => checkByok(state, { reqId, lane, env, log, now: now(), alert });
   const why = (reason, extra = {}) => {
     guard();
@@ -786,7 +926,10 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
   const detach = () => { if (signal) signal.removeEventListener('abort', onHangup); };
   let res;
   try {
-    res = await fetchFn(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal }, plan.firstTokenMs);
+    /* A writing lane's limit is for its whole answer; the host's headers still come at once (OpenRouter answers 200
+     * before the model thinks). Kept under server.js's LONG_FETCH_MS so the call stays a stream. */
+    res = await fetchFn(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal },
+      plan.whole === true ? Math.min(plan.firstTokenMs, WHOLE_HEADERS_MS) : plan.firstTokenMs);
   } catch (e) {
     detach();
     if (signal && signal.aborted) return { fail: 'hangup' };
@@ -808,12 +951,16 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
   const stop = () => { try { ac.abort(); } catch {} try { reader.cancel().catch(() => {}); } catch {} };
   let buffer = '';
   let ready = '';
-  while (!state.text && !state.tool) {
+  /* A writing lane (plan.whole) reads the whole answer here, inside its time limit and the idle limit, so any
+   * failure up to the last event still falls back with nothing handed on. */
+  const whole = plan.whole === true;
+  const idleMs = whole ? settings(env).idleMs : 0;
+  while (whole || (!state.text && !state.tool)) {
     const left = t0 + plan.firstTokenMs - now();
     let step;
     try {
-      if (left <= 0) throw Object.assign(new Error('no first word in time'), { name: 'ClaudeTimeout' });
-      step = await readWithin(reader, left);
+      if (left <= 0) throw Object.assign(new Error(whole ? 'not finished in time' : 'no first word in time'), { name: 'ClaudeTimeout' });
+      step = await readWithin(reader, whole ? Math.min(left, idleMs) : left);
     } catch (e) {
       stop();
       detach();
@@ -825,6 +972,12 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
       buffer = '';
       detach();
       if (state.error) return why(classifyFailure(state.error.code, state.error.text), { status: state.error.code, state });
+      if (whole) {
+        // Only a finished answer with words in it is handed on; a refusal anywhere in it falls back.
+        if (state.refused) return why('refusal', { state });
+        if (!state.text && !state.tool) return why('empty', { state });
+        break;
+      }
       if (state.text || state.tool) break; // the last event was the first word: hand it over
       return why(state.refused ? 'refusal' : 'empty', { state });
     }
@@ -846,7 +999,7 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
   let logged = false;
   const report = () => {
     recordTurn({ usage: state.usage, billed: state.billed, lane, firstMs, genId: state.genId });
-    log(turnLine({ reqId, lane, effort: plan.effort, firstMs, state }));
+    log(turnLine({ reqId, lane, effort: plan.effort, firstMs, state, whole }));
   };
   /* After the first word, a broken stream or an error event is a strike, and a refusal holds this
    * conversation; the gateway's own nets decide what the person gets. */
@@ -1033,4 +1186,5 @@ module.exports = {
   DEFAULT_MODEL, DEFAULT_PRICE, ADULT_NOTES, THINK_ROOM, settings, on, audienceOf, softenAdultNotes, conversationKey,
   planTurn, buildBody, withCacheMarks, mimoEquivalentUsage, classifyFailure, scopeOf, applyFailure, noteFailure,
   cooldownLeftMs, conversationHeld, transformEvent, openStream, complete, snapshot, noteSkip, isMimoProModel, resetForTest,
+  LANES, LANE_NAMES, isLane, lanesFrom, planLane, laneStays, isClaudeModel,
 };

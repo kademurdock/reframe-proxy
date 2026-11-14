@@ -1,0 +1,35 @@
+{
+ "source": "origin/main 14974ab server.js",
+ "lanes": [
+  {
+   "lane": "lyric-desk",
+   "model": "anthropic/claude-opus-5.5",
+   "bytes": 993,
+   "sha256": "2a13ce620206e490dfd488c4c0806e9ae34fde37b41f51499f6f018371d0aaab"
+  },
+  {
+   "lane": "booth-edit",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 2374,
+   "sha256": "c5c23797711fbff9f05219d4e81b2745db3bb30f90befbb21cbb89008e8da619"
+  },
+  {
+   "lane": "persona-writer",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 2347,
+   "sha256": "7362e1ecc646b5c86c6edd7c40b246fdf97f0dc0bce58d238e8828eddd219dda"
+  },
+  {
+   "lane": "spotter-draft",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 509,
+   "sha256": "0ec67f56cc88bc2285a899f77d81edb7617a99ff40c72f7adc1dabbe4786cf2a"
+  },
+  {
+   "lane": "speak-first",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11082,
+   "sha256": "cdde764122560d946af9d16da0496934d7e3672d222470f9ba427b00468845d7"
+  }
+ ]
+}
