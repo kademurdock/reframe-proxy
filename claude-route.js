@@ -130,7 +130,10 @@
  *                   a five-minute cache mark (a retry or a repeat rewrite reads it). Any failure sends the call just
  *                   as the website sent it: Claude on Bedrock, the route it had. The one exception is a refusal:
  *                   Claude on Bedrock would refuse the same words, so MiMo Pro writes that song (server.js swaps the
- *                   model, and the caller's think deadline then holds MiMo's thought as it did on this desk before).
+ *                   model, and the caller's think deadline then holds MiMo's thought as it did on this desk before),
+ *                   and so does the same request asked again while the refusal holds it (Nov 14 review: it used to
+ *                   go back to Bedrock). The desk's own choice of Claude model (KADE_LYRIC_MODEL) is kept;
+ *                   KADE_CLAUDE_MODEL is chat's.
  *   booth-edit      the booth's carry rewrite and Seed's cut-to-fit (KADE_SOUNDBOOTH_MODEL, MiMo Pro): both rework
  *                   text Claude wrote, so MiMo could only lose quality.
  *   persona-writer  the character builder's persona rounds.
@@ -140,20 +143,32 @@
  *                   website's verified-adult note, read from the head exactly as for chat, with five-minute cache
  *                   marks (the throwaway chat ends with the message).
  * WHO. A lane with no audience note in its prompt (all but speak-first) goes to Claude only when the website marks
- * the person a verified adult (x-kade-adult: 1 or kade_adult: true), by the rule that gives a chat turn the note
- * (build.js isKadeAdult after isChildLike). Children, teens, untyped accounts and anyone the website could not read
- * stay where they were. A head that carries the under-15 note never goes, whatever a mark says.
+ * the person a verified adult with the header x-kade-adult: 1 (Nov 14 review: the header only; a kade_adult field in
+ * the body is taken off and ignored), by the rule that gives a chat turn the note (build.js isKadeAdult after
+ * isChildLike; the website's test seats, KADE_CLAUDE_EXCLUDE_USERS, are never marked). Children, teens, untyped
+ * accounts and anyone the website could not read stay where they were. A head that carries the under-15 note never
+ * goes, whatever a mark says.
  * HOW. The MiMo lanes (booth-edit, persona-writer, spotter-draft) think at KADE_CLAUDE_EFFORT (low) with room to
- * think added to their own cap, carry no cache mark (one call each, rarely repeated within minutes) and are billed
- * as MiMo would have billed them. Every lane but speak-first reads Claude's whole answer before anything reaches the
- * caller (`whole`), so a failure at any point (an error, a refusal, an empty answer, its time limit) is answered by
- * the lane's own call with nothing lost. While Claude thinks, OpenRouter sends a comment line about every half
- * second (measured Nov 14 2026), so the idle limit (KADE_CLAUDE_IDLE_MS) only trips on a dead stream. Time limits,
- * leaving the lane's own call time to run: booth-edit 45 s (its caller waits 90), persona-writer 150 s (300),
- * spotter-draft 25 s (45). The lyric desk has none: its fallback is the same model and no faster.
- * SWITCHES. KADE_CLAUDE_CHAT=0 (or unset) turns every lane off with chat. KADE_CLAUDE_LANES picks the lanes: unset
- * is all five; a list names the ones on ("lyric-desk,speak-first"); a name with a minus takes one off ("-lyric-desk"
- * is every lane but the desk); "none" leaves chat alone on Claude. */
+ * think added to the cap their caller asked for (the body as it arrived: MiMo's adapter raises a thinking call's cap
+ * to 16,000 for MiMo's own thought, which on Claude only let a persona round run past its time limit), carry no
+ * cache mark (one call each, rarely repeated within minutes) and are billed as MiMo would have billed them. Every
+ * lane but speak-first reads Claude's whole answer before anything reaches the caller (`whole`), so a failure at
+ * any point (an error, a refusal, an empty answer, its time limit) is answered by the lane's own call with nothing
+ * lost. On the MiMo lanes a short answer that is only a refusal in words ("I can't help with this request") counts
+ * as a refusal too (BARE_REFUSAL_RE), so MiMo answers it as it did before. While Claude thinks, OpenRouter sends a
+ * comment line about every half second (measured Nov 14 2026), so the idle limit (KADE_CLAUDE_IDLE_MS) only trips
+ * on a dead stream; on the streaming route server.js opens the response at once and sends the caller a keep-alive
+ * comment every 10 s meanwhile, as the old route did (Railway closes a public request after five minutes with no
+ * data). Time limits, leaving the lane's own call time to run: booth-edit 45 s (its caller waits 90),
+ * persona-writer 140 s (300; MiMo's longest measured round took 131 s), spotter-draft 25 s (45). The lyric desk
+ * has none: its fallback is the same model and no faster. A lane that runs past its limit is skipped for everyone
+ * for KADE_CLAUDE_LANE_SKIP_MIN (15) minutes, so a slow spell does not pay again and again for answers that are
+ * thrown away. speak-first waits KADE_CLAUDE_SPEAK_FIRST_TOKEN_MS (60000) for its first word, since nobody is
+ * watching it arrive, and a miss skips the lane, not chat.
+ * SWITCHES. KADE_CLAUDE_CHAT=0 (or unset) turns every lane off with chat. KADE_CLAUDE_LANES picks the lanes (Nov 14
+ * review): unset, "none", 0 or off is none, so a deploy switches nothing on; a list names the ones on
+ * ("lyric-desk,speak-first"); "all" is every lane; a name with a minus takes one off ("all,-lyric-desk" is every lane
+ * but the desk). A list with only minuses names none. */
 
 const crypto = require('node:crypto');
 const { ReadableStream } = require('node:stream/web');
@@ -258,19 +273,22 @@ const isClaudeModel = (model) => /^anthropic\/claude-/i.test(String(model || '')
  *   cache     the cache lifetime of the marks, or null for none.
  *   billing   'real': Claude's own usage is handed back; 'mimo': the MiMo-equivalent usage, as for chat.
  *   refusal   a model that answers instead when Claude refuses (the call as sent would only be refused again).
+ *   refusalWords  a short answer that is only a refusal in words (BARE_REFUSAL_RE) counts as a refusal.
  *   limitMs   the longest Claude may take before the lane's own call answers (0: no limit of its own).
+ *   firstWordMs  (a lane that hands on at its first word) the longest it waits for that word, unless the switch
+ *             named beside it says otherwise.
  *   stays     what answers when Claude does not, for the log line. */
 const LANES = Object.freeze({
   'lyric-desk': Object.freeze({ wire: 'claude', audience: 'mark', whole: true, effort: 'own', ownRoom: true, cache: '5m',
     billing: 'real', refusal: 'xiaomi/mimo-v2.6-pro', limitMs: 0, stays: 'the route it was sent on' }),
   'booth-edit': Object.freeze({ wire: 'mimo', audience: 'mark', whole: true, effort: 'plain', cache: null, billing: 'mimo',
-    limitMs: 45000, stays: 'MiMo' }),
+    refusalWords: true, limitMs: 45000, stays: 'MiMo' }),
   'persona-writer': Object.freeze({ wire: 'mimo', audience: 'mark', whole: true, effort: 'plain', cache: null, billing: 'mimo',
-    limitMs: 150000, stays: 'MiMo' }),
+    refusalWords: true, limitMs: 140000, stays: 'MiMo' }),
   'spotter-draft': Object.freeze({ wire: 'mimo', audience: 'mark', whole: true, effort: 'plain', cache: null, billing: 'mimo',
-    limitMs: 25000, stays: 'MiMo' }),
+    refusalWords: true, limitMs: 25000, stays: 'MiMo' }),
   'speak-first': Object.freeze({ wire: 'mimo', audience: 'note', whole: false, effort: 'chat', cache: '5m', billing: 'mimo',
-    stays: 'MiMo' }),
+    firstWordMs: 60000, stays: 'MiMo' }),
 });
 const LANE_NAMES = Object.freeze(Object.keys(LANES));
 const isLane = (name) => typeof name === 'string' && Object.hasOwn(LANES, name);
@@ -278,17 +296,36 @@ const isLane = (name) => typeof name === 'string' && Object.hasOwn(LANES, name);
 const NO_LIMIT_MS = 3600000;
 /* The longest a writing lane waits for the host's headers (its own limit covers the whole answer). */
 const WHOLE_HEADERS_MS = 60000;
-/* KADE_CLAUDE_LANES: unset is every lane; "none" (or 0, off) none; otherwise the names listed, or every lane but
- * those given with a minus. Unknown names are ignored. */
+/* KADE_CLAUDE_LANES (Nov 14 review: unset is none, so deploying the lanes switches none on). "none", 0 or off is
+ * none too; otherwise the names listed, or every lane with "all"; a name with a minus is taken off whatever the rest
+ * says, so a list with only minuses names none. Unknown names are ignored. */
 function lanesFrom(raw) {
   const text = String(raw ?? '').trim().toLowerCase();
-  if (!text) return [...LANE_NAMES];
-  if (['none', '0', 'off'].includes(text)) return [];
+  if (!text || ['none', '0', 'off'].includes(text)) return [];
   const parts = text.split(',').map((p) => p.trim()).filter(Boolean);
   const off = parts.filter((p) => p.startsWith('-')).map((p) => p.slice(1).trim());
   const on = parts.filter((p) => !p.startsWith('-'));
-  const base = on.length && !on.includes('all') ? on : LANE_NAMES;
+  const base = on.includes('all') ? LANE_NAMES : on;
   return LANE_NAMES.filter((n) => base.includes(n) && !off.includes(n));
+}
+/* Nov 14 review: a short answer that is nothing but a refusal in words, which the finish reason does not flag. The
+ * website's own test for a Seed script (packages/api/src/audio/script.ts bareRefusal), widened to the words of a
+ * persona, a brief and an edit, and anchored at the start, so a lyric or a line of dialogue that happens to begin
+ * "I can't" is never taken for one; only an answer of REFUSAL_MAX_CHARS or fewer is read at all. */
+const REFUSAL_MAX_CHARS = 800;
+const BARE_REFUSAL_RE = new RegExp(
+  '^(?:(?:i(?:[\'’]m| am)\\s+)?sorry\\b[\\s,.:;!–—-]*(?:but\\s+)?|unfortunately[\\s,.:;!–—-]*)?' +
+  '(?:i|we)(?:[\'’]m|[\'’]re|\\s+am|\\s+are)?\\s+' +
+  '(?:cannot|can[\'’]t|can\\s+not|won[\'’]t|will\\s+not|(?:am\\s+|are\\s+)?unable\\s+to|(?:am\\s+|are\\s+)?not\\s+(?:able|going)\\s+to)\\s+' +
+  '(?:(?:assist|help)(?:\\s+you)?\\s+with|write|generate|create|provide|produce|rewrite|edit|shorten|cut|trim|complete|fulfil{1,2}|comply\\s+with)\\s+' +
+  '(?:(?:(?:this|that|these|those|your|the|the\\s+requested|such|a|an)\\s+)?' +
+  '(?:request|content|script|scene|scenario|prompt|persona|character|personality|brief|profile|description|text|song|lyrics|material|version)\\b' +
+  '|(?:this|that|it)(?:\\s*[.!])?$)', 'i'); // read on trimmed text (isBareRefusal); one \s* before the end keeps it linear
+function isBareRefusal(text) {
+  const raw = String(text ?? '');
+  if (raw.length > REFUSAL_MAX_CHARS * 4) return false; // far too long to be one, whatever the spaces and fence
+  const t = raw.trim().replace(/^```[^\n]*\n([\s\S]*?)\n?```$/, '$1').trim();
+  return t.length > 0 && t.length <= REFUSAL_MAX_CHARS && BARE_REFUSAL_RE.test(t);
 }
 
 function num(raw, fallback, min) {
@@ -330,6 +367,8 @@ function settings(env = process.env) {
     tokenRatio: Math.max(1, num(env.KADE_CLAUDE_TOKEN_RATIO, DEFAULT_RATIO, 0.01)),
     price: priceFrom(env.KADE_CLAUDE_MIMO_PRICE),
     lanes: lanesFrom(env.KADE_CLAUDE_LANES),
+    laneSkipMs: num(env.KADE_CLAUDE_LANE_SKIP_MIN, 15, 0) * 60000,
+    speakFirstTokenMs: num(env.KADE_CLAUDE_SPEAK_FIRST_TOKEN_MS, LANES['speak-first'].firstWordMs, 100),
   };
 }
 const on = (env = process.env) => settings(env).on;
@@ -398,15 +437,33 @@ function coolEveryone(reason, ms, now) {
   }
   return ms;
 }
-/* 'long' and 'platform' keep everyone on MiMo, 'conversation' only that conversation, 'strike' adds one
- * strike, 'none' nothing. */
+/* 'long' and 'platform' keep everyone on MiMo, 'conversation' only that conversation, 'lane' that writing lane
+ * for everyone, 'strike' adds one strike, 'none' nothing. */
 function scopeOf(reason, plan = {}) {
+  // A model id only the lyric desk chose (KADE_LYRIC_MODEL, kept since the Nov 14 review) rests the desk, not chat.
+  if (reason === 'bad_model' && plan.ownModel === true && isLane(plan.lane)) return 'lane';
   if (['credit', 'key', 'bad_model', 'not_byok'].includes(reason)) return 'long';
   if (['rate_limit', 'network', 'not_a_stream', 'http_408'].includes(reason) || /^http_5\d\d$/.test(reason)) return 'platform';
-  // A writing lane (plan.whole) that ran past its time limit is a long piece of writing, not a stall.
+  /* A writing lane that ran past its time limit is not a chat stall, so it strikes nobody; but Claude is slow just
+   * now, and the next call on that lane would pay again for an answer thrown away (Nov 14 review), so the lane
+   * rests (KADE_CLAUDE_LANE_SKIP_MIN). */
+  if (reason === 'timeout' && isLane(plan.lane)) return 'lane';
   if (reason === 'timeout') return plan.thinking || plan.whole ? 'none' : 'strike';
   if (reason === 'stream_error' || reason === 'broke') return 'strike';
   return 'conversation'; // empty, refusal, flagged and every other 4xx: this conversation's own trouble
+}
+const laneRest = new Map(); // writing lane -> { until, reason }
+function restLane(name, reason, ms, now) {
+  if (!isLane(name) || ms <= 0) return 0;
+  const was = laneRest.get(name);
+  if (!was || now + ms > was.until) laneRest.set(name, { until: now + ms, reason });
+  return ms;
+}
+function laneResting(name, now = Date.now()) {
+  const r = isLane(name) ? laneRest.get(name) : null;
+  if (!r) return null;
+  if (r.until <= now) { laneRest.delete(name); return null; }
+  return { reason: r.reason, ms: r.until - now };
 }
 function holdConversation(key, reason, ms, now) {
   if (!key || ms <= 0) return 0;
@@ -443,6 +500,10 @@ function applyFailure(reason, plan = {}, env = process.env, now = Date.now()) {
     const ms = holdConversation(plan.conversation, reason, s.conversationSkipMs, now);
     return { scope, ms, text: ms ? `Claude skipped for this conversation for ${min(ms)}` : 'Claude not skipped' };
   }
+  if (scope === 'lane') {
+    const ms = restLane(plan.lane, reason, s.laneSkipMs, now);
+    return { scope, ms, text: ms ? `Claude skipped on the ${plan.lane} lane for ${min(ms)}` : 'Claude not skipped' };
+  }
   if (scope === 'strike') {
     const st = noteStrike(reason, s, now);
     return { scope, ms: st.ms, text: st.ms ? `strike ${st.count} of ${s.strikes}: Claude skipped for ${min(st.ms)}` : `strike ${st.count} of ${s.strikes}` };
@@ -458,6 +519,7 @@ function resetForTest() {
   cooldown.until = 0;
   cooldown.reason = '';
   held.clear();
+  laneRest.clear();
   strikes.length = 0;
   Object.assign(stats, freshStats());
 }
@@ -514,9 +576,10 @@ function planTurn(wire, ctx = {}, env = process.env, now = Date.now()) {
   };
 }
 
-/* A writing lane's call (THE WRITING LANES). `ctx` as planTurn's, plus `lane` (the caller's name for the call) and
- * `adult` (the website's verified-adult mark). Returns null (not a Claude call), { skip } (it stays where it was
- * sent) or the plan. */
+/* A writing lane's call (THE WRITING LANES). `ctx` as planTurn's, plus `lane` (the caller's name for the call),
+ * `adult` (the website's verified-adult mark) and `askedTokens` (the reply cap on the body as it arrived, before
+ * MiMo's adapter). Returns null (not a Claude call), { skip } (it stays where it was sent), { skip, swapModel } (a
+ * request Claude refused, on a lane whose call as sent would be refused again: that model writes it) or the plan. */
 function planLane(wire, ctx = {}, env = process.env, now = Date.now()) {
   const s = settings(env);
   const name = isLane(ctx.lane) ? ctx.lane : '';
@@ -536,22 +599,37 @@ function planLane(wire, ctx = {}, env = process.env, now = Date.now()) {
   } else if (ctx.adult !== true) {
     return { skip: 'not marked as a verified adult' };
   }
-  const left = cooldownLeftMs(now);
-  if (left > 0) return { skip: `Claude cooling down after ${cooldown.reason}, ${Math.ceil(left / 1000)} s left` };
   const conversation = conversationKey(wire);
   const h = conversationHeld(conversation, now);
-  if (h) return { skip: `Claude failed on this ${lane.audience === 'note' ? 'conversation' : 'request'} (${h.reason}), ${Math.ceil(h.ms / 1000)} s left` };
+  const heldText = h ? `Claude failed on this ${lane.audience === 'note' ? 'conversation' : 'request'} (${h.reason}), ${Math.ceil(h.ms / 1000)} s left` : '';
+  // Nov 14 review: a request Claude refused goes where the refusal sent it the first time, not back to a route that
+  // would refuse the same words (the lyric desk's call as sent is Claude on Bedrock), whatever else keeps Claude away.
+  if (h && h.reason === 'refusal' && lane.refusal) return { skip: heldText, swapModel: lane.refusal };
+  const left = cooldownLeftMs(now);
+  if (left > 0) return { skip: `Claude cooling down after ${cooldown.reason}, ${Math.ceil(left / 1000)} s left` };
+  const resting = laneResting(name, now);
+  if (resting) return { skip: `the ${name} lane is resting after a ${resting.reason}, ${Math.ceil(resting.ms / 1000)} s left` };
+  if (h) return { skip: heldText };
   const r = (wire.reasoning && typeof wire.reasoning === 'object') ? wire.reasoning : {};
   const thinking = r.enabled === true;
   const effort = lane.effort === 'own' ? (thinking ? effortWord(r.effort, 'medium') : s.effort)
     : lane.effort === 'chat' && thinking ? lowerEffort(effortWord(r.effort, 'medium'), s.maxEffort)
       : s.effort;
-  let firstTokenMs = lane.whole ? (lane.limitMs || NO_LIMIT_MS) : thinking ? s.thinkFirstTokenMs : s.firstTokenMs;
+  // speak-first: nobody is watching the first word arrive (Nov 14 review), so chat's 12 or 20 s do not apply.
+  let firstTokenMs = lane.whole ? (lane.limitMs || NO_LIMIT_MS)
+    : lane.firstWordMs ? Math.max(s.speakFirstTokenMs, thinking ? s.thinkFirstTokenMs : s.firstTokenMs)
+      : thinking ? s.thinkFirstTokenMs : s.firstTokenMs;
   if (!lane.whole && Number.isFinite(ctx.deadlineLeftMs)) firstTokenMs = Math.min(firstTokenMs, Math.max(1000, ctx.deadlineLeftMs - 500));
+  // The MiMo lanes' cap is what their caller asked for, before MiMo's adapter raised it for MiMo's own thought.
+  const asked = Number(ctx.askedTokens);
+  const askedTokens = lane.wire === 'mimo' && lane.whole && Number.isFinite(asked) && asked > 0 ? Math.round(asked) : null;
+  // The lyric desk keeps the Claude model it chose (KADE_LYRIC_MODEL); KADE_CLAUDE_MODEL is chat's (Nov 14 review).
+  const model = lane.wire === 'claude' ? String(wire.model) : s.model;
   return {
-    model: s.model, effort, thinking, phone: false, firstTokenMs, lane: name, whole: lane.whole,
-    ttl: lane.cache || '5m', historyTtl: lane.cache || '5m', marks: !!lane.cache, ownRoom: lane.ownRoom === true,
-    billing: lane.billing, refusalModel: lane.refusal || null, minTokens: s.minTokens, conversation,
+    model, ownModel: model !== s.model, effort, thinking, phone: false, firstTokenMs, lane: name,
+    whole: lane.whole, ttl: lane.cache || '5m', historyTtl: lane.cache || '5m', marks: !!lane.cache, ownRoom: lane.ownRoom === true,
+    billing: lane.billing, refusalModel: lane.refusal || null, refusalWords: lane.refusalWords === true, askedTokens,
+    minTokens: s.minTokens, conversation,
   };
 }
 /* What answers a lane's call when Claude does not, for the log line. */
@@ -614,7 +692,8 @@ function withCacheMarks(messages, ttl = '1h', historyTtl = ttl) {
 }
 /* The caller's own reply cap plus room to think, or KADE_CLAUDE_MIN_TOKENS when it set none. */
 function maxTokensFor(wire, plan) {
-  const asked = Number(wire.max_tokens ?? wire.max_completion_tokens);
+  // A MiMo writing lane's own cap as its caller sent it (planLane askedTokens), not MiMo's raised one.
+  const asked = Number(plan.askedTokens || (wire.max_tokens ?? wire.max_completion_tokens));
   if (!Number.isFinite(asked) || asked <= 0) return plan.minTokens || 8000;
   if (plan.ownRoom) return Math.round(asked); // the lyric desk's cap is already sized for thinking
   return Math.round(asked) + (THINK_ROOM[plan.effort] || THINK_ROOM.medium);
@@ -683,6 +762,7 @@ function freshStats() {
     real_cost_usd: 0, openrouter_usd: 0, anthropic_credit_usd: 0, billed_as_mimo_usd: 0,
     byok_turns: 0, not_byok_turns: 0, first_token_ms: [], last_fallback: null,
     paid_fallbacks: 0, fallback_cost_usd: 0, broken_after_first_word: 0, unpriced_generations: [],
+    hung_up_after_accept: 0,
   };
 }
 const stats = freshStats();
@@ -732,6 +812,11 @@ function snapshot(env = process.env, now = Date.now()) {
   const share = stats.tokens.prompt > 0 ? Math.round((stats.tokens.cached / stats.tokens.prompt) * 1000) / 1000 : null;
   let holding = 0;
   for (const v of held.values()) if (v.until > now) holding += 1;
+  const resting = {};
+  for (const name of LANE_NAMES) {
+    const r = laneResting(name, now);
+    if (r) resting[name] = { reason: r.reason, seconds_left: Math.ceil(r.ms / 1000) };
+  }
   const warnings = [];
   if (left > 0 && cooldown.reason === 'not_byok') {
     warnings.push('Claude is off: a turn was paid from OpenRouter credit, not her Anthropic key. Check the key in ' +
@@ -744,7 +829,7 @@ function snapshot(env = process.env, now = Date.now()) {
   }
   return {
     enabled: s.on, model: s.model, effort: s.effort, max_effort: s.maxEffort, cache_ttl: s.cacheTtl,
-    writing_lanes_on: s.on ? [...s.lanes] : [],
+    writing_lanes_on: s.on ? [...s.lanes] : [], writing_lanes_resting: resting,
     adults_only: s.adultsOnly, byok_only: s.byokOnly, token_ratio: s.tokenRatio, mimo_price_per_million: s.price,
     cooldown: left > 0 ? { reason: cooldown.reason, seconds_left: Math.ceil(left / 1000) } : null,
     conversations_held: holding,
@@ -756,6 +841,7 @@ function snapshot(env = process.env, now = Date.now()) {
     anthropic_credit_usd: round(stats.anthropic_credit_usd), billed_as_mimo_usd: round(stats.billed_as_mimo_usd),
     byok_turns: stats.byok_turns, not_byok_turns: stats.not_byok_turns,
     paid_fallbacks: stats.paid_fallbacks, fallback_cost_usd: round(stats.fallback_cost_usd),
+    hung_up_after_accept: stats.hung_up_after_accept,
     broken_after_first_word: stats.broken_after_first_word, unpriced_generations: [...stats.unpriced_generations],
     warnings,
     note: 'Kept in memory: every deploy starts the totals again; the month lives in the Anthropic console (her ' +
@@ -763,7 +849,8 @@ function snapshot(env = process.env, now = Date.now()) {
       'not: openrouter_usd came out of OpenRouter credit, anthropic_credit_usd out of her Anthropic credit (only ' +
       'once her key is in OpenRouter). billed_as_mimo_usd is what the website was told, the same turns at MiMo ' +
       'prices. unpriced_generations are calls whose cost never came back on the stream; each can be looked up ' +
-      'for free at GET https://openrouter.ai/api/v1/generation?id=<id>.',
+      'for free at GET https://openrouter.ai/api/v1/generation?id=<id>. fallback_cost_usd also holds the calls a ' +
+      'caller gave up on after Claude had accepted them (hung_up_after_accept).',
   };
 }
 
@@ -804,7 +891,29 @@ function fail(reason, { reqId, lane, ms, status, env, log = console.log, now = D
   if (reason === 'key' && typeof alert === 'function') {
     try { alert('key', `Anthropic refused your key through OpenRouter (status ${status || '?'}). MiMo is answering; Claude is tried again every ${Math.round(settings(env).cooldownMs / 60000)} minutes.`); } catch {}
   }
+  /* Nov 14 review: the credit running out used to be silent. One alert a day (server.js alertClaude keeps it to one):
+   * the month's API credit that comes with her plan is spent, so MiMo answers until it renews. */
+  if (reason === 'credit' && typeof alert === 'function') {
+    try { alert('credit', `Anthropic says your Claude credit is used up (status ${status || '?'}). MiMo is answering the characters and the writing jobs, and songs go back to the zero-retention route on OpenRouter credit. Claude is tried again every ${Math.round(settings(env).cooldownMs / 60000)} minutes; the credit renews with your plan.`); } catch {}
+  }
   return { fail: reason, status };
+}
+/* Nov 14 review: the caller hung up after Claude had accepted the call (the website's own time limit on a long song,
+ * say). Nothing falls back, but the call may have been paid, so its generation id (and its cost, if the usage came)
+ * goes into /claude-spend like any other unused call. Nothing happens before Claude accepted it. */
+function hungUp(state, { reqId, lane, ms, log = console.log } = {}) {
+  if (!state || !state.genId) return { fail: 'hangup' };
+  stats.hung_up_after_accept += 1;
+  let paid = 'cost=not reported';
+  const real = state.usage ? addSpend(state.usage) : null;
+  if (real != null) {
+    stats.fallback_cost_usd += real;
+    paid = `cost=$${real.toFixed(6)}`;
+  } else {
+    unpriced(state.genId);
+  }
+  log(`[claude][req ${reqId || '??????'}] caller hung up: lane=${lane || '?'} after ${Number.isFinite(ms) ? ms : '?'}ms gen=${state.genId} ${paid}`);
+  return { fail: 'hangup' };
 }
 /* THE BYOK GUARD: a Claude turn whose usage does not say is_byok: true was paid from OpenRouter credit. */
 function checkByok(state, { reqId, lane, env, log, now, alert }) {
@@ -860,6 +969,11 @@ function transformEvent(raw, state) {
     }
     const delta = (choice && choice.delta) || {};
     if (typeof delta.content === 'string' && /\S/.test(delta.content)) state.text = true;
+    // A lane that reads refusals in words keeps the start of the answer and counts the rest (isBareRefusal).
+    if (state.collect && typeof delta.content === 'string') {
+      state.chars += delta.content.length;
+      if (state.words.length < REFUSAL_MAX_CHARS * 4) state.words += delta.content.slice(0, REFUSAL_MAX_CHARS * 4 - state.words.length);
+    }
     if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) state.tool = true;
     let changed = stripReasoning(obj);
     if (refusedHere(choice)) {
@@ -914,7 +1028,7 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
   log = console.log, now = Date.now, quiet = false, alert = null }) {
   const t0 = now();
   const state = { env, text: false, tool: false, error: null, usage: null, billed: null, provider: null, model: null, genId: null,
-    billing: plan.billing === 'real' ? 'real' : 'mimo' };
+    billing: plan.billing === 'real' ? 'real' : 'mimo', collect: plan.whole === true && plan.refusalWords === true, words: '', chars: 0 };
   const guard = () => checkByok(state, { reqId, lane, env, log, now: now(), alert });
   const why = (reason, extra = {}) => {
     guard();
@@ -965,7 +1079,7 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
     } catch (e) {
       stop();
       detach();
-      if (signal && signal.aborted) return { fail: 'hangup' };
+      if (signal && signal.aborted) return hungUp(state, { reqId, lane, ms: now() - t0, log });
       return why(e && e.name === 'ClaudeTimeout' ? 'timeout' : 'stream_error', { state });
     }
     if (step.done) {
@@ -974,9 +1088,11 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
       detach();
       if (state.error) return why(classifyFailure(state.error.code, state.error.text), { status: state.error.code, state });
       if (whole) {
-        // Only a finished answer with words in it is handed on; a refusal anywhere in it falls back.
+        // Only a finished answer with words in it is handed on; a refusal anywhere in it falls back, and on the
+        // MiMo lanes so does an answer that is only a refusal in words (Nov 14 review).
         if (state.refused) return why('refusal', { state });
         if (!state.text && !state.tool) return why('empty', { state });
+        if (state.collect && !state.tool && state.chars <= REFUSAL_MAX_CHARS * 4 && isBareRefusal(state.words)) return why('refusal', { state });
         break;
       }
       if (state.text || state.tool) break; // the last event was the first word: hand it over
@@ -1158,12 +1274,12 @@ async function complete(opts) {
     if (buffer.trim()) take(buffer);
   } catch (e) {
     got.abandon();
-    if (opts.signal && opts.signal.aborted) return { fail: 'hangup' };
+    if (opts.signal && opts.signal.aborted) return hungUp(got.state, { reqId: opts.reqId, lane: opts.lane, ms: (opts.now || Date.now)() - t0 + got.firstMs, log: opts.log || console.log });
     return why(broken || (e && e.name === 'ClaudeTimeout' ? 'timeout' : 'stream_error'));
   }
   if (broken) {
     got.abandon();
-    if (opts.signal && opts.signal.aborted) return { fail: 'hangup' };
+    if (opts.signal && opts.signal.aborted) return hungUp(got.state, { reqId: opts.reqId, lane: opts.lane, ms: (opts.now || Date.now)() - t0 + got.firstMs, log: opts.log || console.log });
     return why(broken);
   }
   const toolCalls = calls.filter(Boolean);
@@ -1187,5 +1303,6 @@ module.exports = {
   DEFAULT_MODEL, DEFAULT_PRICE, ADULT_NOTES, THINK_ROOM, settings, on, audienceOf, softenAdultNotes, conversationKey,
   planTurn, buildBody, withCacheMarks, mimoEquivalentUsage, classifyFailure, scopeOf, applyFailure, noteFailure,
   cooldownLeftMs, conversationHeld, transformEvent, openStream, complete, snapshot, noteSkip, isMimoProModel, resetForTest,
-  LANES, LANE_NAMES, isLane, lanesFrom, planLane, laneStays, isClaudeModel,
+  LANES, LANE_NAMES, isLane, lanesFrom, planLane, laneStays, isClaudeModel, laneResting, isBareRefusal, BARE_REFUSAL_RE,
+  REFUSAL_MAX_CHARS,
 };

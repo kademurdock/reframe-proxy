@@ -629,7 +629,8 @@ test('the stream stand-in: each failure before the first word falls back, logged
       assert.deepEqual(claude.snapshot(ON).unpriced_generations, ['gen-1'], 'kept for a free lookup later');
       assert.ok(Date.now() - t0 < 1500, 'the limit, not the host, decides how long a person waits');
     }
-    assert.deepEqual(alerts, reason === 'key' ? ['key'] : [], reason);
+    // Nov 14 review: the credit running out alerts her too (server.js alertClaude keeps it to one a day).
+    assert.deepEqual(alerts, reason === 'key' ? ['key'] : reason === 'credit' ? ['credit'] : [], reason);
     if (/skipped for \d+ min$/.test(effect)) assert.ok(claude.cooldownLeftMs() > 0, `${reason} cools everyone`);
     else assert.equal(claude.cooldownLeftMs(), 0, `${reason} cools nobody else`);
     if (/conversation/.test(effect)) assert.ok(claude.conversationHeld('conv-1'), `${reason} holds this conversation`);

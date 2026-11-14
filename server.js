@@ -3818,8 +3818,36 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
    * or tool call, so a failure before that falls through to the MiMo call below exactly as if Claude had never
    * been asked. `upstreamBody` stays the MiMo body: every re-ask, rescue and editor further down uses it. */
   let claudeUpstream = null;
+  /* Nov 14 2026 (review): a writing lane that reads Claude's whole answer first (claude-route.js THE WRITING LANES)
+   * used to send nothing at all, not even headers, until Claude had finished: minutes for a long song, and Railway
+   * closes a public request after five minutes with no data. The response now opens as soon as such a lane is
+   * planned, with the keep-alive comment the old route sent while its host thought (every WHOLE_LANE_BEAT_MS). No
+   * data event is written before the answer is known, so a fallback still goes unseen; one that then fails cannot
+   * set a status any more, so it ends as one error event (failOpened below). */
+  let earlyBeat = null;
+  const stopEarlyBeat = () => { if (earlyBeat) { clearInterval(earlyBeat); earlyBeat = null; } };
+  const openEarly = () => {
+    if (res.headersSent) return;
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    earlyBeat = setInterval(() => { if (!res.writableEnded) { try { res.write(': keep-alive\n\n'); } catch (e) {} } }, WHOLE_LANE_BEAT_MS);
+    res.once('close', stopEarlyBeat);
+    res.once('finish', stopEarlyBeat);
+    console.log(`[req ${reqId}] response opened early for a whole-answer writing lane`);
+  };
+  const failOpened = (status, text) => {
+    stopEarlyBeat();
+    let message = 'Upstream request failed';
+    try { const j = JSON.parse(String(text || '')); if (j && j.error && j.error.message) message = String(j.error.message); } catch {}
+    console.error(`[req ${reqId}] the answer failed after the response opened early (status ${status}): ending with an error event`);
+    try {
+      res.write(`data: ${JSON.stringify({ error: { message, code: status, type: 'upstream_error' } })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch (e) {}
+  };
   if (typeof claudeRoute !== 'undefined' && claudeRoute.on(process.env)) {
-    claudeUpstream = await claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive });
+    claudeUpstream = await claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive, onWhole: openEarly });
     /* Nov 14 2026: the lyric desk's Claude refused, and the call as sent (Claude on Bedrock) would be refused too, so
      * MiMo Pro writes it: the same call with the model swapped and MiMo's own adapter (its hosts, zero retention,
      * room to think). The caller's think deadline, kept since the start, holds MiMo's thought (isReasoningModel). */
@@ -3845,6 +3873,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
       if (hangup.aborted) return; // nobody left to answer; the hang-up line names it
       const status = err.name === 'AbortError' ? 504 : 502;
       console.error(`[req ${reqId}] initial fetch failed after ${Date.now() - t0}ms: ${err.name} ${err.message}`);
+      if (res.headersSent) return failOpened(status, '');
       return res.status(status).set('Content-Type', 'application/json').send(
         JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
       );
@@ -3881,6 +3910,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
         console.error(`[req ${reqId}] fallback fetch failed: ${fbErr.message}`);
         /* Nov 10 2026: the first answer's body is already read; going on used to read it
          * again, reject, and end the whole process. Answer plainly instead. */
+        if (res.headersSent) return failOpened(502, '');
         return res.status(502).set('Content-Type', 'application/json').send(
           JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
         );
@@ -3904,6 +3934,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     } catch (fbErr) {
       if (hangup.aborted) return;
       console.error(`[req ${reqId}] zai fallback fetch failed: ${fbErr.message}`);
+      if (res.headersSent) return failOpened(502, '');
       return res.status(502).set('Content-Type', 'application/json').send(
         JSON.stringify({ error: { message: 'Upstream request failed', type: 'upstream_error' } })
       );
@@ -3916,6 +3947,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     if (text === null) return;
     console.error(`[req ${reqId}] upstream not ok: ${upstream.status} ${text.slice(0,300)}`);
     const friendly = friendlyErrorBody(upstream.status, text);
+    if (res.headersSent) return failOpened(upstream.status, friendly || text);
     return res.status(upstream.status).set('Content-Type', 'application/json').send(friendly || text);
   }
 
@@ -3928,6 +3960,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     try {
       json = JSON.parse(text);
     } catch (e) {
+      if (res.headersSent) return failOpened(502, JSON.stringify({ error: { message: 'Upstream returned non-stream, non-JSON body' } }));
       return res.status(502).set('Content-Type', 'application/json').send(
         JSON.stringify({ error: { message: 'Upstream returned non-stream, non-JSON body' } })
       );
@@ -3935,6 +3968,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     if (!(shimActive && parseShimToolCalls(json))) {
       await editWithHangup(hangup, json, upstreamBody);
     }
+    if (res.headersSent) { stopEarlyBeat(); return res.end(buildFakeSSE(json)); }
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     return res.send(buildFakeSSE(json));
   }
@@ -3954,8 +3988,11 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   // to trip that client-side give-up/resume logic. Comment lines (":...")
   // are part of the SSE spec specifically for this purpose and are ignored
   // by every spec-compliant parser, so this is invisible to the final reply.
-  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  // Nov 14 2026: a whole-answer writing lane opened it already (openEarly above).
+  if (!res.headersSent) {
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  }
 
   /* ⭐⭐⭐ THE ROLE SHIM (Aug 21 2026) — WHY EVERY TOOL CALL DIED FLEET-WIDE
    * THE DAY THE FLEET WENT Z.AI-DIRECT.
@@ -3996,6 +4033,7 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   }
 
   const HEARTBEAT_MS = 10_000;
+  stopEarlyBeat(); // the turn's own heartbeat takes over from a writing lane's early one
   let heartbeatTimer = setInterval(() => {
     if (!res.writableEnded) {
       try { res.write(': keep-alive\n\n'); } catch (e) {}
@@ -5190,6 +5228,12 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
 function claudeLaneOf(req) {
   return claudeRoute.isLane(req._claudeLane) ? req._claudeLane : '';
 }
+/* How often a whole-answer writing lane's early-opened response hears a keep-alive comment while Claude writes
+ * (handleStreaming openEarly): the old route's 10 s heartbeat. KADE_WHOLE_LANE_BEAT_MS changes it (tests). */
+const WHOLE_LANE_BEAT_MS = (() => {
+  const n = Number(process.env.KADE_WHOLE_LANE_BEAT_MS);
+  return Number.isFinite(n) && n >= 50 ? n : 10_000;
+})();
 /* Nov 13 2026 (review): a person's lane is read on the body as it arrived (req.body) as well as on the wire.
  * On the wire a checkpoint call ends on the gateway's own date note, so the checkpoint prompt is no longer
  * its last message and the wire alone would take it for a conversation. */
@@ -5204,24 +5248,32 @@ function claudePlanFor(req, wire, reqId, { phone = false, shimActive = false, la
     deadlineLeftMs: req._thinkDeadlineMs ? req._thinkDeadlineMs - (Date.now() - t0) : undefined,
   };
   const named = claudeLaneOf(req);
+  /* Nov 14 2026 (review): a MiMo writing lane's Claude cap starts from what its caller asked for, on the body as it
+   * arrived (MiMo's adapter has raised a thinking call's cap for MiMo's own thought by now). */
+  const asked = req.body && typeof req.body === 'object' ? (req.body.max_tokens ?? req.body.max_completion_tokens) : undefined;
   const plan = named
-    ? claudeRoute.planLane(wire, { ...ctx, lane: named, adult: req._claudeAdult === true }, process.env)
+    ? claudeRoute.planLane(wire, { ...ctx, lane: named, adult: req._claudeAdult === true, askedTokens: asked }, process.env)
     : claudeRoute.planTurn(wire, ctx, process.env);
   if (plan && plan.skip) {
     claudeRoute.noteSkip(plan.skip);
-    console.log(`[claude][req ${reqId}] stays on ${named ? claudeRoute.laneStays(named) : 'MiMo'}: ${plan.skip} (lane=${lane})`);
-    return null;
+    /* A request Claude refused before, on a lane whose call as sent would be refused again (the lyric desk): the
+     * refusal's own model writes it again ({ swapModel }), not the route that would refuse it. */
+    console.log(`[claude][req ${reqId}] ${plan.swapModel ? `goes to ${plan.swapModel}` : `stays on ${named ? claudeRoute.laneStays(named) : 'MiMo'}`}: ${plan.skip} (lane=${lane})`);
+    return plan.swapModel ? { swapModel: plan.swapModel } : null;
   }
   return plan;
 }
 /* Returns Claude's stream, null (the call goes as it would have), or { swapModel } when a writing lane's Claude
- * refused and the call as sent would only be refused again (the lyric desk): handleStreaming then sends the same
- * call to that model. */
-async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive }) {
+ * refused, now or earlier, and the call as sent would only be refused again (the lyric desk): handleStreaming then
+ * sends the same call to that model. `onWhole` runs once a whole-answer lane is planned, before Claude is asked
+ * (handleStreaming opens the response then). */
+async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive, onWhole = null }) {
   try {
     const lane = claudeLaneOf(req) || (phoneLive ? 'phone' : screenLive ? 'screen-live' : 'buffered');
     const plan = claudePlanFor(req, upstreamBody, reqId, { phone: phoneLive, shimActive, lane, t0 });
     if (!plan) return null;
+    if (plan.swapModel) return { swapModel: plan.swapModel };
+    if (plan.whole === true && typeof onWhole === 'function') onWhole();
     const got = await claudeRoute.openStream({
       body: claudeRoute.buildBody(reelOnWire(upstreamBody), plan),
       url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
@@ -5241,19 +5293,23 @@ async function claudeOnePiece(req, upstreamBody, reqId, hangup) {
     const lane = claudeLaneOf(req) || 'one-piece';
     const plan = claudePlanFor(req, wire, reqId, { phone: isPhoneTurn(wire), lane, onePiece: true });
     if (!plan) return null;
+    if (plan.swapModel) return { swapModel: plan.swapModel };
     const got = await claudeRoute.complete({
       body: claudeRoute.buildBody(reelOnWire(wire), plan),
       url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
       signal: hangup, plan, reqId, lane, env: process.env, alert: alertClaude,
     });
-    return got.result || null;
+    if (got.result) return got.result;
+    // The same refusal rule as the streaming door (claudeStreamTurn).
+    if (got.fail === 'refusal' && plan.refusalModel) return { swapModel: plan.refusalModel };
+    return null;
   } catch (e) {
     console.error(`[claude][req ${reqId}] route error, MiMo answers: ${e && e.message}`);
     return null;
   }
 }
 /* Nov 13 2026 (review): the Claude route's admin alert, once a day for each kind: the BYOK guard (a turn paid
- * from OpenRouter credit, not her Anthropic key) and a refused key. It goes to the owner as an admin alert,
+ * from OpenRouter credit, not her Anthropic key), a refused key and (Nov 14) the credit used up. It goes to the owner as an admin alert,
  * which the bridge only takes with its admin secret (BRIDGE_SECRET, the one voice-anchors.js uses); with no
  * secret set it stays a log line. */
 const claudeAlertDay = {};
@@ -5270,7 +5326,7 @@ function alertClaude(kind, text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         secret, adminAlert: true, agentId: `claude-${kind}-alert`, agentName: 'Reframe',
-        title: kind === 'not_byok' ? 'Claude is not on your key' : 'Claude key refused', body: String(text || '').slice(0, 300),
+        title: kind === 'not_byok' ? 'Claude is not on your key' : kind === 'credit' ? 'Claude credit used up' : 'Claude key refused', body: String(text || '').slice(0, 300),
       }),
     }).catch(() => {});
   } catch {}
@@ -5447,16 +5503,17 @@ app.post('/chat/completions', async (req, res) => {
   }
   if (req._background) console.log(`[req ${reqId}] BACKGROUND run (nobody waiting)`);
   /* Nov 14 2026: the writing lanes' marks (claude-route.js THE WRITING LANES). The caller names the lane with the
-   * header x-kade-claude-lane or kade_claude_lane in the body, and says the person is a verified adult with
-   * x-kade-adult: 1 or kade_adult: true. The body fields are taken off here, on both routes and whatever the switches
-   * say, so no host ever sees them; a body without them is left exactly as it came. */
+   * header x-kade-claude-lane or kade_claude_lane in the body, and says the person is a verified adult with the
+   * header x-kade-adult: 1, the only door the website uses (Nov 14 review: a kade_adult field in the body is taken
+   * off and ignored, so a body cannot carry the mark onto a call with no audience note). The body fields are taken
+   * off here, on both routes and whatever the switches say, so no host ever sees them; a body without them is left
+   * exactly as it came. */
   req._claudeLane = String(req.headers['x-kade-claude-lane'] || '').trim().toLowerCase();
   req._claudeAdult = String(req.headers['x-kade-adult'] || '').trim() === '1';
   if (req.body && typeof req.body === 'object' && (Object.hasOwn(req.body, 'kade_claude_lane') || Object.hasOwn(req.body, 'kade_adult'))) {
-    const { kade_claude_lane: laneAsked, kade_adult: adultAsked, ...rest } = req.body;
+    const { kade_claude_lane: laneAsked, kade_adult: _adultIgnored, ...rest } = req.body;
     req.body = rest;
     if (typeof laneAsked === 'string' && laneAsked.trim()) req._claudeLane = laneAsked.trim().toLowerCase();
-    if (adultAsked === true) req._claudeAdult = true;
   }
   if (req._claudeLane) console.log(`[req ${reqId}] writing lane=${req._claudeLane.slice(0, 40).replace(/[^a-z0-9-]/g, '?')}${req._claudeAdult ? ' (verified adult)' : ''}`);
 
@@ -5509,6 +5566,13 @@ app.post('/chat/completions', async (req, res) => {
   /* Nov 13 2026: the Claude route's one-piece door (claudeOnePiece). null leaves the MiMo call below as it was. */
   if (typeof claudeRoute !== 'undefined' && claudeRoute.on(process.env)) {
     result = await claudeOnePiece(req, upstreamBody, reqId, hangup);
+    /* Nov 14 2026 (review): a refused writing-lane call that the route as sent would refuse again goes to the
+     * refusal's own model, as on the streaming route (callOpenRouterOnce applies that model's adapter). */
+    if (result && result.swapModel) {
+      upstreamBody = { ...upstreamBody, model: result.swapModel };
+      console.log(`[claude][req ${reqId}] Claude refused this ${claudeLaneOf(req) || 'call'}: ${upstreamBody.model} writes it instead`);
+      result = null;
+    }
     if (!result && hangup.aborted) return;
   }
   try {

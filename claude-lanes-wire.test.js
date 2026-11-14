@@ -10,7 +10,10 @@
  *  - every failure class falls back to the call as it was sent, in the same request: MiMo for the MiMo lanes, the
  *    Bedrock route for the lyric desk; a refusal on the desk is written by MiMo instead;
  *  - a background task's many rounds (no speak-first mark), a child's and an untyped account's messages stay on MiMo;
- *  - the BYOK guard turns Claude off for every lane and chat.
+ *  - the BYOK guard turns Claude off for every lane and chat;
+ *  - (Nov 14 review) with the lanes unset, as live, nothing goes; a whole-answer lane opens its response at once and
+ *    keeps it alive while Claude writes, and a fallback that then fails ends as an error event; a refused song asked
+ *    again goes straight to MiMo; a kade_adult field in the body marks nobody; the credit running out alerts once.
  *
  * To rebuild the fixture after a deliberate change to what the gateway sends for these calls, run this file with
  * CLAUDE_LANES_GOLDEN_SERVER=<the server.js to read> CLAUDE_LANES_GOLDEN_WRITE=1 (it then sends the calls unmarked). */
@@ -103,7 +106,7 @@ async function fakeHost() {
       const said = lastUserText(body);
       const herKey = !!(body.provider && Array.isArray(body.provider.only) && body.provider.only.includes('anthropic'));
       if (herKey) {
-        if (/scenario http500/.test(said)) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"Internal","code":500}}'); return; }
+        if (/scenario (?:http500|bothfail)/.test(said)) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"Internal","code":500}}'); return; }
         if (/scenario key/.test(said)) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"Invalid API key","code":401}}'); return; }
         if (/scenario busy/.test(said)) { res.writeHead(429, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"Rate limited","code":429}}'); return; }
         if (/scenario credit/.test(said)) {
@@ -127,10 +130,26 @@ async function fakeHost() {
             sse({ id: 'gen-c', model: CLAUDE, choices: [], usage: CLAUDE_USAGE }) + 'data: [DONE]\n\n');
           return;
         }
+        // Nov 14 review: a refusal in words, which the finish reason does not flag.
+        if (/scenario wordsrefusal/.test(said)) {
+          res.end(cchunk({ content: "I'm sorry, but I can't help with this request." }) + cchunk({}, 'stop') +
+            sse({ id: 'gen-c', model: CLAUDE, choices: [], usage: CLAUDE_USAGE }) + 'data: [DONE]\n\n');
+          return;
+        }
+        // Nov 14 review: Claude thinks a while (OpenRouter's comment lines) before it writes.
+        if (/scenario think/.test(said)) {
+          for (let i = 0; i < 20; i++) { res.write(': OPENROUTER PROCESSING\n\n'); await new Promise((r) => setTimeout(r, 100)); }
+        }
         const usage = /scenario nonbyok/.test(said) ? { ...CLAUDE_USAGE, cost: 0.0153, is_byok: false, cost_details: { upstream_inference_cost: 0.0153 } } : CLAUDE_USAGE;
         res.write(cchunk({ content: CLAUDE_WORDS.slice(0, 20) }));
         await new Promise((r) => setTimeout(r, 150));
         res.end(cchunk({ content: CLAUDE_WORDS.slice(20) }) + cchunk({}, 'stop') + sse({ id: 'gen-c', model: CLAUDE, provider: 'Anthropic', choices: [], usage }) + 'data: [DONE]\n\n');
+        return;
+      }
+      // Nov 14 review: the call as sent fails too (after Claude did).
+      if (/scenario bothfail/.test(said)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end('{"error":{"message":"The old route said no","code":400}}');
         return;
       }
       const words = model.startsWith('anthropic/') ? BEDROCK_WORDS : MIMO_WORDS;
@@ -162,6 +181,25 @@ function send(port, body, headers = {}, giveUpMs = 20000) {
       res.on('end', () => { clearTimeout(giveUp); resolve({ text, status: res.statusCode, ms: Date.now() - t0 }); });
     });
     const giveUp = setTimeout(() => { req.destroy(); resolve({ text: null, ms: Date.now() - t0 }); }, giveUpMs);
+    req.on('error', (e) => { if (!/socket hang up|ECONNRESET/.test(String(e.message))) reject(e); });
+    req.end(data);
+  });
+}
+/* Nov 14 review: the same, with when the headers came and when each piece of the body came (ms after sending). */
+function sendTimed(port, body, headers = {}, giveUpMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const t0 = Date.now();
+    const pieces = [];
+    let headersMs = null;
+    const req = http.request({ host: '127.0.0.1', port, path: '/chat/completions', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), Authorization: 'Bearer test-secret', ...headers } }, (res) => {
+      headersMs = Date.now() - t0;
+      res.setEncoding('utf8');
+      res.on('data', (c) => { pieces.push({ ms: Date.now() - t0, text: c }); });
+      res.on('end', () => { clearTimeout(giveUp); resolve({ status: res.statusCode, headersMs, pieces, text: pieces.map((p) => p.text).join(''), ms: Date.now() - t0 }); });
+    });
+    const giveUp = setTimeout(() => { req.destroy(); resolve({ status: null, headersMs, pieces, text: null, ms: Date.now() - t0 }); }, giveUpMs);
     req.on('error', (e) => { if (!/socket hang up|ECONNRESET/.test(String(e.message))) reject(e); });
     req.end(data);
   });
@@ -245,7 +283,9 @@ test('switch off: a marked call leaves exactly as the unmarked call left origin/
     ? [['golden (unmarked, the old server)', {}, false]]
     : [['route off', {}, true], ['route off, KADE_CLAUDE_CHAT=0', { KADE_CLAUDE_CHAT: '0' }, true],
       ['every lane off', { KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'none' }, true],
-      ['not marked adult', { KADE_CLAUDE_CHAT: '1' }, 'not-adult']];
+      // Nov 14 review: the live switches (chat on, KADE_CLAUDE_LANES not set) when the lanes are deployed.
+      ['the lanes unset, as live', { KADE_CLAUDE_CHAT: '1' }, true],
+      ['not marked adult', { KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all' }, 'not-adult']];
   const golden = WRITING_GOLDEN ? null : JSON.parse(fs.readFileSync(GOLDEN, 'utf8')).lanes;
   for (const [label, env, marking] of runs) {
     const gw = await boot({ ...env, OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
@@ -288,13 +328,14 @@ test('switch off: a marked call leaves exactly as the unmarked call left origin/
 test('switch on: each lane goes to Claude on her key with its own effort, cap and marks, and comes back whole', async (t) => {
   const host = await fakeHost();
   t.after(() => host.close());
-  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_TOKEN_RATIO: '1', OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
+  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all', KADE_CLAUDE_TOKEN_RATIO: '1', OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
   t.after(() => gw.child.kill());
   const want = {
     'lyric-desk': { effort: 'medium', max: 16384, marks: [{ i: 0, role: 'system', mark: { type: 'ephemeral' } }], stream: true },
     'booth-edit': { effort: 'low', max: 18384, marks: [], stream: true },
-    // MiMo's adapter raised the builder's 6,000 to its thinking floor (16,000) before Claude was asked; a cap only.
-    'persona-writer': { effort: 'low', max: 18000, marks: [], stream: true },
+    /* MiMo's adapter raised the builder's 6,000 to its thinking floor (16,000) before Claude was asked; Claude gets
+     * the builder's own 6,000 and room to think (Nov 14 review), so a round ends inside its time limit. */
+    'persona-writer': { effort: 'low', max: 8000, marks: [], stream: true },
     'spotter-draft': { effort: 'low', max: 2400, marks: [], stream: true },
     'speak-first': { effort: 'low', max: 8000, marks: [{ i: 0, role: 'system', mark: { type: 'ephemeral' } }], stream: true },
   };
@@ -349,13 +390,15 @@ test('switch on: each lane goes to Claude on her key with its own effort, cap an
 test('every failure falls back in the same request: the MiMo lanes to MiMo, the desk to its own route, a refused song to MiMo', async (t) => {
   const host = await fakeHost();
   t.after(() => host.close());
-  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_IDLE_MS: '700', KADE_CLAUDE_COOLDOWN_MIN: '0', KADE_CLAUDE_ERROR_COOLDOWN_MIN: '0',
-    KADE_CLAUDE_CONVERSATION_SKIP_MIN: '0', KADE_CLAUDE_STRIKES: '100', OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
+  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all', KADE_CLAUDE_IDLE_MS: '700', KADE_CLAUDE_COOLDOWN_MIN: '0',
+    KADE_CLAUDE_ERROR_COOLDOWN_MIN: '0', KADE_CLAUDE_CONVERSATION_SKIP_MIN: '0', KADE_CLAUDE_LANE_SKIP_MIN: '0', KADE_CLAUDE_STRIKES: '100',
+    OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
   t.after(() => gw.child.kill());
   const failures = [['http500', 'http_500'], ['key', 'key'], ['busy', 'rate_limit'], ['credit', 'credit'], ['empty', 'empty'],
     ['lateerror', 'http_502'], ['refusal', 'refusal'], ['stall', 'timeout']];
   for (const lane of ['booth-edit', 'persona-writer', 'spotter-draft']) {
-    for (const [scenario, reason] of failures) {
+    // Nov 14 review: on these lanes a refusal in words is a refusal too.
+    for (const [scenario, reason] of [...failures, ['wordsrefusal', 'refusal']]) {
       const from = host.bodies.length;
       const call = marked(lane, CALLS[lane](`scenario ${scenario} please`));
       const r = await send(gw.port, call.body, call.headers);
@@ -400,7 +443,7 @@ test('every failure falls back in the same request: the MiMo lanes to MiMo, the 
 test('who stays: a background task, a child, an untyped account and an unmarked person never reach Claude', async (t) => {
   const host = await fakeHost();
   t.after(() => host.close());
-  const gw = await boot({ KADE_CLAUDE_CHAT: '1', OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
+  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all', OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
   t.after(() => gw.child.kill());
   const before = host.bodies.length;
   // A background task's rounds carry kade_background with no speak-first mark.
@@ -428,7 +471,8 @@ test('who stays: a background task, a child, an untyped account and an unmarked 
 test('the BYOK guard on a lane: the call is served, then every lane and chat stay off Claude', async (t) => {
   const host = await fakeHost();
   t.after(() => host.close());
-  const gw = await boot({ KADE_CLAUDE_CHAT: '1', OPENROUTER_BASE: `http://127.0.0.1:${host.port}`, KADE_BRIDGE_URL: `http://127.0.0.1:${host.port}`, BRIDGE_SECRET: 'bridge-test' });
+  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all', OPENROUTER_BASE: `http://127.0.0.1:${host.port}`,
+    KADE_BRIDGE_URL: `http://127.0.0.1:${host.port}`, BRIDGE_SECRET: 'bridge-test' });
   t.after(() => gw.child.kill());
   const first = marked('persona-writer', CALLS['persona-writer']('scenario nonbyok captain'));
   const r = await send(gw.port, first.body, first.headers);
@@ -444,4 +488,98 @@ test('the BYOK guard on a lane: the call is served, then every lane and chat sta
   }
   assert.equal(herKeyBodies(host, before).length, 0, 'every lane stays where it was sent');
   assert.equal(linesOf(gw.log(), /cooling down after not_byok/).length, 5);
+});
+
+/* Where the first data event starts in a timed reply, and what came before it. */
+function beforeFirstData(r) {
+  const at = r.pieces.findIndex((p) => p.text.includes('data:'));
+  const earlier = (at === -1 ? r.pieces : r.pieces.slice(0, at)).map((p) => p.text).join('');
+  const firstPiece = at === -1 ? '' : r.pieces[at].text;
+  return { ms: at === -1 ? null : r.pieces[at].ms, earlier: earlier + firstPiece.slice(0, firstPiece.indexOf('data:')) };
+}
+
+test('Nov 14 review: a whole-answer lane opens at once and keeps the line alive while Claude writes', async (t) => {
+  const host = await fakeHost();
+  t.after(() => host.close());
+  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all', KADE_WHOLE_LANE_BEAT_MS: '150', KADE_CLAUDE_ERROR_COOLDOWN_MIN: '0',
+    OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
+  t.after(() => gw.child.kill());
+  // Claude thinks about two seconds (OpenRouter's comment lines) before it writes.
+  for (const lane of ['lyric-desk', 'booth-edit']) {
+    const call = marked(lane, CALLS[lane]('scenario think please'));
+    const r = await sendTimed(gw.port, call.body, call.headers);
+    assert.equal(r.status, 200, `${lane}: ${String(r.text).slice(0, 300)}`);
+    const first = beforeFirstData(r);
+    assert.ok(first.ms !== null && first.ms >= 1900, `${lane}: the answer came once Claude had finished (${first.ms} ms)`);
+    assert.ok(r.headersMs < first.ms - 1000, `${lane}: headers at ${r.headersMs} ms, long before the answer at ${first.ms} ms`);
+    const beats = (first.earlier.match(/^: keep-alive$/gm) || []).length;
+    assert.ok(beats >= 3, `${lane}: ${beats} keep-alive comments before the answer`);
+    assert.equal(/OPENROUTER PROCESSING/.test(r.text), false, `${lane}: the host's own comments stay in the gateway`);
+    assert.equal(wordsOf(r.text), CLAUDE_WORDS, `${lane}: the whole answer`);
+    assert.ok(r.text.endsWith('data: [DONE]\n\n'), lane);
+  }
+  assert.equal(linesOf(gw.log(), /response opened early for a whole-answer writing lane/).length, 2);
+  // A chat-shaped call and a call that stays where it was sent open as they always did, at the host's answer.
+  const plain = await sendTimed(gw.port, CALLS['booth-edit']('scenario think please'), { 'x-kade-claude-lane': 'booth-edit' });
+  assert.equal(wordsOf(plain.text), MIMO_WORDS);
+  assert.equal(linesOf(gw.log(), /response opened early/).length, 2, 'not for a call that stays on MiMo');
+  // Claude fails, and the call as sent fails too after the response opened: one error event, then the end.
+  const both = marked('lyric-desk', CALLS['lyric-desk']('scenario bothfail song'));
+  const r = await sendTimed(gw.port, both.body, both.headers);
+  assert.equal(r.status, 200, 'the status went out with the early headers');
+  const evs = events(r.text);
+  assert.equal(evs.length, 1, r.text);
+  assert.deepEqual(evs[0].error, { message: 'The old route said no', code: 400, type: 'upstream_error' });
+  assert.ok(r.text.endsWith('data: [DONE]\n\n'));
+  assert.equal(wordsOf(r.text), '', 'no words');
+  assert.match(gw.log(), /the answer failed after the response opened early \(status 400\): ending with an error event/);
+});
+
+test('Nov 14 review: a refused song asked again goes straight to MiMo; a body cannot mark a person adult', async (t) => {
+  const host = await fakeHost();
+  t.after(() => host.close());
+  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all', OPENROUTER_BASE: `http://127.0.0.1:${host.port}` });
+  t.after(() => gw.child.kill());
+  const song = () => marked('lyric-desk', CALLS['lyric-desk']('scenario refusal song'));
+  let from = host.bodies.length;
+  let r = await send(gw.port, song().body, song().headers);
+  const route = (b) => (b.provider && b.provider.only ? 'claude' : b.model);
+  assert.deepEqual(host.bodies.slice(from).map(route), ['claude', 'xiaomi/mimo-v2.6-pro']);
+  assert.equal(wordsOf(r.text), MIMO_WORDS);
+  // The desk's plain write after a draft that showed its working sends the very same system and brief.
+  from = host.bodies.length;
+  r = await send(gw.port, song().body, song().headers);
+  const sent = host.bodies.slice(from);
+  assert.deepEqual(sent.map(route), ['xiaomi/mimo-v2.6-pro'], 'neither Claude nor the Bedrock route that would refuse it');
+  assert.equal(sent[0].provider.zdr, true, 'MiMo on its own hosts, with zero retention');
+  assert.equal(wordsOf(r.text), MIMO_WORDS);
+  assert.match(gw.log(), /goes to xiaomi\/mimo-v2\.6-pro: Claude failed on this request \(refusal\), \d+ s left \(lane=lyric-desk\)/);
+  // A persona call with kade_adult in its body and no header: nobody is marked, and the field never reaches a host.
+  from = host.raws.length;
+  r = await send(gw.port, { ...CALLS['persona-writer'](), kade_adult: true }, { 'x-kade-claude-lane': 'persona-writer' });
+  assert.equal(wordsOf(r.text), MIMO_WORDS);
+  assert.equal(host.raws.length - from, 1);
+  assert.equal(/kade_adult|kade_claude_lane/.test(host.raws[from]), false);
+  assert.equal(route(JSON.parse(host.raws[from])), 'xiaomi/mimo-v2.6-pro');
+  assert.match(gw.log(), /stays on MiMo: not marked as a verified adult \(lane=persona-writer\)/);
+});
+
+test('Nov 14 review: the credit running out alerts her once a day', async (t) => {
+  const host = await fakeHost();
+  t.after(() => host.close());
+  const gw = await boot({ KADE_CLAUDE_CHAT: '1', KADE_CLAUDE_LANES: 'all', KADE_CLAUDE_COOLDOWN_MIN: '0', OPENROUTER_BASE: `http://127.0.0.1:${host.port}`,
+    KADE_BRIDGE_URL: `http://127.0.0.1:${host.port}`, BRIDGE_SECRET: 'bridge-test' });
+  t.after(() => gw.child.kill());
+  for (const said of ['scenario credit one', 'scenario credit two']) {
+    const call = marked('spotter-draft', CALLS['spotter-draft'](said));
+    const r = await send(gw.port, call.body, call.headers);
+    assert.equal(wordsOf(r.text), MIMO_WORDS, 'MiMo answers');
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(linesOf(gw.log(), /fallback to MiMo: lane=spotter-draft reason=credit /).length, 2);
+  assert.equal(host.notes.length, 1, 'one alert, not one a call');
+  assert.equal(host.notes[0].agentId, 'claude-credit-alert');
+  assert.equal(host.notes[0].title, 'Claude credit used up');
+  assert.equal(host.notes[0].adminAlert, true);
+  assert.match(host.notes[0].body, /credit is used up/);
 });
