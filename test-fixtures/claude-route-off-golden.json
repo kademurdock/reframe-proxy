@@ -1,0 +1,71 @@
+{
+ "source": "origin/main e83d528 server.js",
+ "lanes": [
+  {
+   "lane": "typed character turn",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11386,
+   "sha256": "1458aa0cc1f91de01ecdce1872ee9c3579ecf9b2bbb83cec12c8988505596aba"
+  },
+  {
+   "lane": "fast start (kade_live)",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11386,
+   "sha256": "1458aa0cc1f91de01ecdce1872ee9c3579ecf9b2bbb83cec12c8988505596aba"
+  },
+  {
+   "lane": "phone call",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 10101,
+   "sha256": "eeb04f1ac83782c77f80ca91a16de5e2cf90553e3522a1bae83d3f8f36ccfacc"
+  },
+  {
+   "lane": "background run (header)",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11370,
+   "sha256": "0ffc2fc17e6660ee39fc691c51751c9d876519f73c4f941f838c8ed7274e7922"
+  },
+  {
+   "lane": "one-piece (stream:false)",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11343,
+   "sha256": "3f5676695c7885082658434a6ab3739710cbe24aac51b302cfda393652d44053"
+  },
+  {
+   "lane": "title",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 406,
+   "sha256": "cf25cecaf9be9555ace629ca0bef8b60c6d7956b8791524e510cce153f9592ca"
+  },
+  {
+   "lane": "Deep turn",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11381,
+   "sha256": "260a51f2eedcab9bc35d3628098980aa6f68b0951dbbaabdb45bb4af978cbf0e"
+  },
+  {
+   "lane": "child account",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11330,
+   "sha256": "2a473a80dd35829ab05c5fc042291f5e7ce0a553a34f9da3e7d673c15fbf5d6c"
+  },
+  {
+   "lane": "tool round",
+   "model": "xiaomi/mimo-v2.6-pro",
+   "bytes": 11575,
+   "sha256": "cb2737c9c24dccdd5a9452f66626e23ee66ba19a2340fb20f3cd1e5505ebcbca"
+  },
+  {
+   "lane": "MiMo Flash",
+   "model": "xiaomi/mimo-v2.6-flash",
+   "bytes": 11305,
+   "sha256": "59bee6961981ce4d18ecddf02183df848d2220e8b11fc2e3827c55fcf991eb23"
+  },
+  {
+   "lane": "GLM",
+   "model": "z-ai/glm-5.3-flash",
+   "bytes": 11303,
+   "sha256": "f1dc3570468185da5b1396713a1990fa640489c8a2aac548fe44b99bd4483219"
+  }
+ ]
+}

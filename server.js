@@ -470,6 +470,14 @@ app.get('/zai-spend', (req, res) => {
   }
   res.json(zaiMeter.snapshot());
 });
+/* Nov 13 2026: what the Claude route has spent since this deploy, its real cost beside what the website was
+ * told (the MiMo price), its fallbacks and any cooldown. In memory, like the two above. See claude-route.js. */
+app.get('/claude-spend', (req, res) => {
+  if ((req.headers['authorization'] || '') !== `Bearer ${PROXY_SHARED_SECRET}`) {
+    return res.status(401).json({ error: { message: 'Unauthorized' } });
+  }
+  res.json(claudeRoute.snapshot(process.env));
+});
 
 const ZAI_ROLE_SHIM = process.env.KADE_ZAI_ROLE_SHIM !== '0';
 const TOOLWIRE_DEBUG = process.env.KADE_TOOLWIRE_DEBUG !== '0';
@@ -524,6 +532,8 @@ const { adaptForXai } = require('./xai.js');
 const { adaptForDeepseek, deepseekHabitNoteFor } = require('./deepseek.js');
 const { adaptForSol } = require('./sol.js');
 const { adaptForMimo, isMimoModel, BACKGROUND: MIMO_BACKGROUND } = require('./mimo.js');
+/* Nov 13 2026: character turns on Claude, MiMo underneath (claude-route.js). Off unless KADE_CLAUDE_CHAT=1. */
+const claudeRoute = require('./claude-route');
 
 function adaptForZai(body) {
   if (!ZAI_KEY || !body || !isGlmModel(body.model)) return body;
@@ -3803,10 +3813,20 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
     }
   } catch {}
   let upstream;
+  /* Nov 13 2026: THE CLAUDE ROUTE (claude-route.js, off unless KADE_CLAUDE_CHAT=1). A character turn bound for
+   * MiMo Pro is offered to Claude first. Nothing is written to `res` until Claude has produced its first word
+   * or tool call, so a failure before that falls through to the MiMo call below exactly as if Claude had never
+   * been asked. `upstreamBody` stays the MiMo body: every re-ask, rescue and editor further down uses it. */
+  let claudeUpstream = null;
+  if (typeof claudeRoute !== 'undefined' && claudeRoute.on(process.env)) {
+    claudeUpstream = await claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive });
+    if (claudeUpstream) upstream = claudeUpstream;
+    else if (hangup.aborted) return; // nobody left to answer
+  }
   // July 30 2026: same transient-status patience as callOpenRouter above --
   // safe HERE because nothing has been written to `res` until after the
   // status check below, so a retried fetch is invisible to the client.
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 0; !claudeUpstream; attempt++) {
     try {
       upstream = await fetchWithTimeout(
         chatCompletionsUrl(upstreamBody.model),
@@ -5153,6 +5173,59 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
   console.log(`[req ${reqId}] content-turn response sent at ${Date.now() - t0}ms, finalLength=${result.choices[0].message.content.length}`);
 }
 
+/* Nov 13 2026: the Claude route's two doors (claude-route.js). `wire` is the body exactly as MiMo would get
+ * it. Each returns null when the turn stays on MiMo (not a person's character turn, a child or teen account,
+ * a cooldown, or Claude failed before its first word); the caller then sends the MiMo call it always sent.
+ * Anything unexpected in here also returns null: Claude is never allowed to cost a turn its MiMo answer. */
+function claudePlanFor(req, wire, reqId, { phone = false, shimActive = false, lane = '?', t0 = Date.now() } = {}) {
+  const plan = claudeRoute.planTurn(wire, {
+    personLane: screenLiveLane(wire),
+    background: req._background === true,
+    shimActive,
+    callerDeadline: req._thinkDeadlineAsked === true,
+    phone,
+    deadlineLeftMs: req._thinkDeadlineMs ? req._thinkDeadlineMs - (Date.now() - t0) : undefined,
+  }, process.env);
+  if (plan && plan.skip) {
+    claudeRoute.noteSkip(plan.skip);
+    console.log(`[claude][req ${reqId}] stays on MiMo: ${plan.skip} (lane=${lane})`);
+    return null;
+  }
+  return plan;
+}
+async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLive, screenLive, shimActive }) {
+  try {
+    const lane = phoneLive ? 'phone' : screenLive ? 'screen-live' : 'buffered';
+    const plan = claudePlanFor(req, upstreamBody, reqId, { phone: phoneLive, shimActive, lane, t0 });
+    if (!plan) return null;
+    const got = await claudeRoute.openStream({
+      body: claudeRoute.buildBody(reelOnWire(upstreamBody), plan),
+      url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
+      signal: hangup, plan, reqId, lane, env: process.env,
+    });
+    return got.upstream || null;
+  } catch (e) {
+    console.error(`[claude][req ${reqId}] route error, MiMo answers: ${e && e.message}`);
+    return null;
+  }
+}
+async function claudeOnePiece(req, upstreamBody, reqId, hangup) {
+  try {
+    const wire = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(upstreamBody)))))));
+    const plan = claudePlanFor(req, wire, reqId, { phone: isPhoneTurn(wire), lane: 'one-piece' });
+    if (!plan) return null;
+    const got = await claudeRoute.complete({
+      body: claudeRoute.buildBody(reelOnWire(wire), plan),
+      url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
+      signal: hangup, plan, reqId, lane: 'one-piece', env: process.env,
+    });
+    return got.result || null;
+  } catch (e) {
+    console.error(`[claude][req ${reqId}] route error, MiMo answers: ${e && e.message}`);
+    return null;
+  }
+}
+
 // -- main route --------------------------------------------------------------
 // Part 68 (Aug 15 2026): deepseek-v4-flash writes literal special-token TEXT
 // -- "<|end_of_sentence|>" -- into generated conversation titles (seen live on
@@ -5370,8 +5443,13 @@ app.post('/chat/completions', async (req, res) => {
   // streaming path at handleStreaming -- and now with a reqId in the logs.
   upstreamBody = await maybeAutoThink(upstreamBody, reqId);
   let result;
+  /* Nov 13 2026: the Claude route's one-piece door (claudeOnePiece). null leaves the MiMo call below as it was. */
+  if (typeof claudeRoute !== 'undefined' && claudeRoute.on(process.env)) {
+    result = await claudeOnePiece(req, upstreamBody, reqId, hangup);
+    if (!result && hangup.aborted) return;
+  }
   try {
-    result = await callOpenRouter(upstreamBody, undefined, hangup);
+    if (!result) result = await callOpenRouter(upstreamBody, undefined, hangup);
   } catch (err) {
     if (hangup.aborted) return; // nobody left to answer; the hang-up line names it
     console.error('upstream chat/completions error:', err.message);
