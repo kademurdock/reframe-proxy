@@ -5177,13 +5177,17 @@ async function handleStreaming(req, res, upstreamBody, shimActive = false, shimD
  * it. Each returns null when the turn stays on MiMo (not a person's character turn, a child or teen account,
  * a cooldown, or Claude failed before its first word); the caller then sends the MiMo call it always sent.
  * Anything unexpected in here also returns null: Claude is never allowed to cost a turn its MiMo answer. */
-function claudePlanFor(req, wire, reqId, { phone = false, shimActive = false, lane = '?', t0 = Date.now() } = {}) {
+/* Nov 13 2026 (review): a person's lane is read on the body as it arrived (req.body) as well as on the wire.
+ * On the wire a checkpoint call ends on the gateway's own date note, so the checkpoint prompt is no longer
+ * its last message and the wire alone would take it for a conversation. */
+function claudePlanFor(req, wire, reqId, { phone = false, shimActive = false, lane = '?', t0 = Date.now(), onePiece = false } = {}) {
   const plan = claudeRoute.planTurn(wire, {
-    personLane: screenLiveLane(wire),
+    personLane: screenLiveLane(wire) && screenLiveLane(req.body),
     background: req._background === true,
     shimActive,
     callerDeadline: req._thinkDeadlineAsked === true,
     phone,
+    onePiece,
     deadlineLeftMs: req._thinkDeadlineMs ? req._thinkDeadlineMs - (Date.now() - t0) : undefined,
   }, process.env);
   if (plan && plan.skip) {
@@ -5201,7 +5205,7 @@ async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLiv
     const got = await claudeRoute.openStream({
       body: claudeRoute.buildBody(reelOnWire(upstreamBody), plan),
       url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
-      signal: hangup, plan, reqId, lane, env: process.env,
+      signal: hangup, plan, reqId, lane, env: process.env, alert: alertClaude,
     });
     return got.upstream || null;
   } catch (e) {
@@ -5212,18 +5216,41 @@ async function claudeStreamTurn(req, upstreamBody, { reqId, t0, hangup, phoneLiv
 async function claudeOnePiece(req, upstreamBody, reqId, hangup) {
   try {
     const wire = adaptForMimo(adaptForSol(adaptForDeepseek(adaptForXai(adaptForZai(adaptForGlm(adaptForKimi(upstreamBody)))))));
-    const plan = claudePlanFor(req, wire, reqId, { phone: isPhoneTurn(wire), lane: 'one-piece' });
+    const plan = claudePlanFor(req, wire, reqId, { phone: isPhoneTurn(wire), lane: 'one-piece', onePiece: true });
     if (!plan) return null;
     const got = await claudeRoute.complete({
       body: claudeRoute.buildBody(reelOnWire(wire), plan),
       url: `${OPENROUTER_BASE}/chat/completions`, headers: openRouterHeaders(), fetchFn: fetchWithTimeout,
-      signal: hangup, plan, reqId, lane: 'one-piece', env: process.env,
+      signal: hangup, plan, reqId, lane: 'one-piece', env: process.env, alert: alertClaude,
     });
     return got.result || null;
   } catch (e) {
     console.error(`[claude][req ${reqId}] route error, MiMo answers: ${e && e.message}`);
     return null;
   }
+}
+/* Nov 13 2026 (review): the Claude route's admin alert, once a day for each kind: the BYOK guard (a turn paid
+ * from OpenRouter credit, not her Anthropic key) and a refused key. It goes to the owner as an admin alert,
+ * which the bridge only takes with its admin secret (BRIDGE_SECRET, the one voice-anchors.js uses); with no
+ * secret set it stays a log line. */
+const claudeAlertDay = {};
+function alertClaude(kind, text) {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    if (claudeAlertDay[kind] === day) return;
+    claudeAlertDay[kind] = day;
+    const secret = process.env.BRIDGE_SECRET || '';
+    if (!secret) return;
+    const base = process.env.KADE_BRIDGE_URL || process.env.BRIDGE_URL || 'https://kade-ai-bridge-production.up.railway.app';
+    fetch(`${base}/notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret, adminAlert: true, agentId: `claude-${kind}-alert`, agentName: 'Reframe',
+        title: kind === 'not_byok' ? 'Claude is not on your key' : 'Claude key refused', body: String(text || '').slice(0, 300),
+      }),
+    }).catch(() => {});
+  } catch {}
 }
 
 // -- main route --------------------------------------------------------------
