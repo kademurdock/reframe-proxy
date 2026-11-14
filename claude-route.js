@@ -705,10 +705,11 @@ function unpriced(genId) {
   stats.unpriced_generations.push(genId);
   if (stats.unpriced_generations.length > 20) stats.unpriced_generations.shift();
 }
-function recordTurn({ usage, billed, lane, firstMs, genId }) {
+function recordTurn({ usage, billed, lane, firstMs, genId, whole = false }) {
   stats.turns += 1;
   stats.lanes[lane] = (stats.lanes[lane] || 0) + 1;
-  if (Number.isFinite(firstMs)) {
+  // A writing lane's time is its whole answer, not a first word: kept out of the first-word median.
+  if (Number.isFinite(firstMs) && !whole) {
     stats.first_token_ms.push(firstMs);
     if (stats.first_token_ms.length > 200) stats.first_token_ms.shift();
   }
@@ -998,7 +999,7 @@ async function openStream({ body, url, headers, fetchFn, signal, plan, reqId = '
   const encoder = new TextEncoder();
   let logged = false;
   const report = () => {
-    recordTurn({ usage: state.usage, billed: state.billed, lane, firstMs, genId: state.genId });
+    recordTurn({ usage: state.usage, billed: state.billed, lane, firstMs, genId: state.genId, whole });
     log(turnLine({ reqId, lane, effort: plan.effort, firstMs, state, whole }));
   };
   /* After the first word, a broken stream or an error event is a strike, and a refusal holds this

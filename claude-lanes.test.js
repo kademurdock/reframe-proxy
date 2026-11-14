@@ -301,6 +301,7 @@ test('a writing lane reads the whole answer before handing anything on, then han
   assert.match(logs[0], /^\[claude\]\[req desk01\] turn lane=lyric-desk effort=medium ms=\d+ prompt=2000 cached=0 cache_write=0 reply=200 reasoning=100 cost=\$0\.014000 \(BYOK: OpenRouter fee \$0\.000000 \+ provider \$0\.014000\) gen=gen-1 host=Anthropic$/);
   assert.equal(/Dirt Road|First line/.test(logs[0]), false, 'never the words');
   assert.equal(claude.snapshot(ON).lanes['lyric-desk'], 1);
+  assert.equal(claude.snapshot(ON).first_token_ms_median, null, 'a whole song is not a first word: chat\'s median stays chat\'s');
   assert.deepEqual(claude.snapshot(ON).writing_lanes_on, claude.LANE_NAMES);
   assert.deepEqual(claude.snapshot({}).writing_lanes_on, [], 'off is off');
 });
